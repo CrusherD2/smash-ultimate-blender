@@ -351,7 +351,8 @@ class SUB_PG_sub_matl_data(PropertyGroup):
         new_texture: SUB_PG_matl_texture = self.textures.add()
         new_texture.name = texture_param.param_id.name
         new_texture.image = texture_name_to_image_dict[texture_param.data]
-        new_texture.image.preview_ensure() # Previews aren't generated till needed / forced.
+        if new_texture.image:  # Add this check to prevent NoneType error
+            new_texture.image.preview_ensure() # Previews aren't generated till needed / forced.
         new_texture.ui_name = param_id_to_ui_name[texture_param.param_id.value]
         new_texture.node_name = texture_param.param_id.name
         new_texture.texture_number = int(texture_param.param_id.name.split('Texture')[1])

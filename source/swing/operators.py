@@ -13,12 +13,122 @@ from ...dependencies import pyprc
 # Local Project Imports
 from ..extras import create_meshes
 from .sub_swing_data import *
+import os
+import importlib.util
+import csv
 
-''' 
-# TODOS:
-3.) In blender 3.3, string properties allow a 'search' parameter, investigate if this allows to filter for only swing bones when searching for bones
-'''
-# Hack workaround since prop_search has no filter
+# Global variable to store the active mismatch operator instance
+_active_mismatch_operator = None
+
+def add_hash_to_param_labels(hash_value: str, label: str):
+    """Add a new hash-label pair to ParamLabels.csv if it doesn't already exist"""
+    try:
+        from ...dependencies import pyprc
+        from ...dependencies.pyprc import hash as pyprc_hash  # Import with alias to avoid collision
+        
+        # Get the path to ParamLabels.csv
+        labels_path = (Path(__file__).parent.parent.parent / 'dependencies' / 'pyprc' / 'ParamLabels.csv').resolve()
+        
+        # Generate the hash using pyprc_hash explicitly
+        hash_obj = pyprc_hash(label)
+        # Convert to int using the hash object's value directly
+        if hasattr(hash_obj, 'value'):
+            hash_int = hash_obj.value
+        elif hasattr(hash_obj, '__int__'):
+            hash_int = hash_obj.__int__()
+        else:
+            # Fallback: try to get the integer representation
+            hash_int = int(str(hash_obj), 16) if str(hash_obj).startswith('0x') else int(str(hash_obj))
+        
+        hash_hex = f"0x{hash_int:010x}"
+        
+        # Check if the hash already exists in the file
+        existing_hashes = set()
+        if os.path.exists(labels_path):
+            try:
+                with open(labels_path, 'r', encoding='utf-8') as f:
+                    reader = csv.reader(f)
+                    for row in reader:
+                        if len(row) >= 1:
+                            existing_hashes.add(row[0])
+            except Exception as e:
+                print(f"Warning: Could not read ParamLabels.csv: {e}")
+                return False
+        
+        # Add the hash if it doesn't exist
+        if hash_hex not in existing_hashes:
+            try:
+                with open(labels_path, 'a', encoding='utf-8', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow([hash_hex, label])
+                print(f"Added hash to ParamLabels.csv: {hash_hex},{label}")
+                return True
+            except Exception as e:
+                print(f"Warning: Could not write to ParamLabels.csv: {e}")
+                return False
+        else:
+            print(f"Hash already exists in ParamLabels.csv: {hash_hex},{label}")
+            return True
+            
+    except Exception as e:
+        print(f"Error adding hash to ParamLabels.csv: {e}")
+        return False
+
+def save_swing_bone_chain_hashes(chain_name: str, start_bone_name: str, end_bone_name: str, bone_names: list):
+    """Save all relevant hashes for a swing bone chain to ParamLabels.csv"""
+    # Save chain name hash
+    add_hash_to_param_labels(chain_name, chain_name)
+    
+    # Save bone name hashes (lowercase as they're used in the PRC)
+    add_hash_to_param_labels(start_bone_name.lower(), start_bone_name.lower())
+    add_hash_to_param_labels(end_bone_name.lower(), end_bone_name.lower())
+    
+    # Save individual bone name hashes and collision list hashes
+    for bone_name in bone_names:
+        bone_lower = bone_name.lower()
+        add_hash_to_param_labels(bone_lower, bone_lower)
+        # Also save the collision list hash (bone_name + "col")
+        collision_hash = bone_lower + "col"
+        add_hash_to_param_labels(collision_hash, collision_hash)
+
+def get_preset_bone_enum_items(self, context):
+    """Generate enum items for preset bone selection"""
+    global _active_mismatch_operator
+    
+    items = [('NONE', 'None', 'Skip this target bone', 'X', 0)]
+    
+    if _active_mismatch_operator:
+        for i in range(_active_mismatch_operator.preset_bone_count):
+            items.append((str(i), f"Preset Bone {i+1}", f"Apply values from preset bone {i+1}", 'BONE_DATA', i+1))
+    
+    return items
+
+class SUB_PG_bone_mapping(bpy.types.PropertyGroup):
+    """Property group for individual bone mapping"""
+    target_bone_name: bpy.props.StringProperty(
+        name="Target Bone",
+        description="Name of the target bone"
+    )
+    preset_bone_index: bpy.props.IntProperty(
+        name="Preset Bone Index",
+        description="Index of preset bone to map from (-1 for none)",
+        default=-1,
+        min=-1
+    )
+    preset_bone_selection: bpy.props.EnumProperty(
+        name="Preset Bone",
+        description="Select which preset bone to map from",
+        items=get_preset_bone_enum_items,
+        update=lambda self, context: self.update_preset_bone_index(context)
+    )
+    
+    def update_preset_bone_index(self, context):
+        """Update the preset_bone_index when the enum selection changes"""
+        if self.preset_bone_selection == 'NONE':
+            self.preset_bone_index = -1
+        else:
+            self.preset_bone_index = int(self.preset_bone_selection)
+
 def fill_armature_swing_bones(context):
     ssd: SUB_PG_sub_swing_data = context.object.data.sub_swing_data
     ssd.armature_swing_bones.clear()
@@ -163,7 +273,185 @@ class SUB_OP_swing_bone_chain_add(Operator):
             chain_collision_collection.children.link(swing_bone_collision_collection)
         sub_swing_data.active_swing_bone_chain_index = len(sub_swing_data.swing_bone_chains)-1
 
+        # Save hashes to ParamLabels.csv
+        bone_names = [bone.name for bone in bones_in_chain]
+        save_swing_bone_chain_hashes(new_chain.name, new_chain.start_bone_name, new_chain.end_bone_name, bone_names)
+        self.report({'INFO'}, f"Created swing bone chain '{new_chain.name}' and saved hashes to ParamLabels.csv")
+
         return {'FINISHED'}
+
+class SUB_OP_swing_bone_chain_auto_detect(Operator):
+    bl_idname = 'sub.swing_bone_chain_auto_detect'
+    bl_label = 'Auto-Detect Swing Bone Chains'
+    bl_description = 'Automatically detect and add all valid swing bone chains from the armature'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        if not context.object:
+            return False
+        return context.object.type == 'ARMATURE'
+
+    def execute(self, context):
+        sub_swing_data: SUB_PG_sub_swing_data = context.object.data.sub_swing_data
+        arma_data: bpy.types.Armature = context.object.data
+        
+        detected_chains = []
+        chains_added = 0
+        chains_skipped = 0
+        
+        # Find all potential start bones (S_ bones that aren't already in chains and don't have S_ parents)
+        potential_start_bones = []
+        for bone in arma_data.bones:
+            if not bone.name.startswith('S_') or bone.name.endswith('_null'):
+                continue
+                
+            # Skip if already in a chain
+            if bone.sub_swing_blender_bone_data.swing_bone_chain_index != -1:
+                continue
+                
+            # Check if this bone has a parent that's also an S_ bone (not a root)
+            is_chain_start = True
+            if bone.parent:
+                if bone.parent.name.startswith('S_') and not bone.parent.name.endswith('_null'):
+                    is_chain_start = False
+            
+            if is_chain_start:
+                potential_start_bones.append(bone)
+        
+        # For each potential start bone, try to detect a complete chain
+        for start_bone in potential_start_bones:
+            chain_info = self.detect_chain_from_start_bone(start_bone, arma_data)
+            if chain_info:
+                detected_chains.append(chain_info)
+        
+        # Create chains for all detected valid chains
+        for chain_info in detected_chains:
+            start_bone, end_bone, bones_in_chain = chain_info
+            
+            # Double-check that none of the bones are already in a chain
+            bones_already_used = False
+            for bone in bones_in_chain:
+                if bone.sub_swing_blender_bone_data.swing_bone_chain_index != -1:
+                    bones_already_used = True
+                    break
+            
+            if bones_already_used:
+                chains_skipped += 1
+                continue
+            
+            # Create the chain using the same logic as manual creation
+            try:
+                new_chain: SUB_PG_swing_bone_chain = sub_swing_data.swing_bone_chains.add()
+                new_chain.name = start_bone.name[2:].lower()  # Remove 'S_' prefix
+                new_chain.start_bone_name = start_bone.name
+                new_chain.end_bone_name = end_bone.name
+                new_chain_index = sub_swing_data.swing_bone_chains.find(new_chain.name)
+
+                # Create collections
+                master_collection: Collection = get_swing_mesh_master_collection(context, context.object)
+                master_collection_props: SUB_PG_sub_swing_master_collection_props = master_collection.sub_swing_collection_props
+                chain_collection = new_swing_collection(new_chain.name)
+                chain_swing_bones_collection = new_swing_collection(f'{new_chain.name} swing bones')
+                chain_collision_collection = new_swing_collection(f'{new_chain.name} collisions')
+                master_collection_props.swing_chains_collection.children.link(chain_collection)
+                chain_collection.children.link(chain_swing_bones_collection)
+                chain_collection.children.link(chain_collision_collection)
+
+                # Add swing bones to the chain
+                for bone_index, blender_bone in enumerate(bones_in_chain):
+                    new_swing_bone: SUB_PG_swing_bone = new_chain.swing_bones.add()
+                    new_swing_bone.name = blender_bone.name
+                    sub_blender_bone_data: SUB_PG_blender_bone_data = blender_bone.sub_swing_blender_bone_data
+                    sub_blender_bone_data.swing_bone_chain_index = new_chain_index
+                    sub_blender_bone_data.swing_bone_index = bone_index
+                    
+                    # Create collision mesh
+                    cap = create_meshes.make_capsule_object(
+                        new_swing_bone.name,
+                        new_swing_bone.collision_size[0],
+                        new_swing_bone.collision_size[1],
+                        (0,0,0),
+                        (0,0,0),
+                        blender_bone,
+                        blender_bone.children[0],
+                    )
+                    new_swing_bone.blender_object = cap
+                    parent_swing_bone_collision(context.object, cap, new_chain_index, bone_index)
+                    chain_swing_bones_collection.objects.link(cap)
+                    swing_bone_collision_collection = new_swing_collection(f'{new_chain.name} {new_swing_bone.name} collisions')
+                    chain_collision_collection.children.link(swing_bone_collision_collection)
+                
+                # Save hashes to ParamLabels.csv for this chain
+                bone_names = [bone.name for bone in bones_in_chain]
+                save_swing_bone_chain_hashes(new_chain.name, new_chain.start_bone_name, new_chain.end_bone_name, bone_names)
+                
+                chains_added += 1
+                
+            except Exception as e:
+                self.report({'WARNING'}, f"Failed to create chain starting from {start_bone.name}: {str(e)}")
+                chains_skipped += 1
+        
+        # Set active chain to the last added one
+        if chains_added > 0:
+            sub_swing_data.active_swing_bone_chain_index = len(sub_swing_data.swing_bone_chains) - 1
+        
+        # Report results
+        if chains_added > 0:
+            self.report({'INFO'}, f"Successfully detected and added {chains_added} swing bone chain(s). {chains_skipped} skipped.")
+        else:
+            self.report({'INFO'}, "No new swing bone chains detected.")
+        
+        return {'FINISHED'}
+    
+    def detect_chain_from_start_bone(self, start_bone: bpy.types.Bone, arma_data: bpy.types.Armature):
+        """
+        Detect a complete swing bone chain starting from the given bone.
+        Returns (start_bone, end_bone, bones_in_chain) if valid, None otherwise.
+        """
+        # Check if the chain is linear (each bone has only one child)
+        is_valid_chain, problematic_bone = is_one_child_only_chain(start_bone)
+        if not is_valid_chain:
+            return None
+        
+        # Find the end bone by following the chain
+        current_bone = start_bone
+        bones_in_chain = [start_bone]
+        
+        # Follow the chain until we find a valid end bone
+        while current_bone.children:
+            if len(current_bone.children) != 1:
+                return None  # Invalid chain structure
+            
+            child_bone = current_bone.children[0]
+            
+            # Check if this child is a valid end bone (has a _null child or no children)
+            if child_bone.name.startswith('S_'):
+                if child_bone.name.endswith('_null'):
+                    # Don't include the _null bone in the chain, but it's a valid end marker
+                    end_bone = current_bone
+                    break
+                else:
+                    # Continue the chain
+                    bones_in_chain.append(child_bone)
+                    current_bone = child_bone
+            else:
+                # Non-S_ bone found - current_bone is the end
+                end_bone = current_bone
+                break
+        else:
+            # No children found - current_bone is the end
+            end_bone = current_bone
+        
+        # Validate that we have at least one bone and a valid end
+        if len(bones_in_chain) == 0:
+            return None
+        
+        # Check if the end bone is valid (has a child - either _null or non-S_)
+        if not is_end_bone_valid(end_bone):
+            return None
+        
+        return (start_bone, end_bone, bones_in_chain)
 
 class SUB_OP_swing_bone_chain_remove(Operator):
     bl_idname = 'sub.swing_bone_chain_remove'
@@ -492,6 +780,11 @@ class SUB_OP_swing_data_sphere_add(Operator):
 
         sub_swing_data.active_sphere_index = new_sphere_index
 
+        # Save collision name hash to ParamLabels.csv
+        add_hash_to_param_labels(new_sphere.name, new_sphere.name)
+        # Also save the bone name hash (lowercase as used in PRC)
+        add_hash_to_param_labels(new_sphere.bone.lower(), new_sphere.bone.lower())
+
         return {'FINISHED'}
 
 def remove_active_collision_from_collection(collision_type: str, sub_swing_data: SUB_PG_sub_swing_data):
@@ -653,6 +946,12 @@ class SUB_OP_swing_data_oval_add(Operator):
 
         sub_swing_data.active_oval_index = new_oval_index
 
+        # Save collision name hash to ParamLabels.csv
+        add_hash_to_param_labels(new_oval.name, new_oval.name)
+        # Also save the bone name hashes (lowercase as used in PRC)
+        add_hash_to_param_labels(new_oval.start_bone_name.lower(), new_oval.start_bone_name.lower())
+        add_hash_to_param_labels(new_oval.end_bone_name.lower(), new_oval.end_bone_name.lower())
+
         return {'FINISHED'}
 
 
@@ -759,6 +1058,11 @@ class SUB_OP_swing_data_ellipsoid_add(Operator):
 
         sub_swing_data.active_ellipsoid_index = new_ellipsoid_index
 
+        # Save collision name hash to ParamLabels.csv
+        add_hash_to_param_labels(new_ellipsoid.name, new_ellipsoid.name)
+        # Also save the bone name hash (lowercase as used in PRC)
+        add_hash_to_param_labels(new_ellipsoid.bone_name.lower(), new_ellipsoid.bone_name.lower())
+
         return {'FINISHED'}
 
 class SUB_OP_swing_data_ellipsoid_remove(Operator):
@@ -853,12 +1157,12 @@ class SUB_OP_swing_data_capsule_add(Operator):
         new_capsule.end_radius      = self.end_radius
         new_capsule.blender_object = create_meshes.make_capsule_object(
             name = new_capsule.name,
-            start_radius = new_capsule.start_radius,
-            end_radius = new_capsule.end_radius,
-            start_offset = new_capsule.start_offset,
-            end_offset = new_capsule.end_offset,
-            start_bone = arma_data.bones.get(self.start_bone_name),
-            end_bone = arma_data.bones.get(self.end_bone_name))
+            start_radius=new_capsule.start_radius,
+            end_radius=new_capsule.end_radius,
+            start_offset=new_capsule.start_offset,
+            end_offset=new_capsule.end_offset,
+            start_bone=arma_data.bones.get(self.start_bone_name),
+            end_bone=arma_data.bones.get(self.end_bone_name))
         
         new_capsule_index = sub_swing_data.capsules.find(new_capsule.name)
 
@@ -875,6 +1179,12 @@ class SUB_OP_swing_data_capsule_add(Operator):
         master_collection_props.capsules_collection.objects.link(new_capsule.blender_object)
 
         sub_swing_data.active_capsule_index = new_capsule_index
+        
+        # Save collision name hash to ParamLabels.csv
+        add_hash_to_param_labels(new_capsule.name, new_capsule.name)
+        # Also save the bone name hashes (lowercase as used in PRC)
+        add_hash_to_param_labels(new_capsule.start_bone_name.lower(), new_capsule.start_bone_name.lower())
+        add_hash_to_param_labels(new_capsule.end_bone_name.lower(), new_capsule.end_bone_name.lower())
         
         return {'FINISHED'}
 
@@ -985,6 +1295,11 @@ class SUB_OP_swing_data_plane_add(Operator):
 
         sub_swing_data.active_plane_index = new_plane_index
 
+        # Save collision name hash to ParamLabels.csv
+        add_hash_to_param_labels(new_plane.name, new_plane.name)
+        # Also save the bone name hash (lowercase as used in PRC)
+        add_hash_to_param_labels(new_plane.bone_name.lower(), new_plane.bone_name.lower())
+
         return {'FINISHED'}
 
 class SUB_OP_swing_data_plane_remove(Operator):
@@ -1084,6 +1399,10 @@ class SUB_OP_swing_data_connection_add(Operator):
 
         sub_swing_data.active_connection_index = new_connection_index
 
+        # Save bone name hashes to ParamLabels.csv (lowercase as used in PRC)
+        add_hash_to_param_labels(new_connection.start_bone_name.lower(), new_connection.start_bone_name.lower())
+        add_hash_to_param_labels(new_connection.end_bone_name.lower(), new_connection.end_bone_name.lower())
+
         return {'FINISHED'}
 
 class SUB_OP_swing_data_connection_remove(Operator):
@@ -1132,14 +1451,50 @@ class SUB_OP_swing_import(Operator):
         return context.object.type == 'ARMATURE'
 
     def invoke(self, context, _event):
-        self.filepath = ''
+        ssp = context.scene.sub_scene_properties
+        
+        # First priority: Use the last swing directory if available
+        if ssp.last_swing_directory:
+            import os
+            self.filepath = os.path.join(ssp.last_swing_directory, 'swing.prc')
+        # Second priority: Try to derive motion path from last imported model path
+        elif ssp.last_imported_model_path:
+            import os
+            from pathlib import Path
+            
+            try:
+                model_path = Path(ssp.last_imported_model_path)
+                # Convert model path to motion path by replacing '/model/' with '/motion/'
+                model_path_str = str(model_path)
+                if '/model/' in model_path_str or '\\model\\' in model_path_str:
+                    # Handle both forward and backward slashes
+                    motion_path_str = model_path_str.replace('/model/', '/motion/').replace('\\model\\', '\\motion\\')
+                    motion_path = Path(motion_path_str)
+                    
+                    if motion_path.exists():
+                        self.filepath = str(motion_path / 'swing.prc')
+                        self.report({'INFO'}, f"Auto-navigated to motion folder: {motion_path}")
+                    else:
+                        self.filepath = 'swing.prc'
+                        self.report({'WARNING'}, f"Motion folder not found: {motion_path}")
+                else:
+                    self.filepath = 'swing.prc'
+            except Exception as e:
+                self.filepath = 'swing.prc'
+                self.report({'WARNING'}, f"Could not derive motion path: {str(e)}")
+        else:
+            self.filepath = 'swing.prc'
+            
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
     def execute(self, context):
+        # Save the directory to the scene property
+        import os
+        ssp = context.scene.sub_scene_properties
+        ssp.last_swing_directory = os.path.dirname(self.filepath)
+        
         swing_prc_import(self, context, self.filepath)
-        #if self.rename_uncracked_things:
-        #    rename_uncracked_hashes(self, context)
         arma_obj = context.object
         collection = get_swing_mesh_master_collection(context, arma_obj)
         setup_bone_meshes(self, context, collection)
@@ -1157,8 +1512,71 @@ def struct_get_val(param_struct, input):
     return r.value if r is not None else None
 
 def swing_prc_import(operator: Operator, context: Context, filepath: str):
-    arma_data: bpy.types.Armature = context.object.data
+    arma_obj: bpy.types.Object = context.object
+    arma_data: bpy.types.Armature = arma_obj.data
     ssd: SUB_PG_sub_swing_data = arma_data.sub_swing_data
+    
+    # Clear existing swing data & Blender Objects before importing
+    master_collection = get_swing_mesh_master_collection(context, arma_obj)
+    if master_collection:
+        # Delete child objects from collections first
+        collections_to_clear = [
+            master_collection.sub_swing_collection_props.spheres_collection,
+            master_collection.sub_swing_collection_props.ovals_collection,
+            master_collection.sub_swing_collection_props.ellipsoids_collection,
+            master_collection.sub_swing_collection_props.capsules_collection,
+            master_collection.sub_swing_collection_props.planes_collection,
+            master_collection.sub_swing_collection_props.connections_collection,
+        ]
+        swing_chains_collection = master_collection.sub_swing_collection_props.swing_chains_collection
+        if swing_chains_collection:
+            collections_to_clear.append(swing_chains_collection)
+            for chain_coll in swing_chains_collection.children:
+                collections_to_clear.append(chain_coll)
+                for bone_coll_parent in chain_coll.children: # e.g., "chain_name swing bones", "chain_name collisions"
+                    collections_to_clear.append(bone_coll_parent)
+                    for bone_coll in bone_coll_parent.children: # e.g., individual bone collision collections
+                        collections_to_clear.append(bone_coll)
+        
+        for coll in collections_to_clear:
+            if coll: # Check if the collection reference exists
+                for obj in list(coll.objects): # Iterate over a copy for safe removal
+                    bpy.data.objects.remove(obj, do_unlink=True)
+        
+        # Delete the collections themselves after clearing objects
+        # Child collections must be removed before parent collections
+        if swing_chains_collection:
+            for chain_coll in list(swing_chains_collection.children): # Iterate over a copy
+                 for bone_coll_parent in list(chain_coll.children):
+                     for bone_coll in list(bone_coll_parent.children):
+                         bpy.data.collections.remove(bone_coll)
+                     bpy.data.collections.remove(bone_coll_parent)
+                 bpy.data.collections.remove(chain_coll)
+            bpy.data.collections.remove(swing_chains_collection)
+
+        collision_shapes_coll = master_collection.sub_swing_collection_props.collision_shapes_collection
+        if collision_shapes_coll:
+            for coll in list(collision_shapes_coll.children): # Iterate over a copy
+                bpy.data.collections.remove(coll)
+            bpy.data.collections.remove(collision_shapes_coll)
+        
+        # Finally, remove the master collection itself
+        bpy.data.collections.remove(master_collection)
+
+    # Clear Property Group Data
+    ssd.spheres.clear()
+    ssd.ovals.clear()
+    ssd.ellipsoids.clear()
+    ssd.capsules.clear()
+    ssd.planes.clear()
+    ssd.connections.clear()
+    ssd.swing_bone_chains.clear()
+    
+    # Reset bone swing metadata
+    for bone in arma_data.bones:
+        bone.sub_swing_blender_bone_data.swing_bone_chain_index = -1
+        bone.sub_swing_blender_bone_data.swing_bone_index = -1
+    
     prc_root = pyprc.param(filepath)
     labels_path = (Path(__file__).parent.parent.parent / 'dependencies' / 'pyprc' / 'ParamLabels.csv').resolve()
     pyprc.hash.load_labels(str(labels_path))
@@ -1715,11 +2133,22 @@ class SUB_OP_swing_export(Operator):
         return len(ssd.swing_bone_chains) > 0
 
     def invoke(self, context, _event):
-        self.filepath = ''
+        ssp = context.scene.sub_scene_properties
+        # Use the last directory if available
+        if ssp.last_swing_directory:
+            import os
+            self.filepath = os.path.join(ssp.last_swing_directory, 'swing.prc')
+        else:
+            self.filepath = 'swing.prc'
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
     def execute(self, context):
+        # Save the directory to the scene property
+        import os
+        ssp = context.scene.sub_scene_properties
+        ssp.last_swing_directory = os.path.dirname(self.filepath)
+        
         swing_prc_export(self, context, self.filepath)
         return {'FINISHED'}
 
@@ -2050,5 +2479,684 @@ def swing_prc_export(operator: Operator, context: Context, filepath: str):
                 swing_bone_collision_list += PrcHash40(c.name)
             prc_root += swing_bone_collision_list
 
+    # Save all hashes used in the export to ParamLabels.csv
+    operator.report({'INFO'}, "Saving hashes to ParamLabels.csv...")
+    
+    # Save swing bone chain hashes
+    for swing_bone_chain in ssd.swing_bone_chains:
+        # Chain name
+        add_hash_to_param_labels(swing_bone_chain.name, swing_bone_chain.name)
+        # Start and end bone names (lowercase as used in PRC)
+        add_hash_to_param_labels(swing_bone_chain.start_bone_name.lower(), swing_bone_chain.start_bone_name.lower())
+        add_hash_to_param_labels(swing_bone_chain.end_bone_name.lower(), swing_bone_chain.end_bone_name.lower())
+        
+        # Individual bone names and collision list hashes
+        for swing_bone in swing_bone_chain.swing_bones:
+            bone_lower = swing_bone.name.lower()
+            add_hash_to_param_labels(bone_lower, bone_lower)
+            # Collision list hash (bone_name + "col")
+            collision_hash = bone_lower + "col"
+            add_hash_to_param_labels(collision_hash, collision_hash)
+    
+    # Save collision hashes
+    for sphere in ssd.spheres:
+        add_hash_to_param_labels(sphere.name, sphere.name)
+        add_hash_to_param_labels(sphere.bone.lower(), sphere.bone.lower())
+    
+    for oval in ssd.ovals:
+        add_hash_to_param_labels(oval.name, oval.name)
+        add_hash_to_param_labels(oval.start_bone_name.lower(), oval.start_bone_name.lower())
+        add_hash_to_param_labels(oval.end_bone_name.lower(), oval.end_bone_name.lower())
+    
+    for ellipsoid in ssd.ellipsoids:
+        add_hash_to_param_labels(ellipsoid.name, ellipsoid.name)
+        add_hash_to_param_labels(ellipsoid.bone_name.lower(), ellipsoid.bone_name.lower())
+    
+    for capsule in ssd.capsules:
+        add_hash_to_param_labels(capsule.name, capsule.name)
+        add_hash_to_param_labels(capsule.start_bone_name.lower(), capsule.start_bone_name.lower())
+        add_hash_to_param_labels(capsule.end_bone_name.lower(), capsule.end_bone_name.lower())
+    
+    for plane in ssd.planes:
+        add_hash_to_param_labels(plane.name, plane.name)
+        add_hash_to_param_labels(plane.bone_name.lower(), plane.bone_name.lower())
+    
+    for connection in ssd.connections:
+        add_hash_to_param_labels(connection.start_bone_name.lower(), connection.start_bone_name.lower())
+        add_hash_to_param_labels(connection.end_bone_name.lower(), connection.end_bone_name.lower())
+    
+    # Save standard PRC structure hashes
+    standard_hashes = [
+        'swingbones', 'spheres', 'ovals', 'ellipsoids', 'capsules', 'planes', 'connections',
+        'name', 'start_bonename', 'end_bonename', 'params', 'bonename', 'collisions',
+        'isskirt', 'rotateorder', 'curverotatex', 'airresistance', 'waterresistance',
+        'minanglez', 'maxanglez', 'minangley', 'maxangley', 'collisionsizetip', 'collisionsizeroot',
+        'frictionrate', 'goalstrength', 'inertialmass', 'localgravity', 'fallspeedscale',
+        'groundhit', 'windaffect', 'cx', 'cy', 'cz', 'radius', 'start_offset_x', 'start_offset_y',
+        'start_offset_z', 'end_offset_x', 'end_offset_y', 'end_offset_z', 'rx', 'ry', 'rz',
+        'sx', 'sy', 'sz', 'start_radius', 'end_radius', 'nx', 'ny', 'nz', 'distance', 'length'
+    ]
+    
+    for hash_label in standard_hashes:
+        add_hash_to_param_labels(hash_label, hash_label)
+
     prc_root.save(filepath)
+
+class SUB_OT_swing_preset_add(bpy.types.Operator):
+    """Save the physical property values of the current swing bone as a preset"""
+    bl_idname = "sub.swing_preset_add"
+    bl_label = "Add Swing Values Preset"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    preset_name: bpy.props.StringProperty(
+        name="Name",
+        description="Name of the preset to add",
+        default="New Preset"
+    )
+    
+    @classmethod
+    def poll(cls, context):
+        if not context.object or context.object.type != 'ARMATURE':
+            return False
+        sub_swing_data = context.object.data.sub_swing_data
+        if len(sub_swing_data.swing_bone_chains) == 0:
+            return False
+        active_chain = sub_swing_data.swing_bone_chains[sub_swing_data.active_swing_bone_chain_index]
+        return len(active_chain.swing_bones) > 0
+    
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+    
+    def execute(self, context):
+        from . import preset_handler
+        
+        sub_swing_data = context.object.data.sub_swing_data
+        
+        # Create presets directory if it doesn't exist
+        presets_dir = preset_handler.get_swing_presets_dir()
+        os.makedirs(presets_dir, exist_ok=True)
+        
+        # Sanitize filename
+        filename = self.preset_name.replace(" ", "_").lower()
+        if not filename.endswith('.py'):
+            filename += '.py'
+            
+        # Full path to the preset file
+        filepath = os.path.join(presets_dir, filename)
+        
+        # Get the active swing bone
+        active_chain = sub_swing_data.swing_bone_chains[sub_swing_data.active_swing_bone_chain_index]
+        active_bone = active_chain.swing_bones[active_chain.active_swing_bone_index]
+        
+        # Generate the preset Python code - ONLY focus on the physical properties
+        with open(filepath, 'w') as f:
+            f.write('import bpy\n\n')
+            f.write('# This preset contains physical property values for swing bones\n')
+            f.write('# Apply this to any active swing bone to use these values\n\n')
+            
+            f.write('def apply_preset(swing_bone):\n')
+            f.write(f'    swing_bone.air_resistance = {active_bone.air_resistance}\n')
+            f.write(f'    swing_bone.water_resistance = {active_bone.water_resistance}\n')
+            f.write(f'    swing_bone.angle_z = ({active_bone.angle_z[0]}, {active_bone.angle_z[1]})\n')
+            f.write(f'    swing_bone.angle_y = ({active_bone.angle_y[0]}, {active_bone.angle_y[1]})\n')
+            f.write(f'    swing_bone.collision_size = ({active_bone.collision_size[0]}, {active_bone.collision_size[1]})\n')
+            f.write(f'    swing_bone.friction_rate = {active_bone.friction_rate}\n')
+            f.write(f'    swing_bone.goal_strength = {active_bone.goal_strength}\n')
+            f.write(f'    swing_bone.inertial_mass = {active_bone.inertial_mass}\n')
+            f.write(f'    swing_bone.local_gravity = {active_bone.local_gravity}\n')
+            f.write(f'    swing_bone.fall_speed_scale = {active_bone.fall_speed_scale}\n')
+            f.write(f'    swing_bone.ground_hit = {active_bone.ground_hit}\n')
+            f.write(f'    swing_bone.wind_affect = {active_bone.wind_affect}\n')
+            
+            # Add code that runs when the preset is loaded
+            f.write('\n# Get the active swing bone when preset is loaded\n')
+            f.write('swing_data = bpy.context.object.data.sub_swing_data\n')
+            f.write('active_chain = swing_data.swing_bone_chains[swing_data.active_swing_bone_chain_index]\n')
+            f.write('active_bone = active_chain.swing_bones[active_chain.active_swing_bone_index]\n')
+            f.write('apply_preset(active_bone)\n')
+        
+        # Update the UI to show the new preset immediately
+        from . import preset_handler
+        preset_handler.update_enum_items(context)
+        context.scene.sub_swing_preset = os.path.splitext(filename)[0]
+        
+        self.report({'INFO'}, f"Saved preset: {filename}")
+        return {'FINISHED'}
+
+class SUB_OT_swing_preset_remove(bpy.types.Operator):
+    """Delete the selected preset"""
+    bl_idname = "sub.swing_preset_remove"
+    bl_label = "Remove Swing Values Preset"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    @classmethod
+    def poll(cls, context):
+        return context.scene.sub_swing_preset and context.scene.sub_swing_preset != '--'
+    
+    def execute(self, context):
+        from . import preset_handler
+        preset = context.scene.sub_swing_preset
+        
+        if preset == '--':
+            self.report({'ERROR'}, "No preset selected")
+            return {'CANCELLED'}
+        
+        # Add .py extension if needed
+        if not preset.endswith('.py'):
+            preset += '.py'
+        
+        # Get the full path to the preset file
+        presets_dir = preset_handler.get_swing_presets_dir()
+        filepath = os.path.join(presets_dir, preset)
+        
+        # Delete the file
+        if os.path.exists(filepath):
+            os.remove(filepath)
+            self.report({'INFO'}, f"Deleted preset: {preset}")
+            
+            # Reset the current selection
+            context.scene.sub_swing_preset = '--'
+            preset_handler.update_enum_items(context)
+            
+            return {'FINISHED'}
+        else:
+            self.report({'ERROR'}, f"Preset file not found: {filepath}")
+            return {'CANCELLED'}
+
+class SUB_OT_swing_preset_apply(bpy.types.Operator):
+    """Apply physical property values from the selected preset to the current swing bone"""
+    bl_idname = "sub.swing_preset_apply"
+    bl_label = "Apply Swing Values Preset"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    @classmethod
+    def poll(cls, context):
+        if not context.object or context.object.type != 'ARMATURE':
+            return False
+        sub_swing_data = context.object.data.sub_swing_data
+        if len(sub_swing_data.swing_bone_chains) == 0:
+            return False
+        active_chain = sub_swing_data.swing_bone_chains[sub_swing_data.active_swing_bone_chain_index]
+        return (len(active_chain.swing_bones) > 0 and 
+                context.scene.sub_swing_preset and 
+                context.scene.sub_swing_preset != '--')
+    
+    def execute(self, context):
+        from . import preset_handler
+        
+        preset = context.scene.sub_swing_preset
+        if preset == '--':
+            self.report({'ERROR'}, "No preset selected")
+            return {'CANCELLED'}
+        
+        if preset_handler.set_preset(preset, context):
+            self.report({'INFO'}, f"Applied preset: {preset}")
+            return {'FINISHED'}
+        else:
+            self.report({'ERROR'}, f"Failed to apply preset: {preset}")
+            return {'CANCELLED'}
+
+def get_preset_names():
+    """Helper function to get preset names for enum property"""
+    from . import preset_handler
+    
+    # Get the presets directory
+    presets_dir = preset_handler.get_swing_presets_dir()
+    
+    # Check if directory exists
+    if not os.path.exists(presets_dir):
+        return []
+    
+    # Return list of Python files without extension
+    return [os.path.splitext(f)[0] for f in os.listdir(presets_dir) if f.endswith('.py')]
+
+
+class SUB_OT_swing_chain_preset_add(bpy.types.Operator):
+    """Save the physical property values of the current swing bone chain as a preset"""
+    bl_idname = "sub.swing_chain_preset_add"
+    bl_label = "Add Swing Chain Preset"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    preset_name: bpy.props.StringProperty(
+        name="Name",
+        description="Name of the chain preset to add",
+        default="New Chain Preset"
+    )
+    
+    @classmethod
+    def poll(cls, context):
+        if not context.object or context.object.type != 'ARMATURE':
+            return False
+        sub_swing_data = context.object.data.sub_swing_data
+        if len(sub_swing_data.swing_bone_chains) == 0:
+            return False
+        active_chain = sub_swing_data.swing_bone_chains[sub_swing_data.active_swing_bone_chain_index]
+        return len(active_chain.swing_bones) > 0
+    
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+    
+    def execute(self, context):
+        from . import preset_handler
+        
+        sub_swing_data = context.object.data.sub_swing_data
+        
+        # Create chain presets directory if it doesn't exist
+        presets_dir = preset_handler.get_swing_chain_presets_dir()
+        os.makedirs(presets_dir, exist_ok=True)
+        
+        # Sanitize filename
+        filename = self.preset_name.replace(" ", "_").lower()
+        if not filename.endswith('.py'):
+            filename += '.py'
+            
+        # Full path to the preset file
+        filepath = os.path.join(presets_dir, filename)
+        
+        # Get the active swing bone chain
+        active_chain = sub_swing_data.swing_bone_chains[sub_swing_data.active_swing_bone_chain_index]
+        
+        # Generate the preset Python code for the entire chain
+        with open(filepath, 'w') as f:
+            f.write('import bpy\n\n')
+            f.write('# This preset contains chain settings and all bone values for a swing bone chain\n')
+            f.write('# Apply this to any active swing bone chain to use these values\n\n')
+            
+            # Store chain info
+            f.write('# Chain configuration\n')
+            f.write('CHAIN_CONFIG = {\n')
+            f.write(f'    "is_skirt": {active_chain.is_skirt},\n')
+            f.write(f'    "rotate_order": {active_chain.rotate_order},\n')
+            f.write(f'    "curve_rotate_x": {active_chain.curve_rotate_x},\n')
+            f.write(f'    "has_unk_8": {active_chain.has_unk_8},\n')
+            f.write(f'    "unk_8": {active_chain.unk_8}\n')
+            f.write('}\n\n')
+            
+            # Store bone values for each bone in the chain
+            f.write('# Bone values for each bone in the chain\n')
+            f.write('BONE_VALUES = [\n')
+            for i, bone in enumerate(active_chain.swing_bones):
+                f.write('    {\n')
+                f.write(f'        "air_resistance": {bone.air_resistance},\n')
+                f.write(f'        "water_resistance": {bone.water_resistance},\n')
+                f.write(f'        "angle_z": ({bone.angle_z[0]}, {bone.angle_z[1]}),\n')
+                f.write(f'        "angle_y": ({bone.angle_y[0]}, {bone.angle_y[1]}),\n')
+                f.write(f'        "collision_size": ({bone.collision_size[0]}, {bone.collision_size[1]}),\n')
+                f.write(f'        "friction_rate": {bone.friction_rate},\n')
+                f.write(f'        "goal_strength": {bone.goal_strength},\n')
+                f.write(f'        "inertial_mass": {bone.inertial_mass},\n')
+                f.write(f'        "local_gravity": {bone.local_gravity},\n')
+                f.write(f'        "fall_speed_scale": {bone.fall_speed_scale},\n')
+                f.write(f'        "ground_hit": {bone.ground_hit},\n')
+                f.write(f'        "wind_affect": {bone.wind_affect}\n')
+                f.write('    }')
+                if i < len(active_chain.swing_bones) - 1:
+                    f.write(',')
+                f.write('\n')
+            f.write(']\n\n')
+            
+            # Add function to apply chain configuration
+            f.write('def apply_chain_config(chain):\n')
+            f.write('    """Apply chain configuration to a swing bone chain"""\n')
+            f.write('    chain.is_skirt = CHAIN_CONFIG["is_skirt"]\n')
+            f.write('    chain.rotate_order = CHAIN_CONFIG["rotate_order"]\n')
+            f.write('    chain.curve_rotate_x = CHAIN_CONFIG["curve_rotate_x"]\n')
+            f.write('    chain.has_unk_8 = CHAIN_CONFIG["has_unk_8"]\n')
+            f.write('    chain.unk_8 = CHAIN_CONFIG["unk_8"]\n\n')
+            
+            # Add function to apply bone values
+            f.write('def apply_bone_values(bone, values):\n')
+            f.write('    """Apply bone values to a swing bone"""\n')
+            f.write('    bone.air_resistance = values["air_resistance"]\n')
+            f.write('    bone.water_resistance = values["water_resistance"]\n')
+            f.write('    bone.angle_z = values["angle_z"]\n')
+            f.write('    bone.angle_y = values["angle_y"]\n')
+            f.write('    bone.collision_size = values["collision_size"]\n')
+            f.write('    bone.friction_rate = values["friction_rate"]\n')
+            f.write('    bone.goal_strength = values["goal_strength"]\n')
+            f.write('    bone.inertial_mass = values["inertial_mass"]\n')
+            f.write('    bone.local_gravity = values["local_gravity"]\n')
+            f.write('    bone.fall_speed_scale = values["fall_speed_scale"]\n')
+            f.write('    bone.ground_hit = values["ground_hit"]\n')
+            f.write('    bone.wind_affect = values["wind_affect"]\n\n')
+            
+            # Add function to apply preset with bone count checking
+            f.write('def apply_chain_preset():\n')
+            f.write('    """Apply the chain preset to the active swing bone chain"""\n')
+            f.write('    swing_data = bpy.context.object.data.sub_swing_data\n')
+            f.write('    active_chain = swing_data.swing_bone_chains[swing_data.active_swing_bone_chain_index]\n')
+            f.write('    \n')
+            f.write('    # Apply chain configuration\n')
+            f.write('    apply_chain_config(active_chain)\n')
+            f.write('    \n')
+            f.write('    # Check bone count and handle mismatches\n')
+            f.write('    preset_bone_count = len(BONE_VALUES)\n')
+            f.write('    target_bone_count = len(active_chain.swing_bones)\n')
+            f.write('    \n')
+            f.write('    if preset_bone_count == target_bone_count:\n')
+            f.write('        # Perfect match - apply directly\n')
+            f.write('        for i, bone_values in enumerate(BONE_VALUES):\n')
+            f.write('            apply_bone_values(active_chain.swing_bones[i], bone_values)\n')
+            f.write('    else:\n')
+            f.write('        # Bone count mismatch - trigger dialog\n')
+            f.write('        bpy.ops.sub.swing_chain_preset_apply_mismatch(\n')
+            f.write('            "INVOKE_DEFAULT",\n')
+            f.write(f'            preset_name="{filename[:-3]}"\n')  # Remove .py extension
+            f.write('        )\n\n')
+            
+            # Add code that runs when the preset is loaded
+            f.write('# Apply the chain preset when this file is executed\n')
+            f.write('apply_chain_preset()\n')
+        
+        # Update the UI to show the new preset immediately
+        from . import preset_handler
+        preset_handler.update_chain_enum_items(context)
+        context.scene.sub_swing_chain_preset = os.path.splitext(filename)[0]
+        
+        self.report({'INFO'}, f"Saved chain preset: {filename}")
+        return {'FINISHED'}
+
+
+class SUB_OT_swing_chain_preset_remove(bpy.types.Operator):
+    """Delete the selected chain preset"""
+    bl_idname = "sub.swing_chain_preset_remove"
+    bl_label = "Remove Swing Chain Preset"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    @classmethod
+    def poll(cls, context):
+        return context.scene.sub_swing_chain_preset and context.scene.sub_swing_chain_preset != '--'
+    
+    def execute(self, context):
+        from . import preset_handler
+        preset = context.scene.sub_swing_chain_preset
+        
+        if preset == '--':
+            self.report({'ERROR'}, "No chain preset selected")
+            return {'CANCELLED'}
+        
+        # Add .py extension if needed
+        if not preset.endswith('.py'):
+            preset += '.py'
+        
+        # Get the full path to the preset file
+        presets_dir = preset_handler.get_swing_chain_presets_dir()
+        filepath = os.path.join(presets_dir, preset)
+        
+        # Delete the file
+        if os.path.exists(filepath):
+            os.remove(filepath)
+            self.report({'INFO'}, f"Deleted chain preset: {preset}")
+            
+            # Reset the current selection
+            context.scene.sub_swing_chain_preset = '--'
+            preset_handler.update_chain_enum_items(context)
+            
+            return {'FINISHED'}
+        else:
+            self.report({'ERROR'}, f"Chain preset file not found: {filepath}")
+            return {'CANCELLED'}
+
+
+class SUB_OT_swing_chain_preset_apply(bpy.types.Operator):
+    """Apply physical property values from the selected chain preset to the current swing bone chain"""
+    bl_idname = "sub.swing_chain_preset_apply"
+    bl_label = "Apply Swing Chain Preset"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    @classmethod
+    def poll(cls, context):
+        if not context.object or context.object.type != 'ARMATURE':
+            return False
+        sub_swing_data = context.object.data.sub_swing_data
+        if len(sub_swing_data.swing_bone_chains) == 0:
+            return False
+        active_chain = sub_swing_data.swing_bone_chains[sub_swing_data.active_swing_bone_chain_index]
+        return (len(active_chain.swing_bones) > 0 and 
+                context.scene.sub_swing_chain_preset and 
+                context.scene.sub_swing_chain_preset != '--')
+    
+    def execute(self, context):
+        from . import preset_handler
+        
+        preset = context.scene.sub_swing_chain_preset
+        if preset == '--':
+            self.report({'ERROR'}, "No chain preset selected")
+            return {'CANCELLED'}
+        
+        success = preset_handler.set_chain_preset(preset, context)
+        if success:
+            self.report({'INFO'}, f"Applied chain preset: {preset}")
+            return {'FINISHED'}
+        else:
+            # Bone count mismatch - trigger mismatch dialog
+            bpy.ops.sub.swing_chain_preset_apply_mismatch(
+                "INVOKE_DEFAULT",
+                preset_name=preset
+            )
+            return {'FINISHED'}
+
+
+class SUB_OT_swing_chain_preset_apply_mismatch(bpy.types.Operator):
+    """Handle bone count mismatch when applying chain presets with flexible bone mapping"""
+    bl_idname = "sub.swing_chain_preset_apply_mismatch"
+    bl_label = "Apply Chain Preset - Bone Mapping"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    preset_name: bpy.props.StringProperty(name="Preset Name")
+    
+    # Store bone mapping data
+    preset_bone_count: bpy.props.IntProperty(default=0)
+    target_bone_count: bpy.props.IntProperty(default=0)
+    
+    # Collection of bone mappings
+    bone_mappings: bpy.props.CollectionProperty(type=SUB_PG_bone_mapping)
+    
+    def setup_bone_mappings(self, context):
+        """Setup bone mappings based on target bones"""
+        from . import preset_handler
+        
+        preset_data = preset_handler.get_chain_preset_data(self.preset_name)
+        if not preset_data or 'bone_values' not in preset_data:
+            return
+        
+        # Get current chain
+        sub_swing_data = context.object.data.sub_swing_data
+        active_chain = sub_swing_data.swing_bone_chains[sub_swing_data.active_swing_bone_chain_index]
+        
+        # Clear existing mappings
+        self.bone_mappings.clear()
+        
+        # Create mapping for each target bone
+        for i, target_bone in enumerate(active_chain.swing_bones):
+            mapping = self.bone_mappings.add()
+            mapping.target_bone_name = target_bone.name
+            
+            # Set default mapping if possible (map to corresponding preset bone)
+            if i < self.preset_bone_count:
+                mapping.preset_bone_index = i
+                mapping.preset_bone_selection = str(i)
+            else:
+                mapping.preset_bone_index = -1
+                mapping.preset_bone_selection = 'NONE'
+    
+    def invoke(self, context, event):
+        global _active_mismatch_operator
+        _active_mismatch_operator = self
+        
+        from . import preset_handler
+        
+        # Load preset to check bone counts
+        preset_path = os.path.join(preset_handler.get_swing_chain_presets_dir(), self.preset_name + '.py')
+        if not os.path.exists(preset_path):
+            self.report({'ERROR'}, f"Preset file not found: {preset_path}")
+            return {'CANCELLED'}
+        
+        # Load preset data safely
+        preset_data = preset_handler.get_chain_preset_data(self.preset_name)
+        if not preset_data or 'bone_values' not in preset_data:
+            self.report({'ERROR'}, f"Invalid preset or preset not found: {self.preset_name}")
+            return {'CANCELLED'}
+        
+        # Get current chain
+        sub_swing_data = context.object.data.sub_swing_data
+        active_chain = sub_swing_data.swing_bone_chains[sub_swing_data.active_swing_bone_chain_index]
+        
+        self.preset_bone_count = len(preset_data['bone_values'])
+        self.target_bone_count = len(active_chain.swing_bones)
+        
+        # Setup bone mappings
+        self.setup_bone_mappings(context)
+        
+        return context.window_manager.invoke_props_dialog(self, width=400)
+    
+    def draw(self, context):
+        layout = self.layout
+        
+        # Header information - more compact
+        row = layout.row()
+        row.label(text=f"Preset: {self.preset_name}", icon='PRESET')
+        
+        # Bone count information - single line
+        row = layout.row()
+        row.label(text=f"Preset: {self.preset_bone_count} bones", icon='BONE_DATA')
+        row.label(text=f"Target: {self.target_bone_count} bones", icon='ARMATURE_DATA')
+        
+        layout.separator()
+        
+        # Create the mapping list interface - more compact
+        layout.label(text="Bone Mapping:")
+        
+        # Create a scrollable area for many bones
+        col = layout.column()
+        
+        # Each target bone gets its own compact row
+        for i, mapping in enumerate(self.bone_mappings):
+            row = col.row()
+            
+            # Use split to control spacing better
+            split = row.split(factor=0.6)
+            
+            # Left side: Target bone info - compact
+            left = split.row()
+            left.label(text=f"T{i+1}:", icon='ARMATURE_DATA')
+            left.label(text=mapping.target_bone_name[:15] + "..." if len(mapping.target_bone_name) > 15 else mapping.target_bone_name)
+            
+            # Right side: Dropdown - takes remaining space
+            right = split.row()
+            right.prop(mapping, "preset_bone_selection", text="")
+        
+        layout.separator()
+        
+        # Quick action buttons - more compact
+        row = layout.row()
+        row.operator("sub.swing_chain_preset_mapping_auto", text="Auto", icon='AUTO').preset_name = self.preset_name
+        row.operator("sub.swing_chain_preset_mapping_clear", text="Clear", icon='X').preset_name = self.preset_name
+    
+    def execute(self, context):
+        global _active_mismatch_operator
+        
+        from . import preset_handler
+        
+        # Load preset data safely
+        preset_data = preset_handler.get_chain_preset_data(self.preset_name)
+        if not preset_data:
+            self.report({'ERROR'}, f"Failed to load preset: {self.preset_name}")
+            _active_mismatch_operator = None
+            return {'CANCELLED'}
+        
+        # Get current chain
+        sub_swing_data = context.object.data.sub_swing_data
+        active_chain = sub_swing_data.swing_bone_chains[sub_swing_data.active_swing_bone_chain_index]
+        
+        # Apply chain configuration
+        if 'chain_config' in preset_data:
+            chain_config = preset_data['chain_config']
+            active_chain.is_skirt = chain_config["is_skirt"]
+            active_chain.rotate_order = chain_config["rotate_order"]
+            active_chain.curve_rotate_x = chain_config["curve_rotate_x"]
+            active_chain.has_unk_8 = chain_config["has_unk_8"]
+            active_chain.unk_8 = chain_config["unk_8"]
+        
+        # Apply bone values with custom mapping
+        bone_values = preset_data['bone_values']
+        target_bones = active_chain.swing_bones
+        
+        applied_count = 0
+        for i, mapping in enumerate(self.bone_mappings):
+            if i < len(target_bones) and mapping.preset_bone_index >= 0:
+                preset_index = mapping.preset_bone_index
+                if preset_index < len(bone_values):
+                    preset_handler.apply_bone_values_to_bone(target_bones[i], bone_values[preset_index])
+                    applied_count += 1
+        
+        # Clear the global reference
+        _active_mismatch_operator = None
+        
+        self.report({'INFO'}, f"Applied chain preset: {self.preset_name} with {applied_count} bone mappings")
+        return {'FINISHED'}
+    
+    def cancel(self, context):
+        global _active_mismatch_operator
+        _active_mismatch_operator = None
+        return {'CANCELLED'}
+
+
+class SUB_OT_swing_chain_preset_mapping_auto(bpy.types.Operator):
+    """Automatically map preset bones to target bones in order"""
+    bl_idname = "sub.swing_chain_preset_mapping_auto"
+    bl_label = "Auto Map Bones"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    preset_name: bpy.props.StringProperty(name="Preset Name")
+    
+    def execute(self, context):
+        global _active_mismatch_operator
+        
+        # Access the active mismatch operator and auto-map bones
+        if _active_mismatch_operator:
+            min_count = min(_active_mismatch_operator.preset_bone_count, _active_mismatch_operator.target_bone_count)
+            
+            for i in range(len(_active_mismatch_operator.bone_mappings)):
+                if i < min_count:
+                    _active_mismatch_operator.bone_mappings[i].preset_bone_index = i
+                    _active_mismatch_operator.bone_mappings[i].preset_bone_selection = str(i)
+                else:
+                    _active_mismatch_operator.bone_mappings[i].preset_bone_index = -1
+                    _active_mismatch_operator.bone_mappings[i].preset_bone_selection = 'NONE'
+            
+            # Force a redraw of the dialog
+            for area in context.screen.areas:
+                if area.type == 'VIEW_3D':
+                    area.tag_redraw()
+        
+        self.report({'INFO'}, f"Auto-mapped {min_count if _active_mismatch_operator else 0} bones")
+        return {'FINISHED'}
+
+
+class SUB_OT_swing_chain_preset_mapping_clear(bpy.types.Operator):
+    """Clear all bone mappings"""
+    bl_idname = "sub.swing_chain_preset_mapping_clear"
+    bl_label = "Clear All Mappings"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    preset_name: bpy.props.StringProperty(name="Preset Name")
+    
+    def execute(self, context):
+        global _active_mismatch_operator
+        
+        # Access the active mismatch operator and clear all mappings
+        if _active_mismatch_operator:
+            for mapping in _active_mismatch_operator.bone_mappings:
+                mapping.preset_bone_index = -1
+                mapping.preset_bone_selection = 'NONE'
+            
+            # Force a redraw of the dialog
+            for area in context.screen.areas:
+                if area.type == 'VIEW_3D':
+                    area.tag_redraw()
+        
+        self.report({'INFO'}, "Cleared all bone mappings")
+        return {'FINISHED'}
+
 

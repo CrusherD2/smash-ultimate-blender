@@ -1,6 +1,7 @@
+import bpy
 from bpy.types import Panel, Menu
 
-from .operators import SUB_OP_convert_blender_material, SUB_OP_change_render_pass, SUB_OP_create_sub_matl_data_from_shader_label
+from . import operators
 from .sub_matl_data import SUB_PG_sub_matl_data
  
 class MaterialPanel(Panel):
@@ -51,8 +52,13 @@ class SUB_PT_matl_data_master(MaterialPanel):
             row = layout.row()
             row.label(text="You can alternatively choose to convert the existing material to an ultimate material.")
             row = layout.row()
-            row.operator(SUB_OP_convert_blender_material.bl_idname)
+            row.operator_context = 'INVOKE_DEFAULT'
+            row.operator(operators.SUB_OP_convert_blender_material.bl_idname)
             row.scale_y = 2
+            row.scale_x = 2
+            row = layout.row()
+            row.operator(operators.SUB_OP_convert_blender_material_no_textures.bl_idname)
+            row.scale_y = 1.5
             row.scale_x = 2
             return
         box = layout.box()
@@ -252,7 +258,184 @@ class SUB_MT_material_specials(Menu):
     def draw(self, context):
         layout = self.layout
         
-        layout.operator(SUB_OP_change_render_pass.bl_idname, icon="RENDERLAYERS")
-        layout.operator(SUB_OP_create_sub_matl_data_from_shader_label.bl_idname, icon="SHADERFX")
+        layout.operator(operators.SUB_OP_change_render_pass.bl_idname, icon="RENDERLAYERS")
+        layout.operator(operators.SUB_OP_create_sub_matl_data_from_shader_label.bl_idname, icon="SHADERFX")
+
+
+class PG_PT_smash_texture_materials(Panel):
+    bl_label = "Materials"
+    bl_parent_id = "PG_PT_smash_texture"
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_context = 'material'
+    bl_options = {'DEFAULT_CLOSED'}
+    
+    @classmethod
+    def poll(cls, context):
+        material = context.material
+        return material is not None
+    
+    def draw(self, context):
+        layout = self.layout
+        material = context.material
+        
+        # Only display options if we have a material
+        if not material:
+            return
+        
+        # Show material conversion button
+        layout.operator(operators.SUB_OP_convert_blender_material.bl_idname, text="Convert to Smash Ultimate Material")
+        
+        # Add a notice about supported material types
+        box = layout.box()
+        box.label(text="Supported Material Types:")
+        box.label(text="• Principled BSDF")
+        box.label(text="• Fortnite FPv3 Material")
+        
+        # Add Fortnite channel mapping info
+        fortnite_box = layout.box()
+        fortnite_box.label(text="Fortnite Texture Channel Mapping:")
+        row = fortnite_box.row()
+        row.label(text="_M Red = PRM Blue (Ambient Occlusion)")
+        row = fortnite_box.row()
+        row.label(text="_M Blue = PRM Red (Skin/Subsurface)")
+        row = fortnite_box.row()
+        row.label(text="_S Red = PRM Alpha (Specular)")
+        row = fortnite_box.row()
+        row.label(text="_S Green = PRM Green (Roughness)")
+        row = fortnite_box.row()
+        row.label(text="_S Blue = PRM Red (Metal)")
+        row = fortnite_box.row()
+        row.label(text="_D = Diffuse/Color Texture")
+        
+        # Show current material info
+        if hasattr(material, 'sub_matl_data'):
+            # Draw sub material properties
+            sub_material = material.sub_matl_data
+            if sub_material:
+                box = layout.box()
+                box.label(text=f"Shader Label: {sub_material.shader_label}")
+                
+                # Draw texture slots
+                if len(sub_material.textures):
+                    texture_box = layout.box()
+                    texture_box.label(text="Texture Slots:")
+                    
+                    for texture_name, texture in sub_material.textures.items():
+                        row = texture_box.row()
+                        row.label(text=texture_name)
+                        if texture.image:
+                            row.label(text=texture.image.name)
+                        else:
+                            row.label(text="None")
+                
+                # Option to export material
+                layout.operator(operators.SUB_OP_export_material_to_matl.bl_idname, text="Export Material to MATL")
+
+
+class SUB_OP_visualize_texture_mapping(bpy.types.Operator):
+    bl_idname = "smash_ultimate.visualize_texture_mapping"
+    bl_label = "Visualize Texture Channel Mapping"
+    bl_description = "Creates a visualization of how Fortnite texture channels map to the PRM texture"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    @classmethod
+    def poll(cls, context):
+        return context.material is not None
+    
+    def execute(self, context):
+        material = context.material
+        
+        # Check if this is a Fortnite material
+        from ..material.texture.convert_textures import find_fpv3_material_node, extract_fortnite_textures, visualize_texture_channels
+        
+        fpv3_node = find_fpv3_material_node(material)
+        if not fpv3_node:
+            self.report({'ERROR'}, "This is not a Fortnite FPv3 material")
+            return {'CANCELLED'}
+        
+        # Check if this is a skin material
+        is_skin_material = False
+        if hasattr(fpv3_node.inputs.get('Subsurface', None), 'default_value'):
+            is_skin_material = fpv3_node.inputs['Subsurface'].default_value > 0.01
+        elif hasattr(fpv3_node.inputs.get('Subsurface Weight', None), 'default_value'):
+            is_skin_material = fpv3_node.inputs['Subsurface Weight'].default_value > 0.01
+        
+        # Extract textures
+        m_texture, s_texture, d_texture = extract_fortnite_textures(material)
+        
+        if not m_texture and not s_texture:
+            self.report({'ERROR'}, "No Fortnite textures found (_M or _S textures)")
+            return {'CANCELLED'}
+        
+        # Create temp directory if it doesn't exist
+        import tempfile
+        import os
+        temp_dir = os.path.join(tempfile.gettempdir(), "smash_ultimate_blender")
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        # Create visualization
+        viz_path = os.path.join(temp_dir, f"{material.name}_texture_mapping.png")
+        if visualize_texture_channels(m_texture, s_texture, is_skin_material, viz_path):
+            # Open the image in Blender's image editor
+            try:
+                # Create a new image editor area
+                for area in context.screen.areas:
+                    if area.type == 'IMAGE_EDITOR':
+                        # Found an image editor, use it
+                        break
+                else:
+                    # No image editor found, try to create one
+                    self.report({'WARNING'}, f"Visualization saved to {viz_path}, but couldn't find an image editor to display it")
+                    return {'FINISHED'}
+                
+                # Load the image
+                viz_img = bpy.data.images.load(viz_path)
+                
+                # Set it as the active image in the editor
+                area.spaces.active.image = viz_img
+                
+                self.report({'INFO'}, f"Visualization created and displayed")
+            except Exception as e:
+                self.report({'WARNING'}, f"Visualization saved to {viz_path}, but couldn't display it: {e}")
+        else:
+            self.report({'ERROR'}, "Failed to create visualization")
+            return {'CANCELLED'}
+        
+        return {'FINISHED'}
+
+
+# Add the operator to the panel
+def draw_fortnite_tools(self, context):
+    layout = self.layout
+    material = context.material
+    
+    # Check if this might be a Fortnite material
+    if material and material.use_nodes and material.node_tree:
+        for node in material.node_tree.nodes:
+            if node.type == 'GROUP' and ('FPv3' in node.name or 'FPv3' in node.label):
+                box = layout.box()
+                box.label(text="Fortnite Material Tools")
+                
+                # Add texture size settings
+                row = box.row(align=True)
+                row.label(text="Texture Size:")
+                for size in [256, 512, 1024, 2048]:
+                    op = row.operator("sub.set_texture_size", text=str(size))
+                    op.size = size
+                    op.operator_id = "sub.convert_blender_material"
+                
+                row = box.row(align=True)
+                row.operator("smash_ultimate.visualize_texture_mapping", icon='TEXTURE')
+                break
+
+# Add the button to the material panel
+def register():
+    bpy.utils.register_class(SUB_OP_visualize_texture_mapping)
+    bpy.types.MATERIAL_PT_context_material.append(draw_fortnite_tools)
+
+def unregister():
+    bpy.utils.unregister_class(SUB_OP_visualize_texture_mapping)
+    bpy.types.MATERIAL_PT_context_material.remove(draw_fortnite_tools)
 
 

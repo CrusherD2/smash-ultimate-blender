@@ -1057,9 +1057,16 @@ def process_mesh(operator: Operator, context: Context, mesh_object_copy: Object,
             dest_bm.to_mesh(dest_obj.data)
         dest_bm.clear()
         dest_obj.data.update()
-        mat = dest_obj.material_slots[material_index].material
-        dest_obj.data.materials.clear()
-        dest_obj.data.materials.append(mat)
+        # Check if the mesh has material slots before trying to access them
+        if len(dest_obj.material_slots) > 0:
+            mat = dest_obj.material_slots[material_index].material
+            dest_obj.data.materials.clear()
+            dest_obj.data.materials.append(mat)
+        else:
+            # If no materials, report a warning and create a default material
+            operator.report({'WARNING'}, f'Mesh {mesh_name_in_errors} has no materials. Adding a default material for export.')
+            default_mat = bpy.data.materials.new(name=f"{mesh_name_in_errors}_default_mat")
+            dest_obj.data.materials.append(default_mat)
         split_meshes.add(dest_obj)
     
     for split_mesh in split_meshes:

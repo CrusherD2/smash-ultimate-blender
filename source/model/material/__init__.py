@@ -14,3 +14,32 @@ from . import operators
 from . import reimport_materials
 from . import sub_matl_data
 from . import ui    
+
+import bpy
+
+def register():
+    """Register all parts of the material module."""
+    texture.register()
+    # Register operators
+    operators.register()
+    # Register UI classes
+    ui.register()
+    # Import all the modules
+    from .ui import PG_PT_smash_texture_material, PG_PT_smash_texture_materials
+    # Register classes
+    bpy.utils.register_class(PG_PT_smash_texture_material)
+    bpy.utils.register_class(PG_PT_smash_texture_materials)
+
+def unregister():
+    """Unregister all parts of the material module."""
+    texture.unregister()
+    # Unregister operators
+    operators.unregister()
+    # Unregister UI classes
+    ui.unregister()
+    # Import all the modules
+    from .ui import PG_PT_smash_texture_material, PG_PT_smash_texture_materials
+    # Unregister classes
+    bpy.utils.unregister_class(PG_PT_smash_texture_materials)
+    bpy.utils.unregister_class(PG_PT_smash_texture_material)
+    

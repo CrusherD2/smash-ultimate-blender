@@ -17,12 +17,46 @@ Blender Plugin that contains utilities for Smash Ultimate models and animations.
    - Drivers for previewing `Visibilty` and `Material` data in animation files.
    - UI Panels for easily editing `Visiblity` and `Material` data in animation files.
    - Modal Operator for intuitively editing Characters eyes in animations.
+4. Advanced Material Conversion System
+   - One-click conversion from Blender's Principled BSDF materials to Smash Ultimate materials
+   - Smart material detection for emission, subsurface scattering, and standard PBR materials
+   - Two workflow options:
+     - Full workflow: Automatically generates PRM textures with customizable resolution (64-8192px)
+     - Simple workflow: Converts materials without generating textures (faster)
+   - Smart normal map handling - uses existing normal maps when available
+   - Ambient Occlusion support through dedicated AO nodes
+   - Resource-aware processing with appropriate warnings for texture generation
+   - Auto-detection of material features (diffuse, emission, SSS) and UV/vertex color setups
+   - Compatible with Cycles render engine for baking advanced material properties
+   - Preserves original material configurations where possible
+5. Comprehensive IK & Animation Toolset
+   - Complete IK rigging system for characters:
+     - Full body IK setup with `create_ik_armsandlegs.py`
+     - Individual limb IK controls (arms, legs)
+     - IK influence toggle for animation refinement
+   - Animation workflow enhancements:
+     - Pose library for rapid animation development
+     - Hip animation transfer between character rigs
+     - IK animation application system
+   - Advanced bone tools:
+     - Bone cleanup utilities
+     - Enhanced weight transfer for character modifications
+     - Bone alignment tools for precise skeletal setup
+   - Naming utilities for managing materials, textures, and attributes
+6. Advanced Exo-Skeleton Management
+   - Complete "Un-Exo" functionality to remove exo skeletons from models
+   - Exo bone cleanup system for removing unnecessary bones
+   - Enhanced bone alignment tools for precise skeleton adjustments
+   - Weight transfer optimization for skeleton modifications
+   - Comprehensive workflow for converting between standard and exo rigs
+   - Improved bone hierarchy management for complex character setups
+   - Full support for both creating and removing exo skeletons as needed
 
 ## Installation
 Check the [wiki](https://github.com/ssbucarlos/smash-ultimate-blender/wiki) for tutorials and usage instructions. 
 1. Select a version
   - For the latest version, click the green `Code` button and select `Download ZIP`.
-  - For a specific version, check [Releases](https://github.com/ssbucarlos/smash-ultimate-blender/releases/latest).
+  - For a specific version, check the "Releases" page.
 2. Install the .ZIP in Blender under Edit > Preferences > Addons > Install. 
 3. Make sure the addon is enabled by searching for "Smash Ultimate".
 4. After installing the plugin in blender, in the 3D Viewport pull up the Sidebar (Hotkey is 'N'), and look for the new 'Ultimate' tab in the Sidebar. **If the addon panel doesn't show up, make sure you are in object mode!**
@@ -33,7 +67,7 @@ Check the [wiki](https://github.com/ssbucarlos/smash-ultimate-blender/wiki) for 
     ![image](https://github.com/ssbucarlos/smash-ultimate-blender/assets/77519735/b9fab746-2ddf-45f8-8cec-4351993219d5)
 
 ## System Requirements
-The plugin supports 64-bit versions of Blender 4.2 or later for Windows, Linux, and MacOS. Apple machines with M1 processors are also supported.
+The plugin supports 64-bit versions of Blender 4.0 or later for Windows, Linux, and MacOS. Apple machines with M1 processors are also supported.
 If your computer can run a supported version of Blender but fails to install the plugin, please make an issue in [issues](https://github.com/ssbucarlos/smash-ultimate-blender/issues).
 
 ## Legacy Blender Version Support
@@ -58,3 +92,32 @@ TO REMOVE: First "Disable" the plugin, then restart blender, then you can hit "R
 (and also for providing alot of the reference code for how to use the library, most of which was shamelessly stolen and implemented here)
 (and also for making CrossMod which was a great reference for how smash ultimate shaders work, from the CrossMod render code certain details such as which step of the shading process do vertex colors get factored in was used)
 * The Rokoko plugin https://github.com/Rokoko/rokoko-studio-live-blender for being the reference used for the UI code used in this project.
+
+## Material Conversion
+
+### Supported Material Types
+
+The addon supports converting the following material types to Smash Ultimate format:
+
+1. **Principled BSDF** - Standard Blender material node
+2. **Fortnite FPv3 Material** - Fortnite's material system
+
+### Fortnite Material Support
+
+The addon can now convert Fortnite's FPv3 Materials to Smash Ultimate format. It automatically detects Fortnite's texture naming conventions:
+
+- **_D** textures - Used for diffuse/albedo (mapped to COL/Texture0)
+- **_M** textures - Contains masks with the following channel mapping:
+  - Red channel → PRM Blue (Ambient Occlusion)
+  - Blue channel → PRM Red (Subsurface/Skin metalness)
+- **_S** textures - Contains surface properties with the following channel mapping:
+  - Red channel → PRM Alpha (Specular)
+  - Green channel → PRM Green (Roughness)
+  - Blue channel → PRM Red (Metalness for non-skin materials)
+
+To convert a Fortnite material:
+1. Import your Fortnite model/material into Blender
+2. Select the material
+3. Go to Properties > Material > Smash Materials panel
+4. Click "Convert to Smash Ultimate Material"
+5. The addon will automatically detect the FPv3 material and create the appropriate PRM texture

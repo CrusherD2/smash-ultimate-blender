@@ -6,10 +6,11 @@ import re
 import time
 import cProfile
 import pstats
+import os
 
 from mathutils import Matrix, Quaternion
-from bpy.types import Operator, Panel, Context
-from bpy.props import IntProperty, StringProperty, BoolProperty
+from bpy.types import Operator, Panel, Context, UIList
+from bpy.props import IntProperty, StringProperty, BoolProperty, CollectionProperty, PointerProperty, BoolVectorProperty
 
 from pathlib import Path
 
@@ -27,6 +28,23 @@ if TYPE_CHECKING:
     pose_bone: bpy.types.PoseBone # Workaround for typechecking, remove if obsolete
     fcurve: bpy.types.FCurve # Workaround for typechecking, remove if obsolete
     from ..blender_property_extensions import SubSceneProperties
+
+# Action item for the batch export list
+class SUB_PG_anim_action_item(bpy.types.PropertyGroup):
+    name: StringProperty(name="Name")
+    action: PointerProperty(type=bpy.types.Action)
+    export: BoolProperty(name="Export", default=True)
+
+# UI List for displaying available actions
+class SUB_UL_action_export_list(UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        if self.layout_type in {'DEFAULT', 'COMPACT'}:
+            row = layout.row()
+            row.prop(item, "export", text="")
+            row.label(text=item.name)
+        elif self.layout_type in {'GRID'}:
+            layout.alignment = 'CENTER'
+            layout.label(text=item.name)
 
 class SUB_PT_export_anim(Panel):
     bl_space_type = 'VIEW_3D'
@@ -57,9 +75,261 @@ class SUB_PT_export_anim(Panel):
             elif obj.animation_data.action is None:
                 row.label(text=f'The selected {obj.type.lower()} has no action!', icon='ERROR')
             else:
-                row.operator(SUB_OP_anim_export.bl_idname, icon='EXPORT', text='Export .NUANMB')
+                row.operator(SUB_OP_anim_export.bl_idname, icon='EXPORT', text='Export Current Animation')
+                
+                # Add batch export section
+                box = layout.box()
+                row = box.row()
+                row.label(text="Batch Export Actions")
+                
+                # Refresh actions button
+                row = box.row()
+                row.operator(SUB_OP_refresh_actions.bl_idname, icon='FILE_REFRESH', text="Refresh Action List")
+                
+                # Action list
+                ssp = context.scene.sub_scene_properties
+                row = box.row()
+                row.template_list("SUB_UL_action_export_list", "", ssp, "action_export_list", 
+                                 ssp, "action_export_list_index", rows=3)
+                
+                # Select/deselect all actions
+                row = box.row(align=True)
+                row.operator(SUB_OP_select_all_actions.bl_idname, text="Select All")
+                row.operator(SUB_OP_deselect_all_actions.bl_idname, text="Deselect All")
+                
+                # Batch export button
+                row = box.row()
+                row.scale_y = 1.2
+                row.operator(SUB_OP_batch_export_anim.bl_idname, icon='EXPORT', text='Export Selected Actions')
         else:
             row.label(text=f'The selected {obj.type.lower()} is not an armature or a camera.')
+
+class SUB_OP_refresh_actions(Operator):
+    bl_idname = 'sub.refresh_actions'
+    bl_label = 'Refresh Actions'
+    bl_description = 'Refresh the list of available actions'
+    
+    @classmethod
+    def poll(cls, context):
+        return context.active_object and (context.active_object.type == 'ARMATURE' or context.active_object.type == 'CAMERA')
+    
+    def execute(self, context):
+        # Clear current list
+        ssp = context.scene.sub_scene_properties
+        ssp.action_export_list.clear()
+        
+        # Add available actions to the list, filtering out those with "SAP" or "_old" in their names
+        for action in bpy.data.actions:
+            # Skip actions with "SAP" or "_old" in their names
+            if "SAP" in action.name or "_old" in action.name:
+                continue
+                
+            item = ssp.action_export_list.add()
+            item.name = action.name
+            item.action = action
+            item.export = True
+            
+        return {'FINISHED'}
+
+class SUB_OP_select_all_actions(Operator):
+    bl_idname = 'sub.select_all_actions'
+    bl_label = 'Select All Actions'
+    bl_description = 'Select all actions for export'
+    
+    def execute(self, context):
+        ssp = context.scene.sub_scene_properties
+        for action in ssp.action_export_list:
+            action.export = True
+        return {'FINISHED'}
+
+class SUB_OP_deselect_all_actions(Operator):
+    bl_idname = 'sub.deselect_all_actions'
+    bl_label = 'Deselect All Actions'
+    bl_description = 'Deselect all actions for export'
+    
+    def execute(self, context):
+        ssp = context.scene.sub_scene_properties
+        for action in ssp.action_export_list:
+            action.export = False
+        return {'FINISHED'}
+
+class SUB_OP_batch_export_anim(Operator):
+    bl_idname = 'sub.batch_export_anim'
+    bl_label = 'Batch Export Animations'
+    
+    filter_glob: StringProperty(
+        default='*.nuanmb',
+        options={'HIDDEN'}
+    )
+    
+    include_transform_track: BoolProperty(
+        name='Include Transform',
+        description='Include Transform Track',
+        default=True,
+    )
+    include_material_track: BoolProperty(
+        name='Include Material',
+        description='Include Material Track',
+        default=True,
+    )
+    include_visibility_track: BoolProperty(
+        name='Include Visibility',
+        description='Include Visibility Track',
+        default=True,
+    )
+    first_blender_frame: IntProperty(
+        name='Start Frame',
+        description='First Exported Frame',
+        default=1,
+    )
+    use_debug_timer: BoolProperty(
+        name='Debug timing stats',
+        description='Print advance import timing info to the console',
+        default=False,
+    )
+    use_auto_range: BoolProperty(
+        name='Auto-Detect Range',
+        description='Automatically detect the frame range for each animation based on its keyframes',
+        default=True,
+    )
+    
+    directory: StringProperty(subtype="DIR_PATH")
+    
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return (obj and 
+                (obj.type == 'ARMATURE' or obj.type == 'CAMERA') and 
+                obj.animation_data and
+                len(context.scene.sub_scene_properties.action_export_list) > 0)
+    
+    def invoke(self, context, event):
+        ssp = context.scene.sub_scene_properties
+        
+        # Set initial values
+        self.first_blender_frame = context.scene.frame_start
+        
+        # Set initial directory
+        if ssp.last_anim_export_dir:
+            self.directory = ssp.last_anim_export_dir
+        elif ssp.last_anim_import_dir:
+            self.directory = ssp.last_anim_import_dir
+        
+        # Open file browser
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+    
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "include_transform_track")
+        layout.prop(self, "include_material_track")
+        layout.prop(self, "include_visibility_track")
+        layout.prop(self, "first_blender_frame")
+        layout.prop(self, "use_auto_range", text="Auto-Detect Frame Range")
+        layout.prop(self, "use_debug_timer")
+    
+    def find_last_keyframe(self, action):
+        last_frame = 1
+        if action.fcurves:
+            for fcurve in action.fcurves:
+                for keyframe in fcurve.keyframe_points:
+                    if keyframe.co[0] > last_frame:
+                        last_frame = int(keyframe.co[0])
+        return max(last_frame, 1)  # Ensure we always have at least 1 frame
+    
+    def execute(self, context):
+        ssp = context.scene.sub_scene_properties
+        obj = context.active_object
+        
+        # Store current action
+        current_action = None
+        if obj.animation_data:
+            current_action = obj.animation_data.action
+        
+        # Store current frame
+        current_frame = context.scene.frame_current
+        
+        # Save directory for future use
+        ssp.last_anim_export_dir = self.directory
+        
+        # Count selected actions for progress reporting
+        selected_actions = [item for item in ssp.action_export_list if item.export]
+        total_count = len(selected_actions)
+        
+        if total_count == 0:
+            self.report({'WARNING'}, "No actions selected for export")
+            return {'CANCELLED'}
+        
+        self.report({'INFO'}, f"Starting batch export of {total_count} animations...")
+        start_time = time.perf_counter()
+        
+        export_count = 0
+        for i, item in enumerate(selected_actions):
+            if not item.export:
+                continue
+                
+            action_name = item.name
+            # Set the action on the object
+            obj.animation_data.action = item.action
+            
+            # Create export path with sanitized filename
+            safe_name = sanitize_filename(action_name)
+            filepath = os.path.join(self.directory, safe_name)
+            if not filepath.endswith('.nuanmb'):
+                filepath += '.nuanmb'
+            
+            # Determine last keyframe for this action if auto-range is enabled
+            if self.use_auto_range:
+                last_blender_frame = self.find_last_keyframe(item.action)
+                self.report({'INFO'}, f"Auto-detected frame range for {action_name}: {self.first_blender_frame}-{last_blender_frame}")
+            else:
+                # Use scene frame range if auto-range is disabled
+                last_blender_frame = context.scene.frame_end
+            
+            try:
+                if obj.type == 'ARMATURE':
+                    export_model_anim_fast(
+                        context, self, obj, filepath,
+                        self.include_transform_track, self.include_material_track,
+                        self.include_visibility_track, self.first_blender_frame,
+                        last_blender_frame)
+                else:
+                    # Camera export
+                    export_camera_anim(context, self, obj, filepath,
+                        self.first_blender_frame, last_blender_frame)
+                
+                export_count += 1
+                # Report progress
+                progress = (i + 1) / total_count * 100
+                self.report({'INFO'}, f"Exported {i+1}/{total_count} ({progress:.1f}%): {action_name}")
+                
+            except Exception as e:
+                self.report({'ERROR'}, f"Failed to export {safe_name}: {str(e)}")
+        
+        # Restore original action and frame
+        if current_action:
+            obj.animation_data.action = current_action
+        context.scene.frame_set(current_frame)
+        
+        end_time = time.perf_counter()
+        self.report({'INFO'}, f"Successfully exported {export_count}/{total_count} animations in {end_time - start_time:.2f} seconds")
+        
+        return {'FINISHED'}
+
+# Add this function to sanitize filenames - place it before the SUB_OP_anim_export class
+def sanitize_filename(filename):
+    """
+    Replace invalid Windows filename characters with underscores.
+    Invalid characters: \ / : * ? " < > |
+    """
+    # Characters not allowed in Windows filenames
+    invalid_chars = ['\\', '/', ':', '*', '?', '"', '<', '>', '|']
+    
+    # Replace each invalid character with an underscore
+    for char in invalid_chars:
+        filename = filename.replace(char, '_')
+        
+    return filename
 
 class SUB_OP_anim_export(Operator):
     bl_idname = 'sub.anim_export'
@@ -105,64 +375,72 @@ class SUB_OP_anim_export(Operator):
 
     @classmethod
     def poll(cls, context):
-        obj: bpy.types.Object = context.object
+        obj: bpy.types.Object = context.active_object
         if obj is None:
             return False
-        elif obj.type != 'ARMATURE' and obj.type != 'CAMERA':
+        if obj.type != 'ARMATURE' and obj.type != 'CAMERA':
             return False
-        elif obj.animation_data is None:
+        if obj.animation_data is None:
             return False
-        elif obj.animation_data.action is None:
+        if obj.animation_data.action is None:
             return False
         return True
 
     def invoke(self, context: Context, _event):
-        obj: bpy.types.Object = context.object
+        # Use the action name plus the extension
+        action_name = f"{context.active_object.animation_data.action.name}.nuanmb"
+        safe_name = sanitize_filename(action_name)
+        
+        # Set filepath
+        self.filepath = safe_name
+        
+        # Set frame ranges
         self.first_blender_frame = context.scene.frame_start
         self.last_blender_frame = context.scene.frame_end
 
-        ssp: SubSceneProperties = context.scene.sub_scene_properties
-        if ssp.last_anim_export_dir != "":
-            self.filepath = f'{ssp.last_anim_export_dir}/{obj.animation_data.action.name}'
-        elif ssp.last_anim_import_dir != "":
-            self.filepath = f'{ssp.last_anim_import_dir}/{obj.animation_data.action.name}'
-        else:
-            self.filepath = f'{obj.animation_data.action.name}'
-
-        if not self.filepath.endswith('.nuanmb'):
-            self.filepath += '.nuanmb'
+        # Set initial directory from previous exports/imports if available
+        ssp = context.scene.sub_scene_properties
+        if ssp.last_anim_export_dir:
+            self.filepath = os.path.join(ssp.last_anim_export_dir, safe_name)
+        elif ssp.last_anim_import_dir:
+            self.filepath = os.path.join(ssp.last_anim_import_dir, safe_name)
+        
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
     def execute(self, context):
-        ssp: SubSceneProperties = context.scene.sub_scene_properties
-        ssp.last_anim_export_dir = str(Path(self.filepath).parent)
-        print("Starting Animation Export...")
-        start = time.perf_counter()
+        # Save directory for future use
+        ssp = context.scene.sub_scene_properties
+        ssp.last_anim_export_dir = os.path.dirname(self.filepath)
+        
+        # Ensure filepath has .nuanmb extension
+        filepath = self.filepath
+        if not filepath.endswith('.nuanmb'):
+            filepath += '.nuanmb'
 
-        obj: bpy.types.Object = context.object
+        # Get the filename part without path
+        filename = os.path.basename(filepath)
+        
+        # Sanitize the filename (in case it was modified in the file browser)
+        safe_filename = sanitize_filename(filename)
+        if safe_filename != filename:
+            # If the filename changed, update the path
+            filepath = os.path.join(os.path.dirname(filepath), safe_filename)
+            
+        obj: bpy.types.Object = context.active_object
+        
+        if obj.type == 'ARMATURE':
+            export_model_anim_fast(
+            context, self, obj, filepath,
+                self.include_transform_track, self.include_material_track,
+                self.include_visibility_track, self.first_blender_frame,
+                self.last_blender_frame)
+        else:
+        # Camera export
+            export_camera_anim(context, self, obj, filepath,
+                self.first_blender_frame, self.last_blender_frame)  
 
-        if not self.filepath.endswith('.nuanmb'):
-            self.filepath += '.nuanmb'
-
-        with cProfile.Profile() as pr:
-            if obj.type == 'ARMATURE':
-                export_model_anim_fast(
-                    context, self, obj, self.filepath,
-                    self.include_transform_track, self.include_material_track,
-                    self.include_visibility_track, self.first_blender_frame,
-                    self.last_blender_frame)
-            else:
-                # TODO: Make "fast" camera export using same technique (currently fighter camera animations take less than a second to export, so theres not much priority)
-                export_camera_anim(context, self, obj, self.filepath,
-                    self.first_blender_frame, self.last_blender_frame)  
-        if self.use_debug_timer:
-            stats = pstats.Stats(pr)
-            stats.sort_stats(pstats.SortKey.TIME)
-            stats.print_stats()
-
-        end = time.perf_counter()
-        print(f"Animation Export finished in {end - start} seconds!")
+        self.report({'INFO'}, f"Successfully exported animation to {os.path.basename(filepath)}")
         return {'FINISHED'}
            
 class Location():
@@ -301,6 +579,14 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
             transform_subtype = matches.groups()[1]
             if transform_subtype == 'location':
                 for index, frame in enumerate(range(first_blender_frame, last_blender_frame+1)):
+                    # Check if the bone exists in our dictionary before accessing it
+                    if bone_name not in bone_name_to_location_values:
+                        # Create entries for this bone if it doesn't exist (likely an IK bone)
+                        bone_name_to_location_values[bone_name] = [Location(0.0, 0.0, 0.0) for _ in range(first_blender_frame, last_blender_frame + 1)]
+                        bone_name_to_rotation_values[bone_name] = [Rotation(1.0, 0.0, 0.0, 0.0) for _ in range(first_blender_frame, last_blender_frame + 1)]
+                        bone_name_to_scale_values[bone_name] = [Scale(1.0, 1.0, 1.0) for _ in range(first_blender_frame, last_blender_frame + 1)]
+                        operator.report({'INFO'}, f"Added missing bone '{bone_name}' to animation export data")
+                    
                     if fcurve.array_index == 0:
                         bone_name_to_location_values[bone_name][index].x = fcurve.evaluate(frame)
                     elif fcurve.array_index == 1:
@@ -309,6 +595,14 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
                         bone_name_to_location_values[bone_name][index].z = fcurve.evaluate(frame)
             elif transform_subtype == 'rotation_quaternion':
                 for index, frame in enumerate(range(first_blender_frame, last_blender_frame+1)):
+                    # Check if the bone exists in our dictionary before accessing it
+                    if bone_name not in bone_name_to_rotation_values:
+                        # Create entries for this bone if it doesn't exist (likely an IK bone)
+                        bone_name_to_location_values[bone_name] = [Location(0.0, 0.0, 0.0) for _ in range(first_blender_frame, last_blender_frame + 1)]
+                        bone_name_to_rotation_values[bone_name] = [Rotation(1.0, 0.0, 0.0, 0.0) for _ in range(first_blender_frame, last_blender_frame + 1)]
+                        bone_name_to_scale_values[bone_name] = [Scale(1.0, 1.0, 1.0) for _ in range(first_blender_frame, last_blender_frame + 1)]
+                        operator.report({'INFO'}, f"Added missing bone '{bone_name}' to animation export data")
+                        
                     if fcurve.array_index == 0:
                         bone_name_to_rotation_values[bone_name][index].w = fcurve.evaluate(frame)
                     elif fcurve.array_index == 1:
@@ -319,6 +613,14 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
                         bone_name_to_rotation_values[bone_name][index].z = fcurve.evaluate(frame)
             elif transform_subtype == 'scale':
                 for index, frame in enumerate(range(first_blender_frame, last_blender_frame+1)):
+                    # Check if the bone exists in our dictionary before accessing it
+                    if bone_name not in bone_name_to_scale_values:
+                        # Create entries for this bone if it doesn't exist (likely an IK bone)
+                        bone_name_to_location_values[bone_name] = [Location(0.0, 0.0, 0.0) for _ in range(first_blender_frame, last_blender_frame + 1)]
+                        bone_name_to_rotation_values[bone_name] = [Rotation(1.0, 0.0, 0.0, 0.0) for _ in range(first_blender_frame, last_blender_frame + 1)]
+                        bone_name_to_scale_values[bone_name] = [Scale(1.0, 1.0, 1.0) for _ in range(first_blender_frame, last_blender_frame + 1)]
+                        operator.report({'INFO'}, f"Added missing bone '{bone_name}' to animation export data")
+                        
                     if fcurve.array_index == 0:
                         bone_name_to_scale_values[bone_name][index].x = fcurve.evaluate(frame)
                     elif fcurve.array_index == 1:

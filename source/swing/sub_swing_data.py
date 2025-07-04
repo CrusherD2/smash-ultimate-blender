@@ -432,3 +432,250 @@ class SUB_PG_sub_swing_master_collection_props(PropertyGroup):
     )
     
 
+class SUB_OT_swing_bone_copy_values(bpy.types.Operator):
+    bl_idname = "sub.swing_bone_copy_values"
+    bl_label = "Copy Values"
+    bl_description = "Copy values from the active swing bone"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        ssd = context.object.data.sub_swing_data
+        if not ssd.swing_bone_chains:
+            return False
+        active_chain = ssd.swing_bone_chains[ssd.active_swing_bone_chain_index]
+        return len(active_chain.swing_bones) > 0
+
+    def execute(self, context):
+        ssd = context.object.data.sub_swing_data
+        active_chain = ssd.swing_bone_chains[ssd.active_swing_bone_chain_index]
+        active_bone = active_chain.swing_bones[active_chain.active_swing_bone_index]
+        
+        # Store values in scene properties for persistence
+        context.scene["swing_bone_clipboard"] = {
+            "air_resistance": active_bone.air_resistance,
+            "water_resistance": active_bone.water_resistance,
+            "angle_z": active_bone.angle_z[:],
+            "angle_y": active_bone.angle_y[:],
+            "collision_size": active_bone.collision_size[:],
+            "friction_rate": active_bone.friction_rate,
+            "goal_strength": active_bone.goal_strength,
+            "inertial_mass": active_bone.inertial_mass,
+            "local_gravity": active_bone.local_gravity,
+            "fall_speed_scale": active_bone.fall_speed_scale,
+            "ground_hit": active_bone.ground_hit,
+            "wind_affect": active_bone.wind_affect
+        }
+        
+        self.report({'INFO'}, "Copied swing bone values")
+        return {'FINISHED'}
+
+class SUB_OT_swing_bone_paste_values(bpy.types.Operator):
+    bl_idname = "sub.swing_bone_paste_values"
+    bl_label = "Paste Values"
+    bl_description = "Paste copied values to the active swing bone"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        if "swing_bone_clipboard" not in context.scene:
+            return False
+        ssd = context.object.data.sub_swing_data
+        if not ssd.swing_bone_chains:
+            return False
+        active_chain = ssd.swing_bone_chains[ssd.active_swing_bone_chain_index]
+        return len(active_chain.swing_bones) > 0
+
+    def execute(self, context):
+        ssd = context.object.data.sub_swing_data
+        active_chain = ssd.swing_bone_chains[ssd.active_swing_bone_chain_index]
+        active_bone = active_chain.swing_bones[active_chain.active_swing_bone_index]
+        
+        clipboard = context.scene["swing_bone_clipboard"]
+        
+        # Paste all values from clipboard
+        for prop, value in clipboard.items():
+            if isinstance(value, (tuple, list)):
+                setattr(active_bone, prop, value[:])
+            else:
+                setattr(active_bone, prop, value)
+        
+        self.report({'INFO'}, "Pasted swing bone values")
+        return {'FINISHED'}
+
+class SUB_OT_swing_bone_copy_collisions(bpy.types.Operator):
+    bl_idname = "sub.swing_bone_copy_collisions"
+    bl_label = "Copy Collisions"
+    bl_description = "Copy collisions from the active swing bone"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        ssd = context.object.data.sub_swing_data
+        if not ssd.swing_bone_chains:
+            return False
+        active_chain = ssd.swing_bone_chains[ssd.active_swing_bone_chain_index]
+        return len(active_chain.swing_bones) > 0
+
+    def execute(self, context):
+        ssd = context.object.data.sub_swing_data
+        active_chain = ssd.swing_bone_chains[ssd.active_swing_bone_chain_index]
+        active_bone = active_chain.swing_bones[active_chain.active_swing_bone_index]
+        
+        # Store collisions in scene properties for persistence
+        collision_data = []
+        for collision in active_bone.collisions:
+            collision_data.append({
+                "collision_type": collision.collision_type,
+                "collision_index": collision.collision_index
+            })
+        
+        context.scene["swing_bone_collision_clipboard"] = collision_data
+        
+        self.report({'INFO'}, "Copied swing bone collisions")
+        return {'FINISHED'}
+
+class SUB_OT_swing_bone_paste_collisions(bpy.types.Operator):
+    bl_idname = "sub.swing_bone_paste_collisions"
+    bl_label = "Paste Collisions"
+    bl_description = "Paste copied collisions to the active swing bone"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        if "swing_bone_collision_clipboard" not in context.scene:
+            return False
+        ssd = context.object.data.sub_swing_data
+        if not ssd.swing_bone_chains:
+            return False
+        active_chain = ssd.swing_bone_chains[ssd.active_swing_bone_chain_index]
+        return len(active_chain.swing_bones) > 0
+
+    def execute(self, context):
+        ssd = context.object.data.sub_swing_data
+        active_chain = ssd.swing_bone_chains[ssd.active_swing_bone_chain_index]
+        active_bone = active_chain.swing_bones[active_chain.active_swing_bone_index]
+        
+        collision_data = context.scene["swing_bone_collision_clipboard"]
+        
+        # Clear existing collisions
+        active_bone.collisions.clear()
+        
+        # Add copied collisions
+        for collision_info in collision_data:
+            new_collision = active_bone.collisions.add()
+            new_collision.collision_type = collision_info["collision_type"]
+            new_collision.collision_index = collision_info["collision_index"]
+        
+        self.report({'INFO'}, "Pasted swing bone collisions")
+        return {'FINISHED'}
+
+class SUB_OT_swing_bone_copy_values_to_all(bpy.types.Operator):
+    bl_idname = "sub.swing_bone_copy_values_to_all"
+    bl_label = "Copy Values to All Bones"
+    bl_description = "Copy values from the active swing bone to all other swing bones in the active chain"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        ssd = context.object.data.sub_swing_data
+        if not ssd.swing_bone_chains:
+            return False
+        active_chain = ssd.swing_bone_chains[ssd.active_swing_bone_chain_index]
+        return len(active_chain.swing_bones) > 1  # Need at least 2 bones to copy to others
+
+    def execute(self, context):
+        ssd = context.object.data.sub_swing_data
+        active_chain = ssd.swing_bone_chains[ssd.active_swing_bone_chain_index]
+        active_bone = active_chain.swing_bones[active_chain.active_swing_bone_index]
+        
+        # List of properties to copy from active bone to all others
+        properties_to_copy = [
+            "air_resistance",
+            "water_resistance",
+            "angle_z",
+            "angle_y",
+            "collision_size",
+            "friction_rate",
+            "goal_strength",
+            "inertial_mass",
+            "local_gravity",
+            "fall_speed_scale",
+            "ground_hit",
+            "wind_affect"
+        ]
+        
+        # Apply to all other bones in the chain
+        updated_count = 0
+        for i, target_bone in enumerate(active_chain.swing_bones):
+            if i == active_chain.active_swing_bone_index:
+                continue  # Skip the active bone
+                
+            # Copy all physical properties
+            for prop in properties_to_copy:
+                if isinstance(getattr(active_bone, prop), (tuple, list)):
+                    setattr(target_bone, prop, getattr(active_bone, prop)[:])
+                else:
+                    setattr(target_bone, prop, getattr(active_bone, prop))
+            
+            updated_count += 1
+        
+        self.report({'INFO'}, f"Copied values to {updated_count} swing bones")
+        return {'FINISHED'}
+
+class SUB_OT_swing_bone_copy_values_to_all_chains(bpy.types.Operator):
+    bl_idname = "sub.swing_bone_copy_values_to_all_chains"
+    bl_label = "Copy Values to All Swing Bone Chains"
+    bl_description = "Copy values from the active swing bone to all swing bones in all chains"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        ssd = context.object.data.sub_swing_data
+        if not ssd.swing_bone_chains:
+            return False
+        active_chain = ssd.swing_bone_chains[ssd.active_swing_bone_chain_index]
+        return len(active_chain.swing_bones) > 0  # Need at least one bone to copy from
+
+    def execute(self, context):
+        ssd = context.object.data.sub_swing_data
+        active_chain = ssd.swing_bone_chains[ssd.active_swing_bone_chain_index]
+        active_bone = active_chain.swing_bones[active_chain.active_swing_bone_index]
+        
+        # List of properties to copy from active bone to all others
+        properties_to_copy = [
+            "air_resistance",
+            "water_resistance",
+            "angle_z",
+            "angle_y",
+            "collision_size",
+            "friction_rate",
+            "goal_strength",
+            "inertial_mass",
+            "local_gravity",
+            "fall_speed_scale",
+            "ground_hit",
+            "wind_affect"
+        ]
+        
+        # Apply to all bones in all chains
+        updated_count = 0
+        for chain in ssd.swing_bone_chains:
+            for target_bone in chain.swing_bones:
+                # Skip the active bone
+                if chain == active_chain and target_bone == active_bone:
+                    continue
+                    
+                # Copy all physical properties
+                for prop in properties_to_copy:
+                    if isinstance(getattr(active_bone, prop), (tuple, list)):
+                        setattr(target_bone, prop, getattr(active_bone, prop)[:])
+                    else:
+                        setattr(target_bone, prop, getattr(active_bone, prop))
+                
+                updated_count += 1
+        
+        self.report({'INFO'}, f"Copied values to {updated_count} swing bones across all chains")
+        return {'FINISHED'}
+
+

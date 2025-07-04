@@ -23,6 +23,221 @@ mat_sub_types = (
     ('TEXTURE', 'Texture Transform', 'Texture Transform')
 )
 
+# Store the last known action for each armature to detect changes
+_last_known_actions = {}
+
+# Global owner object for msgbus subscriptions
+_msgbus_owner = object()
+
+# Handler to sync SAP data action with bone animation action
+@bpy.app.handlers.persistent
+def sync_sap_action_handler(scene):
+    """
+    Handler that automatically switches the SAP data action when the main action changes.
+    This ensures that visibility and material animation data stays in sync with bone animation.
+    """
+    global _last_known_actions
+    
+    for obj in bpy.data.objects:
+        if obj.type != 'ARMATURE':
+            continue
+        
+        # Skip if no animation data
+        if not obj.animation_data or not obj.animation_data.action:
+            # Clear the stored action if there's no current action
+            if obj.name in _last_known_actions:
+                print(f"Clearing stored action for {obj.name}")
+                del _last_known_actions[obj.name]
+            continue
+            
+        # Skip if no armature data animation data
+        if not obj.data.animation_data:
+            continue
+            
+        current_action = obj.animation_data.action
+        current_sap_action = obj.data.animation_data.action
+        
+        # Check if the action has changed since last time
+        last_action = _last_known_actions.get(obj.name)
+        if last_action == current_action:
+            continue  # No change, skip
+            
+        # Update the stored action
+        _last_known_actions[obj.name] = current_action
+        
+        # Look for corresponding SAP action
+        expected_sap_action_name = f"{obj.name} {current_action.name} SAP Data"
+        expected_sap_action = bpy.data.actions.get(expected_sap_action_name)
+        
+        # If we found a matching SAP action and it's different from current, switch to it
+        if expected_sap_action and expected_sap_action != current_sap_action:
+            obj.data.animation_data.action = expected_sap_action
+
+# Additional handler for depsgraph updates (more frequent)
+@bpy.app.handlers.persistent  
+def sync_sap_action_depsgraph_handler(scene, depsgraph):
+    """
+    Alternative handler that runs on depsgraph updates.
+    This catches more events including action changes.
+    """
+    sync_sap_action_handler(scene)
+
+# Timer function for periodic checking
+def sync_sap_timer():
+    """
+    Timer function that runs periodically to check for action changes.
+    This is a fallback method to ensure SAP actions stay synced.
+    """
+    try:
+        # Check if we're in a valid context for modifying data
+        if bpy.context.mode in {'OBJECT', 'POSE'}:
+            scene = bpy.context.scene
+            sync_sap_action_handler(scene)
+    except Exception as e:
+        # Silently handle context errors
+        pass
+    
+    # Return the interval for the next call (0.1 seconds)
+    return 0.1
+
+# Message bus callback for action changes
+def action_change_msgbus_callback(*args):
+    """
+    Callback function for msgbus that triggers when animation_data.action changes.
+    This provides more direct detection of action changes in the UI.
+    """
+    try:
+        if bpy.context.mode in {'OBJECT', 'POSE'}:
+            scene = bpy.context.scene
+            sync_sap_action_handler(scene)
+    except Exception as e:
+        # Silently handle context errors
+        pass
+
+# Subscribe to action changes via msgbus
+def subscribe_to_action_changes():
+    """
+    Subscribe to animation_data.action changes using Blender's message bus system.
+    This provides more direct detection of action switching in the UI.
+    """
+    try:
+        # Subscribe to changes in animation_data.action for all objects
+        bpy.msgbus.subscribe_rna(
+            key=(bpy.types.AnimData, "action"),
+            owner=_msgbus_owner,
+            args=(),
+            notify=action_change_msgbus_callback,
+        )
+    except Exception as e:
+        # Silently handle msgbus errors
+        pass
+
+def unsubscribe_from_action_changes():
+    """
+    Unsubscribe from action changes when cleaning up.
+    """
+    try:
+        bpy.msgbus.clear_by_owner(_msgbus_owner)
+    except:
+        pass
+
+# Modal operator for continuous monitoring
+class SUB_OP_sap_sync_monitor(Operator):
+    bl_idname = 'sub.sap_sync_monitor'
+    bl_label = 'SAP Sync Monitor'
+    bl_description = 'Start/stop continuous SAP action monitoring'
+    
+    action: EnumProperty(
+        items=[
+            ('TOGGLE', 'Toggle', 'Toggle monitoring on/off'),
+            ('START', 'Start', 'Start monitoring'),
+            ('STOP', 'Stop', 'Stop monitoring'),
+        ],
+        default='TOGGLE'
+    )
+    
+    _timer = None
+    _is_running = False
+    
+    @classmethod
+    def poll(cls, context):
+        return True
+    
+    def modal(self, context, event):
+        if event.type == 'TIMER':
+            # Check for action changes
+            try:
+                if context.mode in {'OBJECT', 'POSE'}:
+                    sync_sap_action_handler(context.scene)
+            except Exception as e:
+                if "not allowed" not in str(e):
+                    print(f"SAP sync monitor error: {e}")
+        
+        # Continue running
+        return {'PASS_THROUGH'}
+    
+    def execute(self, context):
+        should_start = False
+        
+        if self.action == 'START' or (self.action == 'TOGGLE' and not SUB_OP_sap_sync_monitor._is_running):
+            should_start = True
+        elif self.action == 'STOP' or (self.action == 'TOGGLE' and SUB_OP_sap_sync_monitor._is_running):
+            should_start = False
+        
+        if should_start and not SUB_OP_sap_sync_monitor._is_running:
+            # Start monitoring
+            wm = context.window_manager
+            SUB_OP_sap_sync_monitor._timer = wm.event_timer_add(0.1, window=context.window)
+            wm.modal_handler_add(self)
+            SUB_OP_sap_sync_monitor._is_running = True
+            self.report({'INFO'}, "SAP sync monitoring started")
+            return {'RUNNING_MODAL'}
+        elif not should_start and SUB_OP_sap_sync_monitor._is_running:
+            # Stop monitoring
+            if SUB_OP_sap_sync_monitor._timer:
+                wm = context.window_manager
+                wm.event_timer_remove(SUB_OP_sap_sync_monitor._timer)
+                SUB_OP_sap_sync_monitor._timer = None
+            SUB_OP_sap_sync_monitor._is_running = False
+            self.report({'INFO'}, "SAP sync monitoring stopped")
+            return {'FINISHED'}
+        
+        return {'FINISHED'}
+
+
+
+class SUB_OP_sync_sap_action(Operator):
+    bl_idname = 'sub.sync_sap_action'
+    bl_label = 'Sync SAP Action'
+    bl_description = 'Manually sync the SAP data action with the current bone animation action'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return (context.object and 
+                context.object.type == 'ARMATURE' and 
+                context.object.animation_data and 
+                context.object.animation_data.action)
+
+    def execute(self, context):
+        obj = context.object
+        
+        if not obj.data.animation_data:
+            self.report({'WARNING'}, "No SAP animation data found")
+            return {'CANCELLED'}
+            
+        current_action = obj.animation_data.action
+        expected_sap_action_name = f"{obj.name} {current_action.name} SAP Data"
+        expected_sap_action = bpy.data.actions.get(expected_sap_action_name)
+        
+        if expected_sap_action:
+            obj.data.animation_data.action = expected_sap_action
+            self.report({'INFO'}, f"Synced SAP action to: {expected_sap_action_name}")
+        else:
+            self.report({'WARNING'}, f"No matching SAP action found: {expected_sap_action_name}")
+            
+        return {'FINISHED'}
+
 class SUB_PT_sub_smush_anim_data_main(Panel):
     bl_label = "Ultimate Animation Data"
     bl_idname = __qualname__
@@ -40,6 +255,23 @@ class SUB_PT_sub_smush_anim_data_main(Panel):
     def draw(self, context):
         layout = self.layout
         arma = context.object
+        
+        # Show auto-sync status and manual control
+        box = layout.box()
+        row = box.row()
+        
+        # Check if handlers are registered to show auto-sync status
+        handlers_active = (sync_sap_action_handler in bpy.app.handlers.frame_change_post and
+                          sync_sap_action_depsgraph_handler in bpy.app.handlers.depsgraph_update_post and
+                          bpy.app.timers.is_registered(sync_sap_timer))
+        
+        if handlers_active:
+            row.label(text="SAP Auto-Sync: Active", icon='CHECKMARK')
+        else:
+            row.label(text="SAP Auto-Sync: Inactive", icon='ERROR')
+            
+        # Manual sync button
+        row.operator(SUB_OP_sync_sap_action.bl_idname, icon='FILE_REFRESH', text="Manual Sync")
 
 class SUB_PT_sub_smush_anim_data_vis_tracks(Panel):
     bl_label = "Ultimate Visibility Track Entries"
@@ -839,26 +1071,49 @@ class SUB_PG_sub_anim_data(PropertyGroup):
     mat_tracks: CollectionProperty(type=SUB_PG_mat_track)
     active_mat_track_index: IntProperty(name='Active Mat Track Index', default=0, options={'HIDDEN'})
 
+# Auto-start system functions
+def init_sap_auto_sync():
+    """Initialize the SAP auto-sync system - called from main addon register"""
+    print("SAP Auto-Sync system activated")
+    print("✅ SAP handlers and timer registered for automatic synchronization")
+    
+    # Subscribe to action changes for more direct detection
+    subscribe_to_action_changes()
+
+def cleanup_sap_auto_sync():
+    """Cleanup the SAP auto-sync system - called from main addon unregister"""
+    # Stop the SAP monitor if running
+    if SUB_OP_sap_sync_monitor._is_running and SUB_OP_sap_sync_monitor._timer:
+        try:
+            wm = bpy.context.window_manager
+            if wm:
+                wm.event_timer_remove(SUB_OP_sap_sync_monitor._timer)
+            SUB_OP_sap_sync_monitor._timer = None
+            SUB_OP_sap_sync_monitor._is_running = False
+            print("SAP Monitor stopped")
+        except:
+            pass
+    
+    # Unsubscribe from action changes
+    unsubscribe_from_action_changes()
+
 def register():
-    Armature.sub_anim_data = PointerProperty(
-        type=SUB_PG_sub_anim_data
-    )
+    """Register only handlers and timers - classes are registered separately"""
+    # Register the SAP action sync handlers
+    if sync_sap_action_handler not in bpy.app.handlers.frame_change_post:
+        bpy.app.handlers.frame_change_post.append(sync_sap_action_handler)
     
-    def get_bpy_derived_classes():
-        bpy_derived_classes = set()
-        for _name, obj in inspect.getmembers(sys.modules[__name__]):
-            if not inspect.isclass(obj):
-                continue
-            if not obj.__module__ == __name__:
-                continue
-            if not issubclass(obj, bpy.types.bpy_struct):
-                continue
-            bpy_derived_classes.add(obj)
-        return bpy_derived_classes
+    if sync_sap_action_depsgraph_handler not in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.append(sync_sap_action_depsgraph_handler)
     
-    classes_to_register = get_bpy_derived_classes()
-    for cls in classes_to_register:
-        bpy.utils.register_class(cls)
+    # Also register a timer for more frequent checking
+    if not bpy.app.timers.is_registered(sync_sap_timer):
+        bpy.app.timers.register(sync_sap_timer, first_interval=0.1, persistent=True)
+    
+    # Subscribe to action changes for direct detection
+    subscribe_to_action_changes()
+    
+
     """
     for name, obj in inspect.getmembers(
         sys.modules[__name__], 
@@ -866,6 +1121,26 @@ def register():
         print(f"{name}, {obj}")
         bpy.utils.register_class()
     """
+
+def unregister():
+    """Unregister only handlers and timers - classes are unregistered separately"""
+    # Unregister all SAP action sync handlers
+    if sync_sap_action_handler in bpy.app.handlers.frame_change_post:
+        bpy.app.handlers.frame_change_post.remove(sync_sap_action_handler)
+    
+    if sync_sap_action_depsgraph_handler in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(sync_sap_action_depsgraph_handler)
+    
+    # Unregister the timer
+    if bpy.app.timers.is_registered(sync_sap_timer):
+        bpy.app.timers.unregister(sync_sap_timer)
+    
+    # Clear the stored actions
+    global _last_known_actions
+    _last_known_actions.clear()
+    
+    # Unsubscribe from action changes
+    unsubscribe_from_action_changes()
     
 if __name__ == '__main__':
     register()

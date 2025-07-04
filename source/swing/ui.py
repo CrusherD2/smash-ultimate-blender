@@ -227,6 +227,7 @@ class SUB_PT_swing_bone_chains(Panel, SwingPropertyPanel):
     def draw(self, context):
         layout = self.layout
         sub_swing_data: SUB_PG_sub_swing_data = context.object.data.sub_swing_data
+
         col = layout.column()
         row = col.row()
         split = row.split(factor=.33)
@@ -264,28 +265,30 @@ class SUB_PT_swing_bone_chains(Panel, SwingPropertyPanel):
         c.enabled = False
         c.label(text="Bone's Collisions")
         if len(sub_swing_data.swing_bone_chains) > 0:
+            active_swing_bone_chain = sub_swing_data.swing_bone_chains[sub_swing_data.active_swing_bone_chain_index]
             if len(active_swing_bone_chain.swing_bones) > 0:
-                active_swing_bone: SUB_PG_swing_bone = active_swing_bone_chain.swing_bones[active_swing_bone_chain.active_swing_bone_index]
-                if len(active_swing_bone.collisions) > 0:
-                    c.template_list(
-                        'SUB_UL_swing_bone_collisions',
-                        '',
-                        active_swing_bone,
-                        'collisions',
-                        active_swing_bone,
-                        'active_collision_index',
-                        rows=5,
-                        maxrows=5,
-                    )
-                    c.enabled = True
+                c.enabled = True
+                active_swing_bone = active_swing_bone_chain.swing_bones[active_swing_bone_chain.active_swing_bone_index]
+                c.template_list(
+                    'SUB_UL_swing_bone_collisions',
+                    '',
+                    active_swing_bone,
+                    'collisions',
+                    active_swing_bone,
+                    'active_collision_index',
+                    rows=5,
+                    maxrows=5,
+                )
 
-        # Button Row, composed of 3 Sub Rows algined with the above columns
-        row = layout.row()
+        # Button Row, composed of 3 Sub Rows aligned with the above columns
+        row = col.row(align=True)
         # Sub Row 1
         split = row.split(factor=.33)
         sr = split.row(align=True)
         sr.operator(SUB_OP_swing_bone_chain_add.bl_idname, text='+')
         sr.operator(SUB_OP_swing_bone_chain_remove.bl_idname, text='-')
+        # Add auto-detect button with icon
+        sr.operator('sub.swing_bone_chain_auto_detect', text='', icon='AUTO')
         # Sub Row 2
         split = split.split(factor=.5)
         sr = split.row(align=True)
@@ -294,8 +297,65 @@ class SUB_PT_swing_bone_chains(Panel, SwingPropertyPanel):
         split = split.split()
         sr = split.row(align=True)
         sr.menu('SUB_MT_swing_bone_collision_add', text='+')
-        sr.operator(SUB_OP_swing_bone_collision_remove.bl_idname, text='-')  
+        sr.operator(SUB_OP_swing_bone_collision_remove.bl_idname, text='-')
 
+        # Add a more prominent auto-detect button
+        layout.separator(factor=0.5)
+        row = layout.row()
+        row.operator('sub.swing_bone_chain_auto_detect', text='Auto-Detect All Swing Bone Chains', icon='AUTO')
+        row.scale_y = 1.2
+
+        layout.separator(factor=1.2)
+ 
+        # Values copy/paste row
+        row = layout.row(align=True)
+        row.operator('sub.swing_bone_copy_values', icon='COPYDOWN', text="Copy Values")
+        row.operator('sub.swing_bone_paste_values', icon='PASTEDOWN', text="Paste Values")
+        
+        # Collisions copy/paste row
+        row = layout.row(align=True)
+        row.operator('sub.swing_bone_copy_collisions', icon='COPYDOWN', text="Copy Collisions")
+        row.operator('sub.swing_bone_paste_collisions', icon='PASTEDOWN', text="Paste Collisions")
+        
+        # Copy values to all bones button
+        row = layout.row(align=True)
+        row.operator('sub.swing_bone_copy_values_to_all', icon='OUTLINER_OB_ARMATURE', text="Copy Values to All Bones")
+        
+        # Copy values to all swing bone chains button
+        row = layout.row(align=True)
+        row.operator('sub.swing_bone_copy_values_to_all_chains', icon='ARMATURE_DATA', text="Copy Values to All Swing Bone Chains")
+        
+        layout.separator(factor=1.2)
+
+
+        # Add Presets dropdown with + and - buttons in similar layout as the Bone Chain Info section
+        row = layout.row()
+        split = row.split(factor=.5)
+        c = split.column()
+        preset_row = c.row(align=True)
+        preset_row.prop(context.scene, "sub_swing_preset", text="")
+        preset_row.operator("sub.swing_preset_add", text="", icon='ADD')
+        preset_row.operator("sub.swing_preset_remove", text="", icon='REMOVE')
+        
+        # Apply button is shown only when a preset is selected
+        if context.scene.sub_swing_preset and context.scene.sub_swing_preset != '--':
+            c.row().operator("sub.swing_preset_apply", text="Apply Selected Preset")
+
+        # Add Chain Presets section in the right column
+        c = split.column()
+        chain_preset_row = c.row(align=True)
+        chain_preset_row.prop(context.scene, "sub_swing_chain_preset", text="")
+        chain_preset_row.operator("sub.swing_chain_preset_add", text="", icon='ADD')
+        chain_preset_row.operator("sub.swing_chain_preset_remove", text="", icon='REMOVE')
+        
+        # Apply button for chain presets
+        if context.scene.sub_swing_chain_preset and context.scene.sub_swing_chain_preset != '--':
+            c.row().operator("sub.swing_chain_preset_apply", text="Apply Selected Chain Preset")
+
+        
+        # Add separators above and below the buttons with bigger spacing
+        layout.separator(factor=1.2)
+        
         # Swing Bone Chain & Bone Info Area
         if len(sub_swing_data.swing_bone_chains) == 0:
             return
@@ -329,6 +389,7 @@ class SUB_PT_swing_bone_chains(Panel, SwingPropertyPanel):
         c.prop(active_swing_bone, 'fall_speed_scale')
         c.prop(active_swing_bone, 'ground_hit')
         c.prop(active_swing_bone, 'wind_affect')
+
         return
 
 class SUB_UL_swing_bone_chains(UIList):
