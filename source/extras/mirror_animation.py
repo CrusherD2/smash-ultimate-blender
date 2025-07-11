@@ -2,6 +2,7 @@ import bpy
 from bpy.types import Operator
 from bpy.props import EnumProperty, BoolProperty
 import logging
+import mathutils
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -222,6 +223,118 @@ def mirror_action(act, axis='X', selected_bones_only=False, context=None, only_a
 
 
 #########################################################################################
+# Hip Bone 180 Rotation
+#########################################################################################
+
+def find_hip_bone(armature):
+    """Find the hip bone in the armature"""
+    if not armature or armature.type != 'ARMATURE':
+        return None
+    
+    # Common hip bone names
+    hip_keywords = ['hip', 'pelvis', 'root']
+    
+    for bone in armature.pose.bones:
+        bone_name_lower = bone.name.lower()
+        for keyword in hip_keywords:
+            if keyword in bone_name_lower:
+                return bone
+    
+    return None
+
+def rotate_hip_180(armature, axis, only_active_frame=False, current_frame=None):
+    """Rotate hip bone 180 degrees on specified axis"""
+    hip_bone = find_hip_bone(armature)
+    
+    if not hip_bone:
+        print("No hip bone found for 180 degree rotation")
+        return False
+    
+    import math
+    rotation_180 = math.radians(180)
+    
+    # Store original mode and ensure we're in pose mode
+    original_mode = bpy.context.mode
+    if original_mode != 'POSE':
+        bpy.ops.object.mode_set(mode='POSE')
+    
+    if only_active_frame and current_frame is not None:
+        # Only rotate at current frame
+        if hip_bone.rotation_mode == 'QUATERNION':
+            # Create rotation quaternion and apply it
+            if axis == 'X':
+                rot_quat = mathutils.Quaternion((1, 0, 0), rotation_180)
+            elif axis == 'Y':
+                rot_quat = mathutils.Quaternion((0, 1, 0), rotation_180)
+            elif axis == 'Z':
+                rot_quat = mathutils.Quaternion((0, 0, 1), rotation_180)
+            hip_bone.rotation_quaternion = rot_quat @ hip_bone.rotation_quaternion
+            hip_bone.keyframe_insert(data_path="rotation_quaternion", frame=current_frame)
+        else:
+            # Apply 180 degree rotation to euler
+            if axis == 'X':
+                hip_bone.rotation_euler[0] += rotation_180
+            elif axis == 'Y':
+                hip_bone.rotation_euler[1] += rotation_180
+            elif axis == 'Z':
+                hip_bone.rotation_euler[2] += rotation_180
+            hip_bone.keyframe_insert(data_path="rotation_euler", frame=current_frame)
+    else:
+        # Rotate for entire animation
+        action = armature.animation_data.action if armature.animation_data else None
+        if not action:
+            print("No action found for hip bone rotation")
+            return False
+        
+        # Find all frames with keyframes for the hip bone
+        hip_frames = set()
+        for fcurve in action.fcurves:
+            if f'pose.bones["{hip_bone.name}"]' in fcurve.data_path and 'rotation' in fcurve.data_path:
+                for keyframe in fcurve.keyframe_points:
+                    hip_frames.add(int(keyframe.co[0]))
+        
+        # If no keyframes found, apply to current frame only
+        if not hip_frames:
+            hip_frames = {current_frame or 1}
+        
+        # Store original frame
+        original_frame = bpy.context.scene.frame_current
+        
+        # Apply rotation to each frame
+        for frame in hip_frames:
+            bpy.context.scene.frame_set(frame)
+            
+            if hip_bone.rotation_mode == 'QUATERNION':
+                # Create rotation quaternion and apply it
+                if axis == 'X':
+                    rot_quat = mathutils.Quaternion((1, 0, 0), rotation_180)
+                elif axis == 'Y':
+                    rot_quat = mathutils.Quaternion((0, 1, 0), rotation_180)
+                elif axis == 'Z':
+                    rot_quat = mathutils.Quaternion((0, 0, 1), rotation_180)
+                hip_bone.rotation_quaternion = rot_quat @ hip_bone.rotation_quaternion
+                hip_bone.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+            else:
+                if axis == 'X':
+                    hip_bone.rotation_euler[0] += rotation_180
+                elif axis == 'Y':
+                    hip_bone.rotation_euler[1] += rotation_180
+                elif axis == 'Z':
+                    hip_bone.rotation_euler[2] += rotation_180
+                hip_bone.keyframe_insert(data_path="rotation_euler", frame=frame)
+        
+        # Restore original frame
+        bpy.context.scene.frame_set(original_frame)
+    
+    # Restore original mode
+    if original_mode != 'POSE':
+        bpy.ops.object.mode_set(mode=original_mode)
+    
+    print(f"Applied 180 degree rotation to hip bone '{hip_bone.name}' on {axis}-axis")
+    return True
+
+
+#########################################################################################
 # OPERATORS
 #########################################################################################
 
@@ -246,6 +359,12 @@ class SUB_OT_mirror_action(Operator):
             ('XYZ', 'XYZ', "All XYZ axes"),
             ('O', 'Original', "Original"),
         )
+    )
+
+    rotate_180 : BoolProperty(
+        name="180 Rotate",
+        description="Rotate hip bone 180 degrees on selected axis after mirroring",
+        default=False
     )
 
     selected_bones_only : BoolProperty(
@@ -276,24 +395,52 @@ class SUB_OT_mirror_action(Operator):
             self.report({"ERROR"}, "No Keyframes")
             return {'CANCELLED'}
         
+        # Get current frame for hip rotation
+        current_frame = context.scene.frame_current if self.only_active_frame else None
+        
+        # Apply mirroring
         if self.axis in ('X', 'Y', 'Z'): 
             mirror_action(context.active_object.animation_data.action, axis=self.axis, selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame)
-        if self.axis == 'XY':
+            # Apply 180 rotation to hip if enabled
+            if self.rotate_180:
+                rotate_hip_180(context.active_object, self.axis, only_active_frame=self.only_active_frame, current_frame=current_frame)
+        elif self.axis == 'XY':
             mirror_action(context.active_object.animation_data.action, axis='X', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame)
             mirror_action(context.active_object.animation_data.action, axis='Y', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame)
-        if self.axis == 'XZ':
+            # Apply 180 rotation to hip if enabled (for each axis)
+            if self.rotate_180:
+                rotate_hip_180(context.active_object, 'X', only_active_frame=self.only_active_frame, current_frame=current_frame)
+                rotate_hip_180(context.active_object, 'Y', only_active_frame=self.only_active_frame, current_frame=current_frame)
+        elif self.axis == 'XZ':
             mirror_action(context.active_object.animation_data.action, axis='X', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame)
             mirror_action(context.active_object.animation_data.action, axis='Z', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame)
-        if self.axis == 'YZ':
+            # Apply 180 rotation to hip if enabled (for each axis)
+            if self.rotate_180:
+                rotate_hip_180(context.active_object, 'X', only_active_frame=self.only_active_frame, current_frame=current_frame)
+                rotate_hip_180(context.active_object, 'Z', only_active_frame=self.only_active_frame, current_frame=current_frame)
+        elif self.axis == 'YZ':
             mirror_action(context.active_object.animation_data.action, axis='Y', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame)
             mirror_action(context.active_object.animation_data.action, axis='Z', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame)
-        if self.axis == 'XYZ':
+            # Apply 180 rotation to hip if enabled (for each axis)
+            if self.rotate_180:
+                rotate_hip_180(context.active_object, 'Y', only_active_frame=self.only_active_frame, current_frame=current_frame)
+                rotate_hip_180(context.active_object, 'Z', only_active_frame=self.only_active_frame, current_frame=current_frame)
+        elif self.axis == 'XYZ':
             mirror_action(context.active_object.animation_data.action, axis='X', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame)
             mirror_action(context.active_object.animation_data.action, axis='Y', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame)
             mirror_action(context.active_object.animation_data.action, axis='Z', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame)
+            # Apply 180 rotation to hip if enabled (for each axis)
+            if self.rotate_180:
+                rotate_hip_180(context.active_object, 'X', only_active_frame=self.only_active_frame, current_frame=current_frame)
+                rotate_hip_180(context.active_object, 'Y', only_active_frame=self.only_active_frame, current_frame=current_frame)
+                rotate_hip_180(context.active_object, 'Z', only_active_frame=self.only_active_frame, current_frame=current_frame)
         # Skip 'O'; helps back and forth between poses
         
-        self.report({"INFO"}, f"Action mirrored on {self.axis}-axis!")
+        # Update success message to include hip rotation info
+        message = f"Action mirrored on {self.axis}-axis!"
+        if self.rotate_180:
+            message += f" Hip rotated 180° on {self.axis}-axis."
+        self.report({"INFO"}, message)
         return {'FINISHED'}
 
 
