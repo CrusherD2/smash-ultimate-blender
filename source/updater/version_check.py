@@ -14,6 +14,7 @@ Features:
 - Automatic detection of new code pushes
 - Progress tracking during downloads
 - Automatic backup creation before installation
+- Smart binary dependency handling (handles locked .pyd/.so files)
 - Graceful error handling and recovery
 - Cross-platform restart functionality
 
@@ -104,6 +105,9 @@ def check_for_newer_version():
     global UPDATE_STATUS, UPDATE_AVAILABLE, LATEST_COMMIT_SHA, LATEST_COMMIT_MESSAGE, LATEST_COMMIT_DATE, CURRENT_COMMIT_SHA, CURRENT_COMMIT_MESSAGE
     
     UPDATE_STATUS = "checking"
+    
+    # Clean up old binary files from previous updates
+    cleanup_old_binaries()
 
     try:
         # Get the latest commit from the animation-workflow branch
@@ -192,6 +196,39 @@ def should_skip_file_or_dir(name):
             return True
     return False
 
+def is_binary_dependency(name):
+    """Check if file is a binary dependency that might be locked"""
+    binary_extensions = ['.pyd', '.so', '.dll', '.dylib']
+    return any(name.endswith(ext) for ext in binary_extensions)
+
+def safe_copy_binary(src_file, dst_file):
+    """Safely copy binary files, handling locked files"""
+    try:
+        # Try normal copy first
+        shutil.copy2(src_file, dst_file)
+        return True, None
+    except PermissionError as e:
+        # If locked, try renaming old file and copying new one
+        try:
+            backup_file = dst_file + '.old'
+            if os.path.exists(dst_file):
+                # Remove old backup if it exists
+                if os.path.exists(backup_file):
+                    try:
+                        os.remove(backup_file)
+                    except:
+                        pass
+                # Rename current file to .old
+                os.rename(dst_file, backup_file)
+            # Now try copying the new file
+            shutil.copy2(src_file, dst_file)
+            print(f"Smash_ultimate_blender: Updated locked binary {os.path.basename(dst_file)} (old version backed up)")
+            return True, None
+        except Exception as rename_error:
+            return False, f"Could not update binary dependency: {rename_error}"
+    except Exception as e:
+        return False, str(e)
+
 def safe_copy_tree(src, dst, skip_existing=True):
     """Safely copy directory tree, skipping problematic files"""
     copied_items = []
@@ -220,14 +257,68 @@ def safe_copy_tree(src, dst, skip_existing=True):
                 # Skip if file exists and skip_existing is True
                 if skip_existing and os.path.exists(dst_file):
                     continue
-                    
-                shutil.copy2(src_file, dst_file)
-                copied_items.append(dst_file)
+                
+                # Handle binary dependencies specially
+                if is_binary_dependency(file):
+                    success, error = safe_copy_binary(src_file, dst_file)
+                    if success:
+                        copied_items.append(dst_file)
+                    else:
+                        failed_items.append((src_file, error))
+                        print(f"Smash_ultimate_blender: Failed to copy binary {src_file}: {error}")
+                else:
+                    shutil.copy2(src_file, dst_file)
+                    copied_items.append(dst_file)
             except Exception as e:
                 failed_items.append((src_file, str(e)))
                 print(f"Smash_ultimate_blender: Failed to copy {src_file}: {e}")
     
     return copied_items, failed_items
+
+def cleanup_old_binaries():
+    """Clean up .old binary files from previous updates"""
+    try:
+        addon_path = get_addon_path()
+        for root, dirs, files in os.walk(addon_path):
+            for file in files:
+                if file.endswith('.old') and is_binary_dependency(file[:-4]):  # Remove .old extension to check
+                    old_file = os.path.join(root, file)
+                    try:
+                        os.remove(old_file)
+                        print(f"Smash_ultimate_blender: Cleaned up old binary: {file}")
+                    except Exception as e:
+                        print(f"Smash_ultimate_blender: Could not clean up {file}: {e}")
+    except Exception as e:
+        print(f"Smash_ultimate_blender: Error during binary cleanup: {e}")
+
+def restart_blender_after_update():
+    """Standalone function to restart Blender after update"""
+    try:
+        # Get current blend file path
+        current_file = bpy.data.filepath
+        
+        # Get Blender executable path
+        blender_exe = bpy.app.binary_path
+        
+        # Build command
+        if current_file:
+            cmd = [blender_exe, current_file]
+        else:
+            cmd = [blender_exe]
+        
+        # Start new Blender instance
+        if platform.system() == "Windows":
+            subprocess.Popen(cmd, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+        else:
+            subprocess.Popen(cmd, start_new_session=True)
+        
+        # Quit current instance
+        bpy.ops.wm.quit_blender()
+        
+    except Exception as e:
+        print(f"Error restarting Blender: {e}")
+    
+    return None  # Don't reschedule the timer
 
 def download_update_with_progress(url, destination, progress_callback=None):
     """Download file with progress tracking"""
@@ -352,6 +443,8 @@ class SUB_OP_install_update(Operator):
                     print(f"Smash_ultimate_blender: Warning - {len(failed_items)} files failed to copy")
                     for failed_file, error in failed_items:
                         print(f"  {failed_file}: {error}")
+                else:
+                    print(f"Smash_ultimate_blender: All files copied successfully!")
                 
                 print(f"Smash_ultimate_blender: Successfully copied {len(copied_items)} files")
                 
@@ -367,8 +460,8 @@ class SUB_OP_install_update(Operator):
                 # Automatically restart Blender
                 self.report({'INFO'}, "Update installed successfully. Restarting Blender...")
                 
-                # Trigger restart
-                bpy.app.timers.register(lambda: self._restart_blender(), first_interval=1.0)
+                # Trigger restart using standalone function
+                bpy.app.timers.register(restart_blender_after_update, first_interval=1.0)
                 UPDATE_STATUS = "idle"  # Reset status since we're restarting
                 
             else:
@@ -388,35 +481,6 @@ class SUB_OP_install_update(Operator):
             return {'CANCELLED'}
         
         return {'FINISHED'}
-    
-    def _restart_blender(self):
-        """Internal method to restart Blender"""
-        try:
-            # Get current blend file path
-            current_file = bpy.data.filepath
-            
-            # Get Blender executable path
-            blender_exe = bpy.app.binary_path
-            
-            # Build command
-            if current_file:
-                cmd = [blender_exe, current_file]
-            else:
-                cmd = [blender_exe]
-            
-            # Start new Blender instance
-            if platform.system() == "Windows":
-                subprocess.Popen(cmd, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
-            else:
-                subprocess.Popen(cmd, start_new_session=True)
-            
-            # Quit current instance
-            bpy.ops.wm.quit_blender()
-            
-        except Exception as e:
-            print(f"Error restarting Blender: {e}")
-        
-        return None  # Don't reschedule the timer
 
 class SUB_OP_restart_blender(Operator):
     """Restart Blender to complete the update"""
