@@ -19,6 +19,9 @@ from . import rename_utils
 from . import reset_animation
 from . import mirror_animation
 
+# Import animation_scroll module
+from . import animation_scroll
+
 # Explicit registration function for the package
 def register():
     # Register reset_animation first to ensure it's available for the panel
@@ -30,7 +33,13 @@ def register():
     # Register rename_utils
     rename_utils.register()
     
+    # Register animation_scroll
+    animation_scroll.register()
+    
 def unregister():
+    # Unregister animation_scroll
+    animation_scroll.unregister()
+    
     # Unregister rename_utils
     rename_utils.unregister()
     

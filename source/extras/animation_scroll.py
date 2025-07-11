@@ -1,0 +1,208 @@
+import bpy
+from bpy.types import Operator
+from bpy.props import BoolProperty
+
+# Global variable to track the last checked object
+_last_checked_object = None
+
+# Timer function to check if we should auto-start/stop animation scroll
+def auto_start_animation_scroll_timer():
+    """
+    Timer function that ensures animation scroll is always active when appropriate conditions are met.
+    Automatically starts when you select an armature with multiple animations and stops when you don't.
+    """
+    global _last_checked_object
+    
+    try:
+        context = bpy.context
+        current_object = context.active_object
+        
+        # Only check if the active object has changed
+        if current_object != _last_checked_object:
+            _last_checked_object = current_object
+            
+            # Check if we have the right conditions
+            if (current_object and 
+                current_object.type == 'ARMATURE' and 
+                current_object.animation_data):
+                
+                # Get available actions (filter out SAP and _old)
+                actions = [action for action in bpy.data.actions 
+                          if not ("SAP" in action.name or "_old" in action.name)]
+                
+                # Only auto-start if we have multiple animations and modal isn't already running
+                if len(actions) >= 2 and not SUB_OP_animation_scroll_modal._running:
+                    # Start the modal operator
+                    bpy.ops.sub.animation_scroll_modal('INVOKE_DEFAULT')
+                    
+            # Stop the modal if conditions are no longer met
+            elif SUB_OP_animation_scroll_modal._running:
+                # Set flag for modal to stop itself
+                SUB_OP_animation_scroll_modal._should_auto_stop = True
+                
+    except Exception as e:
+        # Silently handle any errors to avoid breaking Blender
+        pass
+    
+    # Return interval for next check (1 second)
+    return 1.0
+
+# Handler to automatically start animation scroll when conditions are met
+@bpy.app.handlers.persistent
+def auto_start_animation_scroll_handler(scene):
+    """
+    Handler that ensures animation scroll is always active when appropriate.
+    """
+    # We'll use the timer instead of this handler for better performance
+    pass
+
+class SUB_OP_animation_scroll_modal(Operator):
+    """Modal operator that automatically enables animation scrolling when working with armatures"""
+    bl_idname = "sub.animation_scroll_modal"
+    bl_label = "Animation Scroll Modal"
+    bl_description = "Automatically scroll through animations using the mouse wheel when hovering over animation areas"
+    bl_options = {'REGISTER'}
+
+    _running = False
+    _handler = None
+    _should_auto_stop = False
+
+    @classmethod
+    def poll(cls, context):
+        # This is called by the auto-start timer to check if conditions are appropriate
+        has_object = context.active_object is not None
+        is_armature = has_object and context.active_object.type == 'ARMATURE'
+        has_anim_data = is_armature and context.active_object.animation_data is not None
+        
+        return (context.active_object and 
+                context.active_object.type == 'ARMATURE' and
+                context.active_object.animation_data)
+
+    def modal(self, context, event):
+        # Check if we should auto-stop
+        if SUB_OP_animation_scroll_modal._should_auto_stop:
+            SUB_OP_animation_scroll_modal._should_auto_stop = False
+            return self.cancel(context)
+        
+        # Handle wheel events
+        if event.type in {'WHEELUPMOUSE', 'WHEELDOWNMOUSE'}:
+            # Check if mouse is over animation areas (Action Editor, Dopesheet, etc.)
+            if self.is_mouse_over_animation_area(context, event):
+                if event.value == 'PRESS':
+                    self.cycle_animation(context, event.type == 'WHEELUPMOUSE')
+                    return {'RUNNING_MODAL'}
+        
+        return {'PASS_THROUGH'}
+
+    def is_mouse_over_animation_area(self, context, event):
+        """Check if mouse is over an animation-related area"""
+        mouse_x = event.mouse_x
+        mouse_y = event.mouse_y
+        
+        # Get the window and its screen
+        window = context.window
+        screen = window.screen
+        
+        for area in screen.areas:
+            # Check if mouse is within this area
+            if (area.x <= mouse_x <= area.x + area.width and 
+                area.y <= mouse_y <= area.y + area.height):
+                
+                # Check if this is an animation-related area
+                if area.type in {'DOPESHEET_EDITOR', 'GRAPH_EDITOR', 'NLA_EDITOR'}:
+                    # For dopesheet, also check if we're in Action Editor mode
+                    if area.type == 'DOPESHEET_EDITOR':
+                        for space in area.spaces:
+                            if hasattr(space, 'mode'):
+                                if space.mode in {'ACTION', 'SHAPEKEY', 'GPENCIL', 'MASK'}:
+                                    return True
+                    else:
+                        return True
+        
+        return False
+
+    def cycle_animation(self, context, scroll_up):
+        """Cycle through available animations"""
+        armature = context.active_object
+        
+        if not armature or not armature.animation_data:
+            return
+        
+        # Get all available actions, filtering out SAP and _old actions
+        actions = [action for action in bpy.data.actions 
+                  if not ("SAP" in action.name or "_old" in action.name)]
+        
+        if len(actions) < 2:
+            self.report({'INFO'}, f"Need at least 2 actions to cycle (found {len(actions)})")
+            return  # Need at least 2 actions to cycle
+        
+        current_action = armature.animation_data.action
+        current_index = -1
+        
+        # Find current action index
+        if current_action:
+            try:
+                current_index = actions.index(current_action)
+            except ValueError:
+                current_index = -1
+        
+        # Calculate next index
+        if scroll_up:
+            next_index = (current_index - 1) % len(actions)
+        else:
+            next_index = (current_index + 1) % len(actions)
+        
+        # Set the new action
+        new_action = actions[next_index]
+        armature.animation_data.action = new_action
+        
+        # Update the timeline if we have frame data
+        if new_action and new_action.fcurves:
+            # Set frame range based on action's keyframes
+            frame_start = float('inf')
+            frame_end = float('-inf')
+            has_keyframes = False
+            
+            for fcurve in new_action.fcurves:
+                if fcurve.keyframe_points:
+                    for keyframe in fcurve.keyframe_points:
+                        frame_start = min(frame_start, int(keyframe.co[0]))
+                        frame_end = max(frame_end, int(keyframe.co[0]))
+                        has_keyframes = True
+            
+            if has_keyframes and frame_end > frame_start:
+                context.scene.frame_start = frame_start
+                context.scene.frame_end = frame_end
+                # Set current frame to start for immediate preview
+                context.scene.frame_set(frame_start)
+        
+        # Show notification in header
+        self.report({'INFO'}, f"Switched to animation: {new_action.name}")
+
+    def execute(self, context):
+        # Start the modal operator (only called by auto-start timer)
+        context.window_manager.modal_handler_add(self)
+        SUB_OP_animation_scroll_modal._running = True
+        return {'RUNNING_MODAL'}
+
+    def cancel(self, context):
+        SUB_OP_animation_scroll_modal._running = False
+        return {'CANCELLED'}
+
+def register():
+    bpy.utils.register_class(SUB_OP_animation_scroll_modal)
+    
+    # Register the auto-start timer
+    if not bpy.app.timers.is_registered(auto_start_animation_scroll_timer):
+        bpy.app.timers.register(auto_start_animation_scroll_timer, first_interval=2.0, persistent=True)
+
+def unregister():
+    # Unregister the auto-start timer
+    if bpy.app.timers.is_registered(auto_start_animation_scroll_timer):
+        bpy.app.timers.unregister(auto_start_animation_scroll_timer)
+    
+    bpy.utils.unregister_class(SUB_OP_animation_scroll_modal)
+    
+    # Reset class variables
+    SUB_OP_animation_scroll_modal._running = False
+    SUB_OP_animation_scroll_modal._should_auto_stop = False 

@@ -60,6 +60,7 @@ classes = [
     source.extras.idle_pose_library.SUB_OP_apply_idle_pose,
     source.extras.limit_weights.SUB_OP_limit_weights,
     source.extras.fk_to_ik.SUB_OP_fk_to_ik_transfer,
+    source.extras.animation_scroll.SUB_OP_animation_scroll_modal,
     source.anim.anim_data.SUB_PT_sub_smush_anim_data_main,
     source.anim.anim_data.SUB_PT_sub_smush_anim_data_vis_tracks,
     source.anim.anim_data.SUB_PT_sub_smush_anim_data_mat_tracks,
