@@ -156,28 +156,34 @@ class SUB_OP_animation_scroll_modal(Operator):
         new_action = actions[next_index]
         armature.animation_data.action = new_action
         
-        # Update the timeline if we have frame data
+        # Update the timeline to show the full animation range
         if new_action and new_action.fcurves:
-            # Set frame range based on action's keyframes
-            frame_start = float('inf')
-            frame_end = float('-inf')
+            # Find the first and last keyframed frames in the action
+            first_frame = float('inf')
+            last_frame = float('-inf')
             has_keyframes = False
             
             for fcurve in new_action.fcurves:
                 if fcurve.keyframe_points:
                     for keyframe in fcurve.keyframe_points:
-                        frame_start = min(frame_start, int(keyframe.co[0]))
-                        frame_end = max(frame_end, int(keyframe.co[0]))
+                        frame_num = int(keyframe.co[0])
+                        first_frame = min(first_frame, frame_num)
+                        last_frame = max(last_frame, frame_num)
                         has_keyframes = True
             
-            if has_keyframes and frame_end > frame_start:
-                context.scene.frame_start = frame_start
-                context.scene.frame_end = frame_end
-                # Set current frame to start for immediate preview
-                context.scene.frame_set(frame_start)
+            if has_keyframes:
+                # Set the timeline to show the complete animation range
+                context.scene.frame_start = first_frame
+                context.scene.frame_end = last_frame
+                # Jump to the first frame to preview the animation start
+                context.scene.frame_set(first_frame)
         
-        # Show notification in header
-        self.report({'INFO'}, f"Switched to animation: {new_action.name}")
+        # Show notification with frame range info
+        if new_action and new_action.fcurves:
+            frame_range = f" (frames {context.scene.frame_start}-{context.scene.frame_end})"
+        else:
+            frame_range = ""
+        self.report({'INFO'}, f"Switched to animation: {new_action.name}{frame_range}")
 
     def execute(self, context):
         # Start the modal operator (only called by auto-start timer)
