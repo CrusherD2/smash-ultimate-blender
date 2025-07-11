@@ -175,8 +175,7 @@ class SUB_OP_animation_scroll_modal(Operator):
                 # Set the timeline to show the complete animation range
                 context.scene.frame_start = first_frame
                 context.scene.frame_end = last_frame
-                # Jump to the first frame to preview the animation start
-                context.scene.frame_set(first_frame)
+                # Keep the current frame position - don't jump to start
         
         # Show notification with frame range info
         if new_action and new_action.fcurves:
