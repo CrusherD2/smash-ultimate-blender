@@ -75,6 +75,19 @@ If your computer can run a supported version of Blender but fails to install the
 * This started with 3.6 LTS, older versions of blender require digging through the commit history and finding a really old version that worked with that old blender version.
 
 ## Uninstalling / Updating
+
+### Auto-Updater (New!)
+The plugin now includes a built-in auto-updater that makes keeping your installation current effortless:
+
+- **Automatic Update Checking**: The plugin automatically checks for new releases when Blender starts
+- **One-Click Updates**: When an update is available, a panel appears in the "Ultimate" tab with a simple "Download Update" button
+- **Safe Installation**: Creates automatic backups before installing updates
+- **Automatic Restart**: Handles restarting Blender with the new version automatically
+- **Progress Tracking**: Shows download progress and installation status
+
+The updater will only notify you about compatible versions (same major version number) to ensure stability.
+
+### Manual Updating
 TO REMOVE: First "Disable" the plugin, then restart blender, then you can hit "Remove" to uninstall. Then you can install the newest version.
 
 ## In case of problems

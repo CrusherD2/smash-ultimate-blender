@@ -49,6 +49,10 @@ def register():
     from .source.model.material import texture
     texture.register()
 
+    # Register updater components
+    from .source import updater
+    updater.register()
+
     from .source.updater.version_check import check_for_newer_version
     check_for_newer_version()
 
@@ -80,6 +84,10 @@ def unregister():
     
     # Unregister texture conversion tools
     texture.unregister()
+
+    # Unregister updater components
+    from .source import updater
+    updater.unregister()
 
     bpy.types.VIEW3D_MT_paint_vertex.remove(set_linear_vertex_color.menu_func)
 

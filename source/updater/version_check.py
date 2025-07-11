@@ -1,44 +1,385 @@
+"""
+Smash Ultimate Blender Auto-Updater System
+
+This module provides a comprehensive auto-updater for the Smash Ultimate Blender plugin.
+It directly monitors the animation-workflow branch for code changes and updates automatically.
+
+1. Branch Monitoring: Checks the GitHub repository for new commits on animation-workflow branch
+2. Download: Downloads the latest code directly from the branch
+3. Installation: Extracts and installs the update, backing up the current version
+4. Restart: Restarts Blender to complete the update process
+
+Features:
+- Monitors commits directly on animation-workflow branch (no releases needed)
+- Automatic detection of new code pushes
+- Progress tracking during downloads
+- Automatic backup creation before installation
+- Graceful error handling and recovery
+- Cross-platform restart functionality
+
+Repository: https://github.com/CrusherD2/smash-ultimate-blender
+Branch: animation-workflow (monitors this branch for code changes)
+
+The system operates through a state machine with the following states:
+- idle: Ready for operations
+- checking: Checking for updates
+- downloading: Downloading update file
+- ready_to_install: Download complete, ready to install
+- installing: Installing update
+- ready_to_restart: Installation complete, ready to restart
+
+Usage:
+The updater automatically checks for new commits when the plugin loads.
+If new code is available, a panel will appear in the 3D viewport sidebar
+under the "Ultimate" category with options to download and install the update.
+"""
+
 import re
 import requests
+import os
+import sys
+import zipfile
+import shutil
+import tempfile
+import subprocess
+import platform
+import bpy
+from bpy.types import Operator
+from bpy.props import StringProperty
 
-COMPATIBLE_UPDATE_AVAILABLE: bool = None
-LATEST_COMPATIBLE_VERSION: tuple[int,int,int] = None
+UPDATE_AVAILABLE: bool = None
+LATEST_COMMIT_SHA: str = None
+LATEST_COMMIT_MESSAGE: str = None
+LATEST_COMMIT_DATE: str = None
+CURRENT_COMMIT_SHA: str = None
+BRANCH_DOWNLOAD_URL: str = "https://github.com/CrusherD2/smash-ultimate-blender/archive/refs/heads/animation-workflow.zip"
+UPDATE_DOWNLOAD_PROGRESS: float = 0.0
+UPDATE_STATUS: str = "idle"  # idle, checking, downloading, installing, ready_to_restart
+
+def get_commit_file_path():
+    """Get the path to store the current commit SHA"""
+    addon_path = get_addon_path()
+    return os.path.join(addon_path, ".current_commit")
+
+def load_current_commit_sha():
+    """Load the currently stored commit SHA"""
+    try:
+        commit_file = get_commit_file_path()
+        if os.path.exists(commit_file):
+            with open(commit_file, 'r') as f:
+                return f.read().strip()
+    except Exception as e:
+        print(f"Smash_ultimate_blender: Error loading commit SHA: {e}")
+    return None
+
+def save_current_commit_sha(sha):
+    """Save the current commit SHA"""
+    try:
+        commit_file = get_commit_file_path()
+        with open(commit_file, 'w') as f:
+            f.write(sha)
+    except Exception as e:
+        print(f"Smash_ultimate_blender: Error saving commit SHA: {e}")
 
 def check_for_newer_version():
     """
-    The latest version should only check for a newer version compatible with the current blender version.
-    By convention, the major version number will only be incremented with a breaking blender version change,
-    meanwhile the minor version or patch version will be incremented on a new feature compatible with the current blender install.
-    Also, dont want to notify users of a beta release.
-    Many users won't be able to upgrade to a newer blender version right away, so don't notify them of an update they can't install yet.
+    Check the animation-workflow branch for new commits.
+    If there's a newer commit than what we have stored, mark update as available.
     """
-    from ...__init__ import bl_info
+    global UPDATE_STATUS, UPDATE_AVAILABLE, LATEST_COMMIT_SHA, LATEST_COMMIT_MESSAGE, LATEST_COMMIT_DATE, CURRENT_COMMIT_SHA
+    
+    UPDATE_STATUS = "checking"
 
     try:
-        response = requests.get("https://api.github.com/repos/ssbucarlos/smash-ultimate-blender/git/refs/tags", timeout=.5)
+        # Get the latest commit from the animation-workflow branch
+        response = requests.get("https://api.github.com/repos/CrusherD2/smash-ultimate-blender/commits/animation-workflow", timeout=10)
+        response.raise_for_status()
+        
+        commit_data = response.json()
+        if not isinstance(commit_data, dict):
+            print(f"Smash_ultimate_blender: Unexpected commit API response format: {type(commit_data)}")
+            UPDATE_STATUS = "idle"
+            return
+            
+        # Extract commit information
+        latest_sha = commit_data.get("sha")
+        commit_info = commit_data.get("commit", {})
+        latest_message = commit_info.get("message", "No message")
+        latest_date = commit_info.get("author", {}).get("date", "Unknown date")
+        
+        if not latest_sha:
+            print("Smash_ultimate_blender: Could not extract commit SHA from response")
+            UPDATE_STATUS = "idle"
+            return
+            
+        # Load the current commit SHA we have stored
+        current_sha = load_current_commit_sha()
+        
+        # Store the information
+        LATEST_COMMIT_SHA = latest_sha
+        LATEST_COMMIT_MESSAGE = latest_message
+        LATEST_COMMIT_DATE = latest_date
+        CURRENT_COMMIT_SHA = current_sha
+        
+        # Check if we have a new commit
+        if current_sha is None:
+            # First time running, store current commit and don't show update
+            print("Smash_ultimate_blender: First time checking, storing current commit SHA")
+            save_current_commit_sha(latest_sha)
+            UPDATE_AVAILABLE = False
+        elif current_sha != latest_sha:
+            # New commit available!
+            print(f"Smash_ultimate_blender: New commit available!")
+            print(f"  Current: {current_sha[:8] if current_sha else 'None'}")
+            print(f"  Latest:  {latest_sha[:8]}")
+            print(f"  Message: {latest_message[:100]}...")
+            UPDATE_AVAILABLE = True
+        else:
+            # No update available
+            print("Smash_ultimate_blender: Plugin is up to date")
+            UPDATE_AVAILABLE = False
+            
     except Exception as e:
-        print(f"Smash_ultimate_blender: Couldn't check for newer version, please check your internet connection. exception info=`{e}`")
+        print(f"Smash_ultimate_blender: Couldn't check for branch updates. Error: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"Smash_ultimate_blender: HTTP Status: {e.response.status_code}")
+            print(f"Smash_ultimate_blender: Response: {e.response.text}")
+        UPDATE_STATUS = "idle"
         return
     
-    #example of "refs" {'refs/tags/v1.3.0', 'refs/tags/v1.3.1',...}
-    refs = {s.get("ref") for s in response.json()}
-    regex_pattern = r"^refs/tags/v(\d*)\.(\d*)\.(\d*)$"
-    current_major, current_minor, current_patch = bl_info["version"][0], bl_info["version"][1], bl_info["version"][2]
-    current_minor_patch_version = (current_minor, current_patch)
+    UPDATE_STATUS = "idle"
 
-    for ref in refs:
-        if match:= re.match(regex_pattern, ref):
-            if groups:= match.groups():
-                found_major, found_minor, found_patch = int(groups[0]), int(groups[1]), int(groups[2])
-                found_version = (found_major, found_minor, found_patch)
-                found_minor_patch_version = (found_minor, found_patch)
-                if found_major == current_major:
-                    if current_minor_patch_version < found_minor_patch_version:
-                        global COMPATIBLE_UPDATE_AVAILABLE
-                        global LATEST_COMPATIBLE_VERSION
-                        COMPATIBLE_UPDATE_AVAILABLE = True
-                        if LATEST_COMPATIBLE_VERSION is None:
-                            LATEST_COMPATIBLE_VERSION = found_version
-                        elif LATEST_COMPATIBLE_VERSION < found_version:
-                            LATEST_COMPATIBLE_VERSION = found_version
+def get_addon_path():
+    """Get the path to the current addon directory"""
+    return os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+
+def download_update_with_progress(url, destination, progress_callback=None):
+    """Download file with progress tracking"""
+    try:
+        response = requests.get(url, stream=True, timeout=30)
+        response.raise_for_status()
+        
+        total_size = int(response.headers.get('content-length', 0))
+        downloaded = 0
+        
+        with open(destination, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if progress_callback and total_size > 0:
+                        progress = downloaded / total_size
+                        progress_callback(progress)
+        
+        return True
+    except Exception as e:
+        print(f"Error downloading update: {e}")
+        return False
+
+class SUB_OP_download_update(Operator):
+    """Download the latest compatible version"""
+    bl_idname = "sub.download_update"
+    bl_label = "Download Update"
+    bl_description = "Download the latest version of the plugin"
     
+    def execute(self, context):
+        global UPDATE_STATUS, UPDATE_DOWNLOAD_PROGRESS, BRANCH_DOWNLOAD_URL
+        
+        if not UPDATE_AVAILABLE:
+            self.report({'ERROR'}, "No update available")
+            return {'CANCELLED'}
+        
+        UPDATE_STATUS = "downloading"
+        UPDATE_DOWNLOAD_PROGRESS = 0.0
+        
+        # Create temporary directory for download
+        temp_dir = tempfile.mkdtemp()
+        download_path = os.path.join(temp_dir, "update.zip")
+        
+        def progress_callback(progress):
+            global UPDATE_DOWNLOAD_PROGRESS
+            UPDATE_DOWNLOAD_PROGRESS = progress
+            # Force UI update
+            if context.area:
+                context.area.tag_redraw()
+        
+        if download_update_with_progress(BRANCH_DOWNLOAD_URL, download_path, progress_callback):
+            # Store download path for installation
+            context.scene.sub_updater_download_path = download_path
+            UPDATE_STATUS = "ready_to_install"
+            self.report({'INFO'}, "Update downloaded successfully. Click 'Install Update' to continue.")
+        else:
+            UPDATE_STATUS = "idle"
+            self.report({'ERROR'}, "Failed to download update")
+            # Clean up temp directory
+            try:
+                shutil.rmtree(temp_dir)
+            except:
+                pass
+            return {'CANCELLED'}
+        
+        return {'FINISHED'}
+
+class SUB_OP_install_update(Operator):
+    """Install the downloaded update"""
+    bl_idname = "sub.install_update"
+    bl_label = "Install Update"
+    bl_description = "Install the downloaded update and restart Blender"
+    
+    def execute(self, context):
+        global UPDATE_STATUS
+        
+        download_path = getattr(context.scene, 'sub_updater_download_path', None)
+        if not download_path or not os.path.exists(download_path):
+            self.report({'ERROR'}, "No downloaded update found")
+            return {'CANCELLED'}
+        
+        UPDATE_STATUS = "installing"
+        
+        try:
+            # Get addon path
+            addon_path = get_addon_path()
+            
+            # Create backup
+            backup_path = addon_path + "_backup"
+            if os.path.exists(backup_path):
+                shutil.rmtree(backup_path)
+            shutil.copytree(addon_path, backup_path)
+            
+            # Extract update
+            temp_extract_dir = tempfile.mkdtemp()
+            with zipfile.ZipFile(download_path, 'r') as zip_ref:
+                zip_ref.extractall(temp_extract_dir)
+            
+            # Find the extracted folder (should be smash-ultimate-blender-animation-workflow when downloading from branch)
+            extracted_contents = os.listdir(temp_extract_dir)
+            if len(extracted_contents) == 1:
+                extracted_folder = os.path.join(temp_extract_dir, extracted_contents[0])
+                print(f"Smash_ultimate_blender: Found extracted folder: {extracted_contents[0]}")
+                
+                # Remove current addon files (except backup)
+                for item in os.listdir(addon_path):
+                    if item != os.path.basename(backup_path):
+                        item_path = os.path.join(addon_path, item)
+                        if os.path.isdir(item_path):
+                            shutil.rmtree(item_path)
+                        else:
+                            os.remove(item_path)
+                
+                # Copy new files
+                for item in os.listdir(extracted_folder):
+                    src = os.path.join(extracted_folder, item)
+                    dst = os.path.join(addon_path, item)
+                    if os.path.isdir(src):
+                        shutil.copytree(src, dst)
+                    else:
+                        shutil.copy2(src, dst)
+                
+                # Save the new commit SHA since we successfully installed
+                if LATEST_COMMIT_SHA:
+                    save_current_commit_sha(LATEST_COMMIT_SHA)
+                    print(f"Smash_ultimate_blender: Updated to commit {LATEST_COMMIT_SHA[:8]}")
+                
+                UPDATE_STATUS = "ready_to_restart"
+                self.report({'INFO'}, "Update installed successfully. Click 'Restart Blender' to complete the update.")
+                
+            else:
+                raise Exception("Unexpected archive structure")
+            
+            # Clean up
+            shutil.rmtree(temp_extract_dir)
+            os.remove(download_path)
+            
+        except Exception as e:
+            UPDATE_STATUS = "idle"
+            self.report({'ERROR'}, f"Failed to install update: {str(e)}")
+            # Restore backup if something went wrong
+            try:
+                if os.path.exists(backup_path):
+                    if os.path.exists(addon_path):
+                        shutil.rmtree(addon_path)
+                    shutil.move(backup_path, addon_path)
+            except:
+                pass
+            return {'CANCELLED'}
+        
+        return {'FINISHED'}
+
+class SUB_OP_restart_blender(Operator):
+    """Restart Blender to complete the update"""
+    bl_idname = "sub.restart_blender"
+    bl_label = "Restart Blender"
+    bl_description = "Restart Blender to complete the update process"
+    
+    def execute(self, context):
+        # Get current blend file path
+        current_file = bpy.data.filepath
+        
+        # Restart Blender with a more robust approach
+        try:
+            # Get Blender executable path
+            blender_exe = bpy.app.binary_path
+            
+            # Build command
+            if current_file:
+                cmd = [blender_exe, current_file]
+            else:
+                cmd = [blender_exe]
+            
+            # Start new Blender instance
+            if platform.system() == "Windows":
+                # On Windows, use CREATE_NEW_PROCESS_GROUP to prevent inheriting signals
+                subprocess.Popen(cmd, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+            else:
+                # On Unix-like systems
+                subprocess.Popen(cmd, start_new_session=True)
+            
+            # Quit current instance
+            bpy.ops.wm.quit_blender()
+            
+        except Exception as e:
+            print(f"Error restarting Blender: {e}")
+            self.report({'ERROR'}, f"Failed to restart Blender: {str(e)}")
+            return {'CANCELLED'}
+        
+        return {'FINISHED'}
+    
+    def invoke(self, context, event):
+        if bpy.data.is_dirty:
+            return context.window_manager.invoke_props_dialog(self)
+        return self.execute(context)
+    
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="Current file has unsaved changes!")
+        layout.label(text="Save before restarting?")
+        layout.operator("wm.save_mainfile", text="Save and Continue")
+
+class SUB_OP_check_for_updates(Operator):
+    """Manually check for updates"""
+    bl_idname = "sub.check_for_updates"
+    bl_label = "Check for Updates"
+    bl_description = "Manually check for available updates"
+    
+    def execute(self, context):
+        check_for_newer_version()
+        
+        if UPDATE_AVAILABLE:
+            commit_short = LATEST_COMMIT_SHA[:8] if LATEST_COMMIT_SHA else "unknown"
+            self.report({'INFO'}, f"Update available: commit {commit_short}")
+        else:
+            self.report({'INFO'}, "No updates available")
+        
+        return {'FINISHED'}
+
+# Register properties for the scene
+def register_properties():
+    bpy.types.Scene.sub_updater_download_path = StringProperty(
+        name="Download Path",
+        description="Path to downloaded update file",
+        default=""
+    )
+
+def unregister_properties():
+    if hasattr(bpy.types.Scene, 'sub_updater_download_path'):
+        del bpy.types.Scene.sub_updater_download_path 

@@ -330,7 +330,7 @@ class SUB_OT_invert_rotation_values(Operator):
 
 
 class SUB_OT_ground_character(Operator):
-    """Lower the hip bone until either FootL or FootR touches the ground"""
+    """Move the hip bone on the Y axis until either FootL or FootR bone head touches the ground"""
     bl_idname = "sub.ground_character"
     bl_label = "Ground Character"
     bl_options = {'REGISTER', 'UNDO'}
@@ -453,13 +453,13 @@ class SUB_OT_ground_character(Operator):
         return {'FINISHED'}
     
     def _calculate_ground_adjustment(self, armature, hip_bone, foot_l_bone, foot_r_bone):
-        """Calculate how much to adjust the hip bone to ground the character using middle of foot bones"""
+        """Calculate how much to adjust the hip bone on Y axis to ground the character using foot bone heads"""
         # Update the armature to get current pose positions
         bpy.context.view_layer.update()
         
         # Get world positions of foot bone heads
-        foot_l_head_world = armature.matrix_world @ foot_l_bone.matrix @ foot_l_bone.bone.head_local
-        foot_r_head_world = armature.matrix_world @ foot_r_bone.matrix @ foot_r_bone.bone.head_local
+        foot_l_head_world = armature.matrix_world @ foot_l_bone.head
+        foot_r_head_world = armature.matrix_world @ foot_r_bone.head
         
         print(f"FootL head Z: {foot_l_head_world.z:.4f}")
         print(f"FootR head Z: {foot_r_head_world.z:.4f}")
