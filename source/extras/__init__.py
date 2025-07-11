@@ -17,11 +17,15 @@ from . import rename_utils
 
 # Import reset_animation module and ensure it's properly registered
 from . import reset_animation
+from . import mirror_animation
 
 # Explicit registration function for the package
 def register():
     # Register reset_animation first to ensure it's available for the panel
     reset_animation.register()
+    
+    # Register mirror_animation
+    mirror_animation.register()
     
     # Register rename_utils
     rename_utils.register()
@@ -32,3 +36,6 @@ def unregister():
     
     # Unregister reset_animation
     reset_animation.unregister()
+    
+    # Unregister mirror_animation
+    mirror_animation.unregister()

@@ -55,8 +55,12 @@ class SUB_PT_animation_tools(Panel):
         row = layout.row(align=True)
         row.operator("sub.transfer_hip_animation", text="Transfer Hip Animation to Trans")
         
-        # Add Reset Bone Locations button - just a button, not a section
+        # Add Mirror Animation button
         layout.separator()
+        row = layout.row(align=True)
+        row.operator("sub.mirror_action", text="Mirror Animation")
+        
+        # Add Reset Bone Locations button - just a button, not a section
         row = layout.row(align=True)
         row.operator("sub.reset_bone_locations", text="Reset Bone Locations")
         
