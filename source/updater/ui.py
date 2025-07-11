@@ -13,7 +13,7 @@ class SUB_PT_update_plugin(Panel):
     
     def draw(self, context):
         from ...__init__ import bl_info
-        from .version_check import LATEST_COMMIT_SHA, LATEST_COMMIT_MESSAGE, LATEST_COMMIT_DATE, CURRENT_COMMIT_SHA, UPDATE_STATUS, UPDATE_DOWNLOAD_PROGRESS
+        from .version_check import LATEST_COMMIT_SHA, LATEST_COMMIT_MESSAGE, LATEST_COMMIT_DATE, CURRENT_COMMIT_SHA, CURRENT_COMMIT_MESSAGE, UPDATE_STATUS, UPDATE_DOWNLOAD_PROGRESS
 
         layout = self.layout
         layout.use_property_split = False
@@ -25,21 +25,28 @@ class SUB_PT_update_plugin(Panel):
         current_version = bl_info['version']
         layout.row().label(text=f"Plugin version: v{current_version[0]}.{current_version[1]}.{current_version[2]}")
         
-        if CURRENT_COMMIT_SHA:
-            layout.row().label(text=f"Current commit: {CURRENT_COMMIT_SHA[:8]}")
+        layout.separator()
+        
+        # Current commit
+        if CURRENT_COMMIT_MESSAGE:
+            # Truncate long commit messages
+            current_msg = CURRENT_COMMIT_MESSAGE[:50] + "..." if len(CURRENT_COMMIT_MESSAGE) > 50 else CURRENT_COMMIT_MESSAGE
+            layout.row().label(text=f"Current: {current_msg}")
+        elif CURRENT_COMMIT_SHA:
+            layout.row().label(text=f"Current: {CURRENT_COMMIT_SHA[:8]}")
         else:
-            layout.row().label(text="Current commit: Unknown")
+            layout.row().label(text="Current: Unknown")
             
-        if LATEST_COMMIT_SHA:
-            layout.row().label(text=f"Latest commit: {LATEST_COMMIT_SHA[:8]}")
+        # Latest commit
+        if LATEST_COMMIT_MESSAGE:
+            # Truncate long commit messages  
+            latest_msg = LATEST_COMMIT_MESSAGE[:50] + "..." if len(LATEST_COMMIT_MESSAGE) > 50 else LATEST_COMMIT_MESSAGE
+            layout.row().label(text=f"Latest: {latest_msg}")
+        elif LATEST_COMMIT_SHA:
+            layout.row().label(text=f"Latest: {LATEST_COMMIT_SHA[:8]}")
             
         if LATEST_COMMIT_DATE:
             layout.row().label(text=f"Date: {LATEST_COMMIT_DATE[:10]}")  # Show just the date part
-            
-        if LATEST_COMMIT_MESSAGE:
-            # Truncate long commit messages
-            message = LATEST_COMMIT_MESSAGE[:60] + "..." if len(LATEST_COMMIT_MESSAGE) > 60 else LATEST_COMMIT_MESSAGE
-            layout.row().label(text=f"Message: {message}")
         
         layout.separator()
         
@@ -66,16 +73,8 @@ class SUB_PT_update_plugin(Panel):
             
         elif UPDATE_STATUS == "installing":
             layout.row().label(text="Installing update...", icon='FILE_REFRESH')
-            layout.row().label(text="Please wait, do not close Blender!")
-            
-        elif UPDATE_STATUS == "ready_to_restart":
-            layout.row().label(text="Update installed successfully!", icon='CHECKMARK')
-            layout.row().label(text="Restart Blender to complete the update:")
-            col = layout.column()
-            col.scale_y = 1.5
-            col.operator("sub.restart_blender", text="Restart Blender Now", icon='FILE_REFRESH')
-            layout.separator()
-            layout.row().label(text="Warning: Unsaved changes will be lost!", icon='ERROR')
+            layout.row().label(text="Please wait, Blender will restart automatically!")
+            layout.row().label(text="Do not close Blender manually!", icon='ERROR')
 
 class SUB_PT_updater_settings(Panel):
     bl_space_type = 'VIEW_3D'

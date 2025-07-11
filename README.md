@@ -79,13 +79,14 @@ If your computer can run a supported version of Blender but fails to install the
 ### Auto-Updater (New!)
 The plugin now includes a built-in auto-updater that makes keeping your installation current effortless:
 
-- **Automatic Update Checking**: The plugin automatically checks for new releases when Blender starts
-- **One-Click Updates**: When an update is available, a panel appears in the "Ultimate" tab with a simple "Download Update" button
-- **Safe Installation**: Creates automatic backups before installing updates
-- **Automatic Restart**: Handles restarting Blender with the new version automatically
-- **Progress Tracking**: Shows download progress and installation status
+- **Live Code Monitoring**: The plugin automatically monitors the animation-workflow branch for new commits
+- **Instant Notifications**: When new code is pushed, a panel appears in the "Ultimate" tab showing what changed
+- **One-Click Updates**: Simple "Download Update" and "Install Update" buttons with progress tracking
+- **Safe Installation**: Creates automatic backups and handles locked files (like .venv) intelligently  
+- **Automatic Restart**: Blender restarts automatically after installation to complete the update
+- **Commit Details**: Shows current and latest commit messages instead of cryptic version numbers
 
-The updater will only notify you about compatible versions (same major version number) to ensure stability.
+The updater monitors commits directly - no need to create releases or tags!
 
 ### Manual Updating
 TO REMOVE: First "Disable" the plugin, then restart blender, then you can hit "Remove" to uninstall. Then you can install the newest version.

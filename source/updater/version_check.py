@@ -52,6 +52,7 @@ LATEST_COMMIT_SHA: str = None
 LATEST_COMMIT_MESSAGE: str = None
 LATEST_COMMIT_DATE: str = None
 CURRENT_COMMIT_SHA: str = None
+CURRENT_COMMIT_MESSAGE: str = None
 BRANCH_DOWNLOAD_URL: str = "https://github.com/CrusherD2/smash-ultimate-blender/archive/refs/heads/animation-workflow.zip"
 UPDATE_DOWNLOAD_PROGRESS: float = 0.0
 UPDATE_STATUS: str = "idle"  # idle, checking, downloading, installing, ready_to_restart
@@ -81,12 +82,26 @@ def save_current_commit_sha(sha):
     except Exception as e:
         print(f"Smash_ultimate_blender: Error saving commit SHA: {e}")
 
+def get_commit_message_by_sha(sha):
+    """Get commit message for a specific SHA"""
+    if not sha:
+        return None
+    try:
+        response = requests.get(f"https://api.github.com/repos/CrusherD2/smash-ultimate-blender/commits/{sha}", timeout=10)
+        response.raise_for_status()
+        commit_data = response.json()
+        commit_info = commit_data.get("commit", {})
+        return commit_info.get("message", "No message")
+    except Exception as e:
+        print(f"Smash_ultimate_blender: Error fetching commit message for {sha}: {e}")
+        return "Unknown message"
+
 def check_for_newer_version():
     """
     Check the animation-workflow branch for new commits.
     If there's a newer commit than what we have stored, mark update as available.
     """
-    global UPDATE_STATUS, UPDATE_AVAILABLE, LATEST_COMMIT_SHA, LATEST_COMMIT_MESSAGE, LATEST_COMMIT_DATE, CURRENT_COMMIT_SHA
+    global UPDATE_STATUS, UPDATE_AVAILABLE, LATEST_COMMIT_SHA, LATEST_COMMIT_MESSAGE, LATEST_COMMIT_DATE, CURRENT_COMMIT_SHA, CURRENT_COMMIT_MESSAGE
     
     UPDATE_STATUS = "checking"
 
@@ -115,11 +130,15 @@ def check_for_newer_version():
         # Load the current commit SHA we have stored
         current_sha = load_current_commit_sha()
         
+        # Get current commit message if we have a SHA
+        current_message = get_commit_message_by_sha(current_sha) if current_sha else None
+        
         # Store the information
         LATEST_COMMIT_SHA = latest_sha
         LATEST_COMMIT_MESSAGE = latest_message
         LATEST_COMMIT_DATE = latest_date
         CURRENT_COMMIT_SHA = current_sha
+        CURRENT_COMMIT_MESSAGE = current_message
         
         # Check if we have a new commit
         if current_sha is None:
@@ -152,6 +171,63 @@ def check_for_newer_version():
 def get_addon_path():
     """Get the path to the current addon directory"""
     return os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+
+def should_skip_file_or_dir(name):
+    """Check if a file or directory should be skipped during installation"""
+    skip_patterns = [
+        '.venv',          # Virtual environments
+        '__pycache__',    # Python cache
+        '.git',           # Git directory
+        '.current_commit', # Our commit tracking file
+        '*.pyc',          # Compiled Python files
+        '.DS_Store',      # macOS system files
+        'Thumbs.db',      # Windows system files
+    ]
+    
+    for pattern in skip_patterns:
+        if pattern.startswith('*'):
+            if name.endswith(pattern[1:]):
+                return True
+        elif name == pattern:
+            return True
+    return False
+
+def safe_copy_tree(src, dst, skip_existing=True):
+    """Safely copy directory tree, skipping problematic files"""
+    copied_items = []
+    failed_items = []
+    
+    for root, dirs, files in os.walk(src):
+        # Filter out directories we should skip
+        dirs[:] = [d for d in dirs if not should_skip_file_or_dir(d)]
+        
+        # Calculate relative path
+        rel_path = os.path.relpath(root, src)
+        dst_dir = os.path.join(dst, rel_path) if rel_path != '.' else dst
+        
+        # Create destination directory
+        os.makedirs(dst_dir, exist_ok=True)
+        
+        # Copy files
+        for file in files:
+            if should_skip_file_or_dir(file):
+                continue
+                
+            src_file = os.path.join(root, file)
+            dst_file = os.path.join(dst_dir, file)
+            
+            try:
+                # Skip if file exists and skip_existing is True
+                if skip_existing and os.path.exists(dst_file):
+                    continue
+                    
+                shutil.copy2(src_file, dst_file)
+                copied_items.append(dst_file)
+            except Exception as e:
+                failed_items.append((src_file, str(e)))
+                print(f"Smash_ultimate_blender: Failed to copy {src_file}: {e}")
+    
+    return copied_items, failed_items
 
 def download_update_with_progress(url, destination, progress_callback=None):
     """Download file with progress tracking"""
@@ -257,38 +333,46 @@ class SUB_OP_install_update(Operator):
                 extracted_folder = os.path.join(temp_extract_dir, extracted_contents[0])
                 print(f"Smash_ultimate_blender: Found extracted folder: {extracted_contents[0]}")
                 
-                # Remove current addon files (except backup)
+                # Remove current addon files (except backup and protected files)
                 for item in os.listdir(addon_path):
-                    if item != os.path.basename(backup_path):
+                    if item != os.path.basename(backup_path) and not should_skip_file_or_dir(item):
                         item_path = os.path.join(addon_path, item)
-                        if os.path.isdir(item_path):
-                            shutil.rmtree(item_path)
-                        else:
-                            os.remove(item_path)
+                        try:
+                            if os.path.isdir(item_path):
+                                shutil.rmtree(item_path)
+                            else:
+                                os.remove(item_path)
+                        except Exception as e:
+                            print(f"Smash_ultimate_blender: Warning - couldn't remove {item}: {e}")
                 
-                # Copy new files
-                for item in os.listdir(extracted_folder):
-                    src = os.path.join(extracted_folder, item)
-                    dst = os.path.join(addon_path, item)
-                    if os.path.isdir(src):
-                        shutil.copytree(src, dst)
-                    else:
-                        shutil.copy2(src, dst)
+                # Copy new files using safe copy method
+                copied_items, failed_items = safe_copy_tree(extracted_folder, addon_path, skip_existing=False)
+                
+                if failed_items:
+                    print(f"Smash_ultimate_blender: Warning - {len(failed_items)} files failed to copy")
+                    for failed_file, error in failed_items:
+                        print(f"  {failed_file}: {error}")
+                
+                print(f"Smash_ultimate_blender: Successfully copied {len(copied_items)} files")
                 
                 # Save the new commit SHA since we successfully installed
                 if LATEST_COMMIT_SHA:
                     save_current_commit_sha(LATEST_COMMIT_SHA)
                     print(f"Smash_ultimate_blender: Updated to commit {LATEST_COMMIT_SHA[:8]}")
                 
-                UPDATE_STATUS = "ready_to_restart"
-                self.report({'INFO'}, "Update installed successfully. Click 'Restart Blender' to complete the update.")
+                # Clean up
+                shutil.rmtree(temp_extract_dir)
+                os.remove(download_path)
+                
+                # Automatically restart Blender
+                self.report({'INFO'}, "Update installed successfully. Restarting Blender...")
+                
+                # Trigger restart
+                bpy.app.timers.register(lambda: self._restart_blender(), first_interval=1.0)
+                UPDATE_STATUS = "idle"  # Reset status since we're restarting
                 
             else:
                 raise Exception("Unexpected archive structure")
-            
-            # Clean up
-            shutil.rmtree(temp_extract_dir)
-            os.remove(download_path)
             
         except Exception as e:
             UPDATE_STATUS = "idle"
@@ -304,6 +388,35 @@ class SUB_OP_install_update(Operator):
             return {'CANCELLED'}
         
         return {'FINISHED'}
+    
+    def _restart_blender(self):
+        """Internal method to restart Blender"""
+        try:
+            # Get current blend file path
+            current_file = bpy.data.filepath
+            
+            # Get Blender executable path
+            blender_exe = bpy.app.binary_path
+            
+            # Build command
+            if current_file:
+                cmd = [blender_exe, current_file]
+            else:
+                cmd = [blender_exe]
+            
+            # Start new Blender instance
+            if platform.system() == "Windows":
+                subprocess.Popen(cmd, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+            else:
+                subprocess.Popen(cmd, start_new_session=True)
+            
+            # Quit current instance
+            bpy.ops.wm.quit_blender()
+            
+        except Exception as e:
+            print(f"Error restarting Blender: {e}")
+        
+        return None  # Don't reschedule the timer
 
 class SUB_OP_restart_blender(Operator):
     """Restart Blender to complete the update"""
