@@ -5,9 +5,9 @@ This module provides a comprehensive auto-updater for the Smash Ultimate Blender
 It directly monitors the animation-workflow branch for code changes and updates automatically.
 
 1. Branch Monitoring: Checks the GitHub repository for new commits on animation-workflow branch
-2. Download: Downloads the latest code directly from the branch
-3. Installation: Extracts and installs the update, backing up the current version
-4. Restart: Restarts Blender to complete the update process
+2. One-Click Update: Single button downloads, installs, and restarts automatically
+3. Safe Installation: Extracts and installs the update, backing up the current version
+4. Auto-Restart: Restarts Blender automatically to complete the update process
 
 Features:
 - Monitors commits directly on animation-workflow branch (no releases needed)
@@ -25,14 +25,13 @@ The system operates through a state machine with the following states:
 - idle: Ready for operations
 - checking: Checking for updates
 - downloading: Downloading update file
-- ready_to_install: Download complete, ready to install
-- installing: Installing update
-- ready_to_restart: Installation complete, ready to restart
+- installing: Installing update and preparing restart
 
 Usage:
 The updater automatically checks for new commits when the plugin loads.
 If new code is available, a panel will appear in the 3D viewport sidebar
-under the "Ultimate" category with options to download and install the update.
+under the "Ultimate" category with a single "Download & Install Update" button
+that handles the entire update process automatically.
 """
 
 import re
@@ -344,10 +343,10 @@ def download_update_with_progress(url, destination, progress_callback=None):
         return False
 
 class SUB_OP_download_update(Operator):
-    """Download the latest compatible version"""
+    """Download and install the latest update"""
     bl_idname = "sub.download_update"
-    bl_label = "Download Update"
-    bl_description = "Download the latest version of the plugin"
+    bl_label = "Download & Install Update"
+    bl_description = "Download and install the latest version of the plugin, then restart Blender"
     
     def execute(self, context):
         global UPDATE_STATUS, UPDATE_DOWNLOAD_PROGRESS, BRANCH_DOWNLOAD_URL
@@ -373,8 +372,21 @@ class SUB_OP_download_update(Operator):
         if download_update_with_progress(BRANCH_DOWNLOAD_URL, download_path, progress_callback):
             # Store download path for installation
             context.scene.sub_updater_download_path = download_path
-            UPDATE_STATUS = "ready_to_install"
-            self.report({'INFO'}, "Update downloaded successfully. Click 'Install Update' to continue.")
+            self.report({'INFO'}, "Download complete. Installing update...")
+            
+            # Automatically proceed with installation
+            UPDATE_STATUS = "installing"
+            
+            try:
+                success = self._install_update(download_path, context)
+                if success:
+                    return {'FINISHED'}
+                else:
+                    return {'CANCELLED'}
+            except Exception as e:
+                UPDATE_STATUS = "idle"
+                self.report({'ERROR'}, f"Failed to install update: {str(e)}")
+                return {'CANCELLED'}
         else:
             UPDATE_STATUS = "idle"
             self.report({'ERROR'}, "Failed to download update")
@@ -386,12 +398,99 @@ class SUB_OP_download_update(Operator):
             return {'CANCELLED'}
         
         return {'FINISHED'}
+    
+    def _install_update(self, download_path, context):
+        """Internal method to install the downloaded update"""
+        global UPDATE_STATUS, LATEST_COMMIT_SHA
+        
+        if not download_path or not os.path.exists(download_path):
+            self.report({'ERROR'}, "No downloaded update found")
+            return False
+        
+        try:
+            # Get addon path
+            addon_path = get_addon_path()
+            
+            # Create backup
+            backup_path = addon_path + "_backup"
+            if os.path.exists(backup_path):
+                shutil.rmtree(backup_path)
+            shutil.copytree(addon_path, backup_path)
+            
+            # Extract update
+            temp_extract_dir = tempfile.mkdtemp()
+            with zipfile.ZipFile(download_path, 'r') as zip_ref:
+                zip_ref.extractall(temp_extract_dir)
+            
+            # Find the extracted folder (should be smash-ultimate-blender-animation-workflow when downloading from branch)
+            extracted_contents = os.listdir(temp_extract_dir)
+            if len(extracted_contents) == 1:
+                extracted_folder = os.path.join(temp_extract_dir, extracted_contents[0])
+                print(f"Smash_ultimate_blender: Found extracted folder: {extracted_contents[0]}")
+                
+                # Remove current addon files (except backup and protected files)
+                for item in os.listdir(addon_path):
+                    if item != os.path.basename(backup_path) and not should_skip_file_or_dir(item):
+                        item_path = os.path.join(addon_path, item)
+                        try:
+                            if os.path.isdir(item_path):
+                                shutil.rmtree(item_path)
+                            else:
+                                os.remove(item_path)
+                        except Exception as e:
+                            print(f"Smash_ultimate_blender: Warning - couldn't remove {item}: {e}")
+                
+                # Copy new files using safe copy method
+                copied_items, failed_items = safe_copy_tree(extracted_folder, addon_path, skip_existing=False)
+                
+                if failed_items:
+                    print(f"Smash_ultimate_blender: Warning - {len(failed_items)} files failed to copy")
+                    for failed_file, error in failed_items:
+                        print(f"  {failed_file}: {error}")
+                else:
+                    print(f"Smash_ultimate_blender: All files copied successfully!")
+                
+                print(f"Smash_ultimate_blender: Successfully copied {len(copied_items)} files")
+                
+                # Save the new commit SHA since we successfully installed
+                if LATEST_COMMIT_SHA:
+                    save_current_commit_sha(LATEST_COMMIT_SHA)
+                    print(f"Smash_ultimate_blender: Updated to commit {LATEST_COMMIT_SHA[:8]}")
+                
+                # Clean up
+                shutil.rmtree(temp_extract_dir)
+                os.remove(download_path)
+                
+                # Automatically restart Blender
+                self.report({'INFO'}, "Update installed successfully. Restarting Blender...")
+                
+                # Trigger restart using standalone function
+                bpy.app.timers.register(restart_blender_after_update, first_interval=1.0)
+                UPDATE_STATUS = "idle"  # Reset status since we're restarting
+                
+                return True
+                
+            else:
+                raise Exception("Unexpected archive structure")
+            
+        except Exception as e:
+            UPDATE_STATUS = "idle"
+            self.report({'ERROR'}, f"Failed to install update: {str(e)}")
+            # Restore backup if something went wrong
+            try:
+                if os.path.exists(backup_path):
+                    if os.path.exists(addon_path):
+                        shutil.rmtree(addon_path)
+                    shutil.move(backup_path, addon_path)
+            except:
+                pass
+            return False
 
 class SUB_OP_install_update(Operator):
-    """Install the downloaded update"""
+    """[DEPRECATED] Install the downloaded update - use Download & Install Update instead"""
     bl_idname = "sub.install_update"
-    bl_label = "Install Update"
-    bl_description = "Install the downloaded update and restart Blender"
+    bl_label = "Install Update (Legacy)"
+    bl_description = "[DEPRECATED] Manual installation operator - the main update process now handles this automatically"
     
     def execute(self, context):
         global UPDATE_STATUS

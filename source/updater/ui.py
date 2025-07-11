@@ -53,7 +53,9 @@ class SUB_PT_update_plugin(Panel):
         # Status and buttons based on current update state
         if UPDATE_STATUS == "idle":
             layout.row().operator("sub.check_for_updates", text="Refresh Update Check")
-            layout.row().operator("sub.download_update", text="Download Update")
+            col = layout.column()
+            col.scale_y = 1.5
+            col.operator("sub.download_update", text="Download & Install Update", icon='IMPORT')
             
         elif UPDATE_STATUS == "checking":
             layout.row().label(text="Checking for updates...", icon='INFO')
@@ -65,11 +67,6 @@ class SUB_PT_update_plugin(Panel):
             row.scale_y = 0.5
             progress_text = f"Progress: {UPDATE_DOWNLOAD_PROGRESS:.1%}"
             row.progress(factor=UPDATE_DOWNLOAD_PROGRESS, text=progress_text)
-            
-        elif UPDATE_STATUS == "ready_to_install":
-            layout.row().label(text="Update downloaded successfully!", icon='CHECKMARK')
-            layout.row().operator("sub.install_update", text="Install Update")
-            layout.row().operator("sub.download_update", text="Re-download Update")
             
         elif UPDATE_STATUS == "installing":
             layout.row().label(text="Installing update...", icon='FILE_REFRESH')
@@ -100,7 +97,7 @@ class SUB_PT_updater_settings(Panel):
         layout.row().operator("sub.check_for_updates", text="Check for Updates", icon='FILE_REFRESH')
         
         if UPDATE_STATUS not in ["downloading", "installing"]:
-            layout.row().operator("sub.download_update", text="Force Re-download", icon='IMPORT')
+            layout.row().operator("sub.download_update", text="Force Download & Install", icon='IMPORT')
         
         # Information
         layout.separator()

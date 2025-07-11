@@ -81,7 +81,7 @@ The plugin now includes a built-in auto-updater that makes keeping your installa
 
 - **Live Code Monitoring**: The plugin automatically monitors the animation-workflow branch for new commits
 - **Instant Notifications**: When new code is pushed, a panel appears in the "Ultimate" tab showing what changed
-- **One-Click Updates**: Simple "Download Update" and "Install Update" buttons with progress tracking
+- **One-Click Updates**: Single "Download & Install Update" button that handles everything automatically
 - **Safe Installation**: Creates automatic backups and handles locked files (like .venv) intelligently  
 - **Automatic Restart**: Blender restarts automatically after installation to complete the update
 - **Commit Details**: Shows current and latest commit messages instead of cryptic version numbers
