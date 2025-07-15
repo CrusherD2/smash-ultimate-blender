@@ -95,7 +95,7 @@ class SUB_OP_animation_scroll_modal(Operator):
         return {'PASS_THROUGH'}
 
     def is_mouse_over_animation_area(self, context, event):
-        """Check if mouse is over an animation-related area"""
+        """Check if mouse is over the action name area in the dopesheet editor"""
         mouse_x = event.mouse_x
         mouse_y = event.mouse_y
         
@@ -108,16 +108,13 @@ class SUB_OP_animation_scroll_modal(Operator):
             if (area.x <= mouse_x <= area.x + area.width and 
                 area.y <= mouse_y <= area.y + area.height):
                 
-                # Check if this is an animation-related area
-                if area.type in {'DOPESHEET_EDITOR', 'GRAPH_EDITOR', 'NLA_EDITOR'}:
-                    # For dopesheet, also check if we're in Action Editor mode
-                    if area.type == 'DOPESHEET_EDITOR':
-                        for space in area.spaces:
-                            if hasattr(space, 'mode'):
-                                if space.mode in {'ACTION', 'SHAPEKEY', 'GPENCIL', 'MASK'}:
-                                    return True
-                    else:
-                        return True
+                # Only work in the Dopesheet Editor (where the action name text box is)
+                if area.type == 'DOPESHEET_EDITOR':
+                    for space in area.spaces:
+                        if hasattr(space, 'mode'):
+                            # Only in Action Editor mode (where action names are shown)
+                            if space.mode in {'ACTION', 'SHAPEKEY'}:
+                                return True
         
         return False
 
