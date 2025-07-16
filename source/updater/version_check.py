@@ -411,12 +411,6 @@ class SUB_OP_download_update(Operator):
             # Get addon path
             addon_path = get_addon_path()
             
-            # Create backup
-            backup_path = addon_path + "_backup"
-            if os.path.exists(backup_path):
-                shutil.rmtree(backup_path)
-            shutil.copytree(addon_path, backup_path)
-            
             # Extract update
             temp_extract_dir = tempfile.mkdtemp()
             with zipfile.ZipFile(download_path, 'r') as zip_ref:
@@ -428,9 +422,9 @@ class SUB_OP_download_update(Operator):
                 extracted_folder = os.path.join(temp_extract_dir, extracted_contents[0])
                 print(f"Smash_ultimate_blender: Found extracted folder: {extracted_contents[0]}")
                 
-                # Remove current addon files (except backup and protected files)
+                # Remove current addon files (except protected files)
                 for item in os.listdir(addon_path):
-                    if item != os.path.basename(backup_path) and not should_skip_file_or_dir(item):
+                    if not should_skip_file_or_dir(item):
                         item_path = os.path.join(addon_path, item)
                         try:
                             if os.path.isdir(item_path):
@@ -476,14 +470,6 @@ class SUB_OP_download_update(Operator):
         except Exception as e:
             UPDATE_STATUS = "idle"
             self.report({'ERROR'}, f"Failed to install update: {str(e)}")
-            # Restore backup if something went wrong
-            try:
-                if os.path.exists(backup_path):
-                    if os.path.exists(addon_path):
-                        shutil.rmtree(addon_path)
-                    shutil.move(backup_path, addon_path)
-            except:
-                pass
             return False
 
 class SUB_OP_install_update(Operator):
@@ -506,12 +492,6 @@ class SUB_OP_install_update(Operator):
             # Get addon path
             addon_path = get_addon_path()
             
-            # Create backup
-            backup_path = addon_path + "_backup"
-            if os.path.exists(backup_path):
-                shutil.rmtree(backup_path)
-            shutil.copytree(addon_path, backup_path)
-            
             # Extract update
             temp_extract_dir = tempfile.mkdtemp()
             with zipfile.ZipFile(download_path, 'r') as zip_ref:
@@ -523,9 +503,9 @@ class SUB_OP_install_update(Operator):
                 extracted_folder = os.path.join(temp_extract_dir, extracted_contents[0])
                 print(f"Smash_ultimate_blender: Found extracted folder: {extracted_contents[0]}")
                 
-                # Remove current addon files (except backup and protected files)
+                # Remove current addon files (except protected files)
                 for item in os.listdir(addon_path):
-                    if item != os.path.basename(backup_path) and not should_skip_file_or_dir(item):
+                    if not should_skip_file_or_dir(item):
                         item_path = os.path.join(addon_path, item)
                         try:
                             if os.path.isdir(item_path):
@@ -569,14 +549,6 @@ class SUB_OP_install_update(Operator):
         except Exception as e:
             UPDATE_STATUS = "idle"
             self.report({'ERROR'}, f"Failed to install update: {str(e)}")
-            # Restore backup if something went wrong
-            try:
-                if os.path.exists(backup_path):
-                    if os.path.exists(addon_path):
-                        shutil.rmtree(addon_path)
-                    shutil.move(backup_path, addon_path)
-            except:
-                pass
             return {'CANCELLED'}
         
         return {'FINISHED'}

@@ -191,20 +191,43 @@ class SUB_OP_animation_scroll_modal(Operator):
         SUB_OP_animation_scroll_modal._running = False
         return {'CANCELLED'}
 
+# --- HEADER BUTTON DRAW FUNCTION ---
+def draw_animation_scroll_button(self, context):
+    # Only show in Action Editor mode
+    area = context.area
+    if area and hasattr(area.spaces.active, 'mode') and area.spaces.active.mode == 'ACTION':
+        is_running = SUB_OP_animation_scroll_modal._running
+        icon = 'PLAY' if not is_running else 'PAUSE'
+        label = 'Start Animation Scroll' if not is_running else 'Stop Animation Scroll'
+        self.layout.operator('sub.toggle_animation_scroll_modal', text=label, icon=icon, depress=is_running)
+
+# --- TOGGLE OPERATOR ---
+class SUB_OP_toggle_animation_scroll_modal(Operator):
+    bl_idname = 'sub.toggle_animation_scroll_modal'
+    bl_label = 'Toggle Animation Scroll Modal'
+    bl_description = 'Start or stop the animation scroll modal operator'
+
+    def execute(self, context):
+        if SUB_OP_animation_scroll_modal._running:
+            # Set the flag so the modal will stop itself
+            SUB_OP_animation_scroll_modal._should_auto_stop = True
+            self.report({'INFO'}, 'Animation scroll modal stopping...')
+        else:
+            bpy.ops.sub.animation_scroll_modal('INVOKE_DEFAULT')
+            self.report({'INFO'}, 'Animation scroll modal started.')
+        return {'FINISHED'}
+
 def register():
     bpy.utils.register_class(SUB_OP_animation_scroll_modal)
-    
-    # Register the auto-start timer
-    if not bpy.app.timers.is_registered(auto_start_animation_scroll_timer):
-        bpy.app.timers.register(auto_start_animation_scroll_timer, first_interval=2.0, persistent=True)
+    bpy.utils.register_class(SUB_OP_toggle_animation_scroll_modal)
+    # Add button to Action Editor/Dope Sheet header
+    bpy.types.DOPESHEET_HT_header.append(draw_animation_scroll_button)
 
 def unregister():
-    # Unregister the auto-start timer
-    if bpy.app.timers.is_registered(auto_start_animation_scroll_timer):
-        bpy.app.timers.unregister(auto_start_animation_scroll_timer)
-    
+    # Remove button from header
+    bpy.types.DOPESHEET_HT_header.remove(draw_animation_scroll_button)
+    bpy.utils.unregister_class(SUB_OP_toggle_animation_scroll_modal)
     bpy.utils.unregister_class(SUB_OP_animation_scroll_modal)
-    
     # Reset class variables
     SUB_OP_animation_scroll_modal._running = False
     SUB_OP_animation_scroll_modal._should_auto_stop = False 
