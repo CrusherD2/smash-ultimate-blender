@@ -36,6 +36,9 @@ def register():
     # Register animation_scroll
     animation_scroll.register()
     
+    # Register misc_panel's new operator
+    misc_panel.register()
+    
 def unregister():
     # Unregister animation_scroll
     animation_scroll.unregister()
@@ -48,3 +51,6 @@ def unregister():
     
     # Unregister mirror_animation
     mirror_animation.unregister()
+    
+    # Unregister misc_panel's new operator
+    misc_panel.unregister()

@@ -151,5 +151,82 @@ class SUB_PT_misc_utilities(Panel):
             row.enabled = False
             row.operator("sub.rename_texture_to_material", text="Rename Textures to Material (Object Mode Only)")
         
+        # Add Mirror Vertex Groups button
+        row = box.row(align=True)
+        if context.mode == 'OBJECT':
+            row.operator("sub.mirror_vertex_groups", text="Mirror Vertex Groups")
+        else:
+            row.enabled = False
+            row.operator("sub.mirror_vertex_groups", text="Mirror Vertex Groups (Object Mode Only)")
+        
+    
+        
+class SUB_OP_mirror_vertex_groups(bpy.types.Operator):
+    bl_idname = "sub.mirror_vertex_groups"
+    bl_label = "Mirror Vertex Groups"
+    bl_description = "Swap L and R in vertex group names (e.g., ClavicleR to ClavicleL), avoiding certain words/numbers."
+    bl_options = {'REGISTER', 'UNDO'}
+
+    keywords = [
+        'Clavicle', 'Shoulder', 'Arm', 'Hand', 'Finger', 'Leg', 'Knee', 'Foot', 'Toe',
+        '10', '11', '12', '13', '20', '21', '22', '23', '30', '31', '32', '33',
+        '40', '41', '42', '43', '51', '52', '53'
+    ]
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return obj and obj.type == 'MESH' and context.mode == 'OBJECT'
+
+    def execute(self, context):
+        obj = context.active_object
+        vgs = obj.vertex_groups
+        keywords = tuple(self.keywords)
+        rename_map = {}
+
+        # Find all groups to rename
+        for vg in vgs:
+            name = vg.name
+            if not any(k in name for k in keywords):
+                continue
+            # Swap L <-> R before digits at the end or at the very end
+            import re
+            m = re.match(r'^(.*?)(L|R)(\d*)$', name)
+            if m:
+                base, side, digits = m.group(1), m.group(2), m.group(3)
+                new_side = 'R' if side == 'L' else 'L'
+                new_name = f"{base}{new_side}{digits}"
+                rename_map[name] = new_name
+            else:
+                # Also handle ...L or ...R at the end
+                if name.endswith('L'):
+                    new_name = name[:-1] + 'R'
+                    rename_map[name] = new_name
+                elif name.endswith('R'):
+                    new_name = name[:-1] + 'L'
+                    rename_map[name] = new_name
+
+        # To avoid collisions, use temp names
+        temp_map = {old: f"__temp__{i}__" for i, old in enumerate(rename_map)}
+        for old, temp in temp_map.items():
+            vgs[old].name = temp
+        for old, temp in temp_map.items():
+            vgs[temp].name = rename_map[old]
+
+        self.report({'INFO'}, f"Renamed {len(rename_map)} vertex groups.")
+        return {'FINISHED'}
+
+
+def register():
+    bpy.utils.register_class(SUB_PT_animation_tools)
+    bpy.utils.register_class(SUB_PT_misc_utilities)
+    bpy.utils.register_class(SUB_OP_mirror_vertex_groups)
+
+
+def unregister():
+    bpy.utils.unregister_class(SUB_OP_mirror_vertex_groups)
+    bpy.utils.unregister_class(SUB_PT_misc_utilities)
+    bpy.utils.unregister_class(SUB_PT_animation_tools)
+        
     
         

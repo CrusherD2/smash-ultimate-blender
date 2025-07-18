@@ -11,119 +11,125 @@ class SUB_OT_reset_bone_locations(Operator):
     bl_idname = "sub.reset_bone_locations"
     bl_label = "Reset Bone Locations"
     bl_options = {'REGISTER', 'UNDO'}
-    
+
+    reset_all_animations: BoolProperty(
+        name="Reset All Loaded Animations",
+        description="If checked, reset bone locations for all loaded animations (actions) for this armature.",
+        default=False
+    )
+
     @classmethod
     def poll(cls, context):
         return (context.mode == 'POSE' and 
                 context.object and 
                 context.object.type == 'ARMATURE' and
                 context.selected_pose_bones)
-    
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "reset_all_animations")
+
     def execute(self, context):
+        armature = context.object
+        original_action = armature.animation_data.action if armature.animation_data else None
+        actions_to_process = []
+
+        if self.reset_all_animations:
+            # Find all actions that have FCurves for this armature's bones
+            bone_names = {bone.name for bone in armature.pose.bones}
+            for action in bpy.data.actions:
+                # Check if any fcurve in the action is for a bone in this armature
+                for fcurve in action.fcurves:
+                    if fcurve.data_path.startswith('pose.bones["'):
+                        bone_name = fcurve.data_path.split('"')[1]
+                        if bone_name in bone_names:
+                            actions_to_process.append(action)
+                            break
+        else:
+            if original_action:
+                actions_to_process = [original_action]
+            else:
+                self.report({'ERROR'}, "Armature must have an action/animation")
+                return {'CANCELLED'}
+
+        results = []
+        for action in actions_to_process:
+            # Set the current action
+            if armature.animation_data:
+                armature.animation_data.action = action
+            # Call the original reset logic (copied from previous execute)
+            result = self._reset_bone_locations_for_action(context, armature, action)
+            results.append(result)
+
+        # Restore the original action
+        if armature.animation_data and original_action:
+            armature.animation_data.action = original_action
+
+        # Summarize results
+        if self.reset_all_animations:
+            self.report({'INFO'}, f"Reset bone locations for {len(results)} animation(s).")
+        return {'FINISHED'}
+
+    def _reset_bone_locations_for_action(self, context, armature, action):
         # Check if we have selected bones
         if not context.selected_pose_bones:
             self.report({'ERROR'}, "Please select some bones")
             return {'CANCELLED'}
-        
-        armature = context.object
-        
-        # Check if the armature has an action
-        if not armature.animation_data or not armature.animation_data.action:
-            self.report({'ERROR'}, "Armature must have an action/animation")
-            return {'CANCELLED'}
-        
         # Store original mode to restore later
         original_mode = context.mode
-        
         # Switch to pose mode if not already
         if original_mode != 'POSE':
             bpy.ops.object.mode_set(mode='POSE')
-        
         # Store original frame
         original_frame = context.scene.frame_current
-        
         # Jump to frame 1
         context.scene.frame_set(1)
-        
-        # Get action
-        action = armature.animation_data.action
-        
         # Identify excluded bones from selected bones (hip, trans, rot)
         excluded_bones = []
         selected_bones = []
         for bone in context.selected_pose_bones:
             if any(keyword in bone.name.lower() for keyword in ['hip', 'trans', 'rot']):
                 excluded_bones.append(bone.name)
-                print(f"Excluding selected bone from reset: {bone.name}")
             else:
                 selected_bones.append(bone)
-        
         # Find location and scale fcurves for selected bones
         location_fcurves = []
         scale_fcurves = []
         selected_bone_names = [bone.name for bone in selected_bones]
-        
         for fcurve in action.fcurves:
-            # Parse the data path to get bone name
-            # Format: pose.bones["BoneName"].location[0]
             if "pose.bones" not in fcurve.data_path:
                 continue
-                
-            # Extract bone name
             bone_name = fcurve.data_path.split('"')[1]
-            
-            # Only process fcurves for selected bones (excluding hip/trans/rot)
             if bone_name not in selected_bone_names:
                 continue
-            
-            # Categorize fcurve
             if ".location" in fcurve.data_path:
                 location_fcurves.append(fcurve)
             elif ".scale" in fcurve.data_path:
                 scale_fcurves.append(fcurve)
-        
-        # Reset location to 0 and scale to 1 for selected bones (excluding hip/trans/rot)
         bones_affected = set()
-        
         for bone in selected_bones:
-            # Reset location to 0
             bone.location = (0, 0, 0)
-            
-            # Reset scale to 1
             bone.scale = (1, 1, 1)
-            
             bones_affected.add(bone.name)
-        
-        # Insert keyframes at frame 1 for all affected bones
         for bone_name in bones_affected:
             bone = armature.pose.bones[bone_name]
             bone.keyframe_insert(data_path="location", frame=1)
             bone.keyframe_insert(data_path="scale", frame=1)
-        
-        # Delete all other keyframes for location and scale fcurves
         fcurves_to_clear = location_fcurves + scale_fcurves
-            
-        keyframes_removed = 0
         for fcurve in fcurves_to_clear:
-            # Keep only keyframe at frame 1, delete all others
             to_remove = []
             for i, keyframe in enumerate(fcurve.keyframe_points):
-                if abs(keyframe.co[0] - 1.0) > 0.01:  # If not frame 1 (allowing small float difference)
+                if abs(keyframe.co[0] - 1.0) > 0.01:
                     to_remove.append(i)
-            
-            # Remove keyframes in reverse order to avoid index shifting
             for i in reversed(to_remove):
                 fcurve.keyframe_points.remove(fcurve.keyframe_points[i])
-                keyframes_removed += 1
-        
-        # Update the view
         context.scene.frame_set(original_frame)
-        
-        # Force a redraw
         for area in context.screen.areas:
             if area.type in ['DOPESHEET_EDITOR', 'GRAPH_EDITOR', 'TIMELINE']:
                 area.tag_redraw()
-        
         # Find and process head bone descendants
         head_bone = None
         for bone in armature.pose.bones:
@@ -131,40 +137,15 @@ class SUB_OT_reset_bone_locations(Operator):
             if 'head' in bone_name_lower and not head_bone:
                 head_bone = bone
                 break
-        
-        head_keyframes_removed = 0
-        head_transforms_cleared = 0
-        
         if head_bone:
-            # Remove keyframes and clear transforms from ALL descendants of head bone
             head_descendants = self._get_all_children_bones(head_bone, armature)
-            
-            # Reset all transforms to default values for head descendants
-            head_transforms_cleared = self._clear_transforms_for_bones(armature, head_descendants)
-            
-            # Insert keyframes at frame 1 for head descendants
+            self._clear_transforms_for_bones(armature, head_descendants)
             self._insert_keyframes_for_bones(armature, head_descendants, frame=1)
-            print(f"Reset transforms to default for {head_transforms_cleared} head descendants and inserted keyframes at frame 1")
-            
-            # Remove ALL other keyframes for head descendants (keeping only frame 1)
             if armature.animation_data and armature.animation_data.action:
-                head_keyframes_removed = self._remove_keyframes_for_bones(armature.animation_data.action, head_descendants)
-                print(f"Removed old keyframes for {len(head_descendants)} head descendants, total keyframes removed: {head_keyframes_removed}")
-            else:
-                print(f"No animation data found, only reset transforms to default for {len(head_descendants)} head descendants")
-        else:
-            print("No head bone found for processing head descendants")
-        
-        # Restore original mode
+                self._remove_keyframes_for_bones(armature.animation_data.action, head_descendants)
         if original_mode != 'POSE':
             bpy.ops.object.mode_set(mode=original_mode.replace('_', ' ').title())
-        
-        excluded_count = len(excluded_bones)
-        if excluded_count > 0:
-            self.report({'INFO'}, f"Reset {len(bones_affected)} selected bones and {head_transforms_cleared} head descendants to default at frame 1. Excluded {excluded_count} hip/trans/rot bones. Removed {keyframes_removed + head_keyframes_removed} keyframes.")
-        else:
-            self.report({'INFO'}, f"Reset {len(bones_affected)} selected bones and {head_transforms_cleared} head descendants to default at frame 1. Removed {keyframes_removed + head_keyframes_removed} keyframes.")
-        return {'FINISHED'}
+        return 'FINISHED'
     
     def _get_all_children_bones(self, parent_bone, armature):
         """Recursively get ALL descendants (children, grandchildren, etc.) of a parent bone"""
