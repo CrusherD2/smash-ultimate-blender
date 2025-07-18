@@ -5,17 +5,118 @@ from bpy.props import BoolProperty
 # Global variable to track the last checked object
 _last_checked_object = None
 
+# Global variable to track the last action to detect changes
+_last_action = None
+
+def reset_unanimated_bones_to_rest(armature, action):
+    """
+    Reset bones that are not animated in the given action to their rest positions.
+    
+    Args:
+        armature: The armature object
+        action: The action to check for animated bones
+    """
+    try:
+        # Store original mode to restore later
+        original_mode = bpy.context.mode
+        
+        # Switch to pose mode if not already
+        if original_mode != 'POSE':
+            bpy.ops.object.mode_set(mode='POSE')
+        
+        if not action or not action.fcurves:
+            # If no action or no fcurves, reset all bones to rest
+            for bone in armature.pose.bones:
+                bone.location = (0, 0, 0)
+                bone.rotation_euler = (0, 0, 0)
+                bone.rotation_quaternion = (1, 0, 0, 0)
+                bone.rotation_axis_angle = (0, 0, 1, 0)
+                bone.scale = (1, 1, 1)
+            
+            # Update the view layer to apply the transform resets
+            bpy.context.view_layer.update()
+            return
+        
+        # Get all bone names that are animated in this action
+        animated_bones = set()
+        for fcurve in action.fcurves:
+            if fcurve.data_path.startswith('pose.bones["'):
+                # Extract bone name from data path like 'pose.bones["BoneName"].location'
+                try:
+                    bone_name = fcurve.data_path.split('"')[1]
+                    animated_bones.add(bone_name)
+                except (IndexError, ValueError):
+                    continue
+        
+        # Reset bones that are not animated to their rest positions
+        for bone in armature.pose.bones:
+            if bone.name not in animated_bones:
+                # Reset location to rest position
+                bone.location = (0, 0, 0)
+                
+                # Reset rotation based on rotation mode
+                if bone.rotation_mode == 'QUATERNION':
+                    bone.rotation_quaternion = (1, 0, 0, 0)  # Identity quaternion
+                elif bone.rotation_mode == 'AXIS_ANGLE':
+                    bone.rotation_axis_angle = (0, 0, 1, 0)  # No rotation
+                else:
+                    bone.rotation_euler = (0, 0, 0)  # No rotation
+                
+                # Reset scale to rest position
+                bone.scale = (1, 1, 1)
+        
+        # Update the view layer to apply the transform resets
+        bpy.context.view_layer.update()
+        
+    except Exception as e:
+        # Silently handle any errors to avoid breaking the animation scroll
+        print(f"Error in reset_unanimated_bones_to_rest: {e}")
+
+def handle_action_change(context):
+    """
+    Handle action changes from the UI dropdown menu.
+    This function is called by the timer to check if the action has changed.
+    """
+    global _last_action
+    
+    try:
+        # Check if we have an active object with animation data
+        if (context.active_object and 
+            context.active_object.type == 'ARMATURE' and 
+            context.active_object.animation_data):
+            
+            current_action = context.active_object.animation_data.action
+            
+            # If the action has changed, reset unanimated bones
+            if current_action != _last_action:
+                _last_action = current_action
+                
+                if current_action:
+                    # Reset unanimated bones to rest positions
+                    reset_unanimated_bones_to_rest(context.active_object, current_action)
+                else:
+                    # If no action is selected, reset all bones to rest
+                    reset_unanimated_bones_to_rest(context.active_object, None)
+                    
+    except Exception as e:
+        # Silently handle any errors to avoid breaking the system
+        print(f"Error in handle_action_change: {e}")
+
 # Timer function to check if we should auto-start/stop animation scroll
 def auto_start_animation_scroll_timer():
     """
     Timer function that ensures animation scroll is always active when appropriate conditions are met.
     Automatically starts when you select an armature with multiple animations and stops when you don't.
+    Also handles action changes from the UI dropdown menu.
     """
     global _last_checked_object
     
     try:
         context = bpy.context
         current_object = context.active_object
+        
+        # Handle action changes from UI dropdown
+        handle_action_change(context)
         
         # Only check if the active object has changed
         if current_object != _last_checked_object:
@@ -152,6 +253,13 @@ class SUB_OP_animation_scroll_modal(Operator):
         # Set the new action
         new_action = actions[next_index]
         armature.animation_data.action = new_action
+        
+        # Update global action tracking
+        global _last_action
+        _last_action = new_action
+        
+        # Reset unanimated bones to their rest positions
+        reset_unanimated_bones_to_rest(armature, new_action)
         
         # Update the timeline to show the full animation range
         if new_action and new_action.fcurves:
