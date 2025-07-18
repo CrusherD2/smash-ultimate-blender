@@ -46,6 +46,8 @@ import platform
 import bpy
 from bpy.types import Operator
 from bpy.props import StringProperty
+import threading
+import time
 
 UPDATE_AVAILABLE: bool = None
 LATEST_COMMIT_SHA: str = None
@@ -343,85 +345,125 @@ def download_update_with_progress(url, destination, progress_callback=None):
         return False
 
 class SUB_OP_download_update(Operator):
-    """Download and install the latest update"""
+    """Download and install the latest update (non-blocking)"""
     bl_idname = "sub.download_update"
     bl_label = "Download & Install Update"
     bl_description = "Download and install the latest version of the plugin, then restart Blender"
-    
+
+    _thread = None
+    _error = None
+    _success = False
+    _progress = 0.0
+    _stage = "idle"  # idle, downloading, installing, done, error
+    _download_path = None
+    _context = None
+    _timer = None
+
     def execute(self, context):
         global UPDATE_STATUS, UPDATE_DOWNLOAD_PROGRESS, BRANCH_DOWNLOAD_URL
-        
+
         if not UPDATE_AVAILABLE:
             self.report({'ERROR'}, "No update available")
             return {'CANCELLED'}
-        
+
         UPDATE_STATUS = "downloading"
         UPDATE_DOWNLOAD_PROGRESS = 0.0
-        
+        self._stage = "downloading"
+        self._progress = 0.0
+        self._error = None
+        self._success = False
+        self._context = context
+        self._download_path = None
+
         # Create temporary directory for download
         temp_dir = tempfile.mkdtemp()
         download_path = os.path.join(temp_dir, "update.zip")
-        
+        self._download_path = download_path
+
         def progress_callback(progress):
+            self._progress = progress
             global UPDATE_DOWNLOAD_PROGRESS
             UPDATE_DOWNLOAD_PROGRESS = progress
-            # Force UI update
-            if context.area:
-                context.area.tag_redraw()
-        
-        if download_update_with_progress(BRANCH_DOWNLOAD_URL, download_path, progress_callback):
-            # Store download path for installation
-            context.scene.sub_updater_download_path = download_path
-            self.report({'INFO'}, "Download complete. Installing update...")
-            
-            # Automatically proceed with installation
-            UPDATE_STATUS = "installing"
-            
+
+        def thread_func():
             try:
+                if not download_update_with_progress(BRANCH_DOWNLOAD_URL, download_path, progress_callback):
+                    self._error = "Failed to download update"
+                    self._stage = "error"
+                    return
+                self._stage = "installing"
+                UPDATE_STATUS = "installing"
+                # Store download path for installation
+                context.scene.sub_updater_download_path = download_path
+                # Install update
                 success = self._install_update(download_path, context)
                 if success:
-                    return {'FINISHED'}
+                    self._success = True
+                    self._stage = "done"
                 else:
-                    return {'CANCELLED'}
+                    self._error = "Failed to install update"
+                    self._stage = "error"
             except Exception as e:
+                self._error = str(e)
+                self._stage = "error"
+
+        # Start background thread
+        self._thread = threading.Thread(target=thread_func)
+        self._thread.start()
+        # Add a timer to poll for progress
+        wm = context.window_manager
+        self._timer = wm.event_timer_add(0.2, window=context.window)
+        wm.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        wm = context.window_manager
+        if event.type == 'TIMER':
+            # Update progress
+            global UPDATE_DOWNLOAD_PROGRESS, UPDATE_STATUS
+            UPDATE_DOWNLOAD_PROGRESS = self._progress
+            if self._stage == "downloading":
+                UPDATE_STATUS = "downloading"
+            elif self._stage == "installing":
+                UPDATE_STATUS = "installing"
+            elif self._stage == "done":
                 UPDATE_STATUS = "idle"
-                self.report({'ERROR'}, f"Failed to install update: {str(e)}")
+                wm.event_timer_remove(self._timer)
+                self.report({'INFO'}, "Update installed successfully. Restarting Blender...")
+                bpy.app.timers.register(restart_blender_after_update, first_interval=1.0)
+                return {'FINISHED'}
+            elif self._stage == "error":
+                UPDATE_STATUS = "idle"
+                wm.event_timer_remove(self._timer)
+                self.report({'ERROR'}, f"Update failed: {self._error}")
+                # Clean up temp dir if needed
+                try:
+                    if self._download_path:
+                        temp_dir = os.path.dirname(self._download_path)
+                        if os.path.exists(temp_dir):
+                            shutil.rmtree(temp_dir)
+                except Exception:
+                    pass
                 return {'CANCELLED'}
-        else:
-            UPDATE_STATUS = "idle"
-            self.report({'ERROR'}, "Failed to download update")
-            # Clean up temp directory
-            try:
-                shutil.rmtree(temp_dir)
-            except:
-                pass
-            return {'CANCELLED'}
-        
-        return {'FINISHED'}
-    
+        return {'PASS_THROUGH'}
+
     def _install_update(self, download_path, context):
         """Internal method to install the downloaded update"""
         global UPDATE_STATUS, LATEST_COMMIT_SHA
-        
         if not download_path or not os.path.exists(download_path):
-            self.report({'ERROR'}, "No downloaded update found")
+            self._error = "No downloaded update found"
             return False
-        
         try:
             # Get addon path
             addon_path = get_addon_path()
-            
             # Extract update
             temp_extract_dir = tempfile.mkdtemp()
             with zipfile.ZipFile(download_path, 'r') as zip_ref:
                 zip_ref.extractall(temp_extract_dir)
-            
             # Find the extracted folder (should be smash-ultimate-blender-animation-workflow when downloading from branch)
             extracted_contents = os.listdir(temp_extract_dir)
             if len(extracted_contents) == 1:
                 extracted_folder = os.path.join(temp_extract_dir, extracted_contents[0])
-                print(f"Smash_ultimate_blender: Found extracted folder: {extracted_contents[0]}")
-                
                 # Remove current addon files (except protected files)
                 for item in os.listdir(addon_path):
                     if not should_skip_file_or_dir(item):
@@ -433,43 +475,24 @@ class SUB_OP_download_update(Operator):
                                 os.remove(item_path)
                         except Exception as e:
                             print(f"Smash_ultimate_blender: Warning - couldn't remove {item}: {e}")
-                
                 # Copy new files using safe copy method
                 copied_items, failed_items = safe_copy_tree(extracted_folder, addon_path, skip_existing=False)
-                
                 if failed_items:
                     print(f"Smash_ultimate_blender: Warning - {len(failed_items)} files failed to copy")
                     for failed_file, error in failed_items:
                         print(f"  {failed_file}: {error}")
-                else:
-                    print(f"Smash_ultimate_blender: All files copied successfully!")
-                
-                print(f"Smash_ultimate_blender: Successfully copied {len(copied_items)} files")
-                
                 # Save the new commit SHA since we successfully installed
                 if LATEST_COMMIT_SHA:
                     save_current_commit_sha(LATEST_COMMIT_SHA)
-                    print(f"Smash_ultimate_blender: Updated to commit {LATEST_COMMIT_SHA[:8]}")
-                
                 # Clean up
                 shutil.rmtree(temp_extract_dir)
                 os.remove(download_path)
-                
-                # Automatically restart Blender
-                self.report({'INFO'}, "Update installed successfully. Restarting Blender...")
-                
-                # Trigger restart using standalone function
-                bpy.app.timers.register(restart_blender_after_update, first_interval=1.0)
-                UPDATE_STATUS = "idle"  # Reset status since we're restarting
-                
                 return True
-                
             else:
-                raise Exception("Unexpected archive structure")
-            
+                self._error = "Unexpected archive structure"
+                return False
         except Exception as e:
-            UPDATE_STATUS = "idle"
-            self.report({'ERROR'}, f"Failed to install update: {str(e)}")
+            self._error = f"Failed to install update: {str(e)}"
             return False
 
 class SUB_OP_install_update(Operator):
