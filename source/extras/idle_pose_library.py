@@ -16,6 +16,7 @@ def get_predefined_poses():
     """Get list of predefined pose names"""
     return [
         ("a00wait1", "a00wait1", "Basic wait animation"),
+        ("a02run", "a02run", "Run animation"),
         ("a05squatwait", "a05squatwait", "Squat wait animation"),
         ("a04fall", "a04fall", "Fall animation"),
         ("a04fallaerial", "a04fallaerial", "Aerial fall animation"),
