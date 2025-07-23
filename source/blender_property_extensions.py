@@ -51,6 +51,18 @@ class AnimationImportFile(PropertyGroup):
     name: StringProperty()
     path: StringProperty()
 
+class IdlePoseItem(PropertyGroup):
+    name: StringProperty(
+        name="Pose Name",
+        description="Name of the idle pose",
+        default=""
+    )
+    data: StringProperty(
+        name="Pose Data", 
+        description="JSON string containing the pose data",
+        default=""
+    )
+    
 bpy.utils.register_class(ModelImportFile)
 bpy.utils.register_class(ModelImportItem)
 bpy.utils.register_class(AnimationImportFile)
@@ -229,6 +241,72 @@ class SubSceneProperties(PropertyGroup):
     action_export_list_index: IntProperty(
         name="Action Export List Index",
         default=0
+    )
+    
+    # Idle Pose Library Properties
+    idle_pose_list: CollectionProperty(
+        name="Idle Pose List",
+        description="List of stored idle poses",
+        type=IdlePoseItem
+    )
+    idle_pose_list_index: IntProperty(
+        name="Idle Pose List Index",
+        default=0
+    )
+    idle_pose_include_trans: BoolProperty(
+        name="Include Trans Bone",
+        description="Include the Trans bone when applying idle pose",
+        default=True
+    )
+    idle_pose_mirrored: BoolProperty(
+        name="Mirrored",
+        description="Mirror the pose using Y axis",
+        default=False
+    )
+    idle_pose_180_rotate: BoolProperty(
+        name="180 Rotate",
+        description="Rotate hip bone 180 degrees on Y-axis after mirroring",
+        default=False
+    )
+    idle_pose_library_expanded: BoolProperty(
+        name="Idle Pose Library Expanded",
+        description="Whether the Idle Pose Library section is expanded",
+        default=False
+    )
+    related_animations_expanded: BoolProperty(
+        name="Related Animations Expanded",
+        description="Whether the Related Animations section is expanded",
+        default=False
+    )
+    batch_export_actions_expanded: BoolProperty(
+        name="Batch Export Actions Expanded",
+        description="Whether the Batch Export Actions section is expanded",
+        default=False
+    )
+    import_options_expanded: BoolProperty(
+        name="Import Options Expanded",
+        description="Whether the Import Options section is expanded",
+        default=False
+    )
+    model_tools_expanded: BoolProperty(
+        name="Model Tools Expanded",
+        description="Whether the Model Tools section is expanded",
+        default=False
+    )
+    anim_include_transform: BoolProperty(
+        name="Include Transform",
+        description="Include Transform Track",
+        default=True
+    )
+    anim_include_material: BoolProperty(
+        name="Include Material",
+        description="Include Material Track",
+        default=True
+    )
+    anim_include_visibility: BoolProperty(
+        name="Include Visibility",
+        description="Include Visibility Track",
+        default=True
     )
 
 

@@ -397,31 +397,45 @@ def import_model(operator: bpy.types.Operator, context: bpy.types.Context):
         if len(ssp.animation_import_files) == 0:
             operator.report({'INFO'}, f'Animation directory not found: {anim_path}')
 
-    # Auto-store the idle animation (a00wait1) if it exists
+    # Auto-store predefined idle animations if they exist
     if len(ssp.animation_import_files) > 0:
-        # Look for a00wait1.nuanmb in the animation list
-        idle_anim_path = None
-        for anim_item in ssp.animation_import_files:
-            if anim_item.name == "a00wait1":
-                idle_anim_path = anim_item.path
-                break
+        # Initialize predefined poses list first
+        from ..extras.idle_pose_library import initialize_predefined_poses
+        initialize_predefined_poses(context)
         
-        # If found, automatically store it using the idle pose library
-        if idle_anim_path:
-            # Make sure the armature is selected
-            if armature:
-                # Select the armature
-                for obj in bpy.context.selected_objects:
-                    obj.select_set(False)
-                armature.select_set(True)
-                context.view_layer.objects.active = armature
-                
-                # Store the idle pose
-                try:
-                    bpy.ops.sub.store_idle_pose(filepath=idle_anim_path)
-                    operator.report({'INFO'}, f"Auto-stored idle pose from a00wait1.nuanmb")
-                except Exception as e:
-                    operator.report({'WARNING'}, f"Failed to auto-store idle pose: {str(e)}")
+        # Look for predefined animation files
+        predefined_poses = ["a00wait1", "a05squatwait", "a04fall", "a04fallaerial"]
+        stored_poses = []
+        
+        for pose_name in predefined_poses:
+            idle_anim_path = None
+            for anim_item in ssp.animation_import_files:
+                if anim_item.name == pose_name:
+                    idle_anim_path = anim_item.path
+                    break
+            
+            # If found, automatically store it using the idle pose library
+            if idle_anim_path:
+                # Make sure the armature is selected
+                if armature:
+                    # Select the armature
+                    for obj in bpy.context.selected_objects:
+                        obj.select_set(False)
+                    armature.select_set(True)
+                    context.view_layer.objects.active = armature
+                    
+                    # Store the idle pose
+                    try:
+                        bpy.ops.sub.store_idle_pose(filepath=idle_anim_path)
+                        stored_poses.append(pose_name)
+                    except Exception as e:
+                        operator.report({'WARNING'}, f"Failed to auto-store idle pose {pose_name}: {str(e)}")
+        
+        # Report what was stored
+        if stored_poses:
+            operator.report({'INFO'}, f"Auto-stored idle poses: {', '.join(stored_poses)}")
+        else:
+            operator.report({'INFO'}, "No predefined idle animations found to auto-store")
 
     return {'FINISHED'}
 

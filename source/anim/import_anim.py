@@ -35,33 +35,7 @@ class SUB_UL_animation_import_list(bpy.types.UIList):
 class SUB_OP_import_all_animations(bpy.types.Operator):
     bl_idname = 'sub.import_all_animations'
     bl_label = 'Import All Animations'
-    bl_options = {'UNDO'}
-
-    include_transform_track: BoolProperty(
-        name='Include Transform',
-        description='Include Transform Track',
-        default=True,
-    )
-    include_material_track: BoolProperty(
-        name='Include Material',
-        description='Include Material Track',
-        default=True,
-    )
-    include_visibility_track: BoolProperty(
-        name='Include Visibility',
-        description='Include Visibility Track',
-        default=True,
-    )
-    first_blender_frame: IntProperty(
-        name='Start Frame',
-        description='What frame to start importing the track on',
-        default=1,
-    )
-    use_debug_timer: BoolProperty(
-        name='Debug timing stats',
-        description='Print advance import timing info to the console',
-        default=False,
-    )
+    bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
@@ -74,75 +48,137 @@ class SUB_OP_import_all_animations(bpy.types.Operator):
         ssp = context.scene.sub_scene_properties
         return len(ssp.animation_import_files) > 0
     
-    def invoke(self, context, event):
-        self.first_blender_frame = context.scene.frame_start
-        return context.window_manager.invoke_props_dialog(self)
+    # Progress tracking properties
+    progress: bpy.props.FloatProperty(default=0.0, min=0.0, max=1.0)
+    progress_text: bpy.props.StringProperty(default="")
+    is_importing: bpy.props.BoolProperty(default=False)
+    current_animation_index: bpy.props.IntProperty(default=0)
+    imported_count: bpy.props.IntProperty(default=0)
     
-    def execute(self, context):
+    def invoke(self, context, event):
         ssp = context.scene.sub_scene_properties
+        anim_count = len(ssp.animation_import_files)
+        self.progress = 0.0
+        self.progress_text = f"Ready to import {anim_count} animations"
+        self.is_importing = False
+        self.current_animation_index = 0
+        self.imported_count = 0
+        return context.window_manager.invoke_props_dialog(self, width=450)
+    
+    def draw(self, context):
+        layout = self.layout
+        ssp = context.scene.sub_scene_properties
+        anim_count = len(ssp.animation_import_files)
         
-        if len(ssp.animation_import_files) == 0:
-            self.report({"ERROR"}, "No animations found in the selected folder")
-            return {'CANCELLED'}
-        
-        obj: bpy.types.Object = context.object
-        start_time = time.time()
+        if not self.is_importing:
+            # Confirmation phase
+            layout.label(text=f"Are you sure you want to import all {anim_count} animations?")
+        else:
+            # Progress phase
+            layout.label(text=self.progress_text)
+            row = layout.row()
+            row.progress(factor=self.progress, type='BAR')
+            layout.label(text=f"Imported: {self.imported_count}/{anim_count}")
+            
+    def modal(self, context, event):
+        if event.type == 'TIMER':
+            self.import_next_animation(context)
+            return {'RUNNING_MODAL'}
+        return {'PASS_THROUGH'}
+            
+    def execute(self, context):
+        if not self.is_importing:
+            # Start the import process
+            self.is_importing = True
+            self.current_animation_index = 0
+            self.imported_count = 0
+            
+            # Setup for modal operation
+            ssp = context.scene.sub_scene_properties
+            
+            # Use scene properties instead of operator properties
+            self.include_transform = ssp.anim_include_transform
+            self.include_material = ssp.anim_include_material  
+            self.include_visibility = ssp.anim_include_visibility
+            self.first_frame = 1
+            
+            # Save current auto-keyframe setting and disable it
+            self.use_keyframe_insert_auto = context.scene.tool_settings.use_keyframe_insert_auto
+            context.scene.tool_settings.use_keyframe_insert_auto = False
+            
+            # Set to pose mode if needed
+            self.old_mode = context.mode
+            obj = context.object
+            if obj.type == 'ARMATURE' and self.old_mode != 'POSE':
+                bpy.ops.object.mode_set(mode='POSE', toggle=False)
+            
+            # Start timer for processing animations
+            self._timer = context.window_manager.event_timer_add(0.1, window=context.window)
+            context.window_manager.modal_handler_add(self)
+            return {'RUNNING_MODAL'}
+        else:
+            return {'FINISHED'}
+    
+    def import_next_animation(self, context):
+        ssp = context.scene.sub_scene_properties
         total_animations = len(ssp.animation_import_files)
-        imported_count = 0
         
-        # Save current auto-keyframe setting and disable it
-        use_keyframe_insert_auto = bpy.context.scene.tool_settings.use_keyframe_insert_auto
-        bpy.context.scene.tool_settings.use_keyframe_insert_auto = False
+        if self.current_animation_index >= total_animations:
+            # Import complete
+            self.finish_import(context)
+            return
         
-        # Set to pose mode if needed
-        old_mode = context.mode
-        if obj.type == 'ARMATURE' and old_mode != 'POSE':
-            bpy.ops.object.mode_set(mode='POSE', toggle=False)
+        anim_item = ssp.animation_import_files[self.current_animation_index]
+        self.progress_text = f"Importing: {anim_item.name}"
+        self.progress = self.current_animation_index / total_animations
         
-        # Loop through all animations
-        for anim_index, anim_item in enumerate(ssp.animation_import_files):
-            if not Path(anim_item.path).exists():
-                self.report({"WARNING"}, f"Animation file not found: {anim_item.path}")
-                continue
-                
+        # Force UI update
+        for area in context.screen.areas:
+            area.tag_redraw()
+        
+        if not Path(anim_item.path).exists():
+            self.report({"WARNING"}, f"Animation file not found: {anim_item.path}")
+        else:
             try:
-                # Load animation - always use the same starting frame for each animation
+                obj = context.object
                 if obj.type == 'ARMATURE':
                     import_model_anim(context, anim_item.path,
-                                    self.include_transform_track, self.include_material_track,
-                                    self.include_visibility_track, self.first_blender_frame)
+                                    self.include_transform, self.include_material,
+                                    self.include_visibility, self.first_frame)
                 else:
-                    import_camera_anim(self, context, anim_item.path, self.first_blender_frame)
+                    import_camera_anim(self, context, anim_item.path, self.first_frame)
                 
-                imported_count += 1
-                
-                # Update progress in the console
-                progress = (anim_index + 1) / total_animations * 100
-                self.report({"INFO"}, f"Imported {anim_index + 1}/{total_animations} ({progress:.1f}%): {anim_item.name}")
+                self.imported_count += 1
                 
             except Exception as e:
                 self.report({"ERROR"}, f"Failed to import animation '{anim_item.name}': {str(e)}")
         
+        self.current_animation_index += 1
+    
+    def finish_import(self, context):
+        # Clean up
+        context.window_manager.event_timer_remove(self._timer)
+        
         # Restore original mode
-        if obj.type == 'ARMATURE' and old_mode != 'POSE':
-            bpy.ops.object.mode_set(mode=old_mode, toggle=False)
+        obj = context.object
+        if obj.type == 'ARMATURE' and self.old_mode != 'POSE':
+            bpy.ops.object.mode_set(mode=self.old_mode, toggle=False)
         
         # Restore auto-keyframe setting
-        bpy.context.scene.tool_settings.use_keyframe_insert_auto = use_keyframe_insert_auto
+        context.scene.tool_settings.use_keyframe_insert_auto = self.use_keyframe_insert_auto
         
-        # Report timing stats
-        elapsed_time = time.time() - start_time
-        self.report({"INFO"}, f"Successfully imported {imported_count}/{total_animations} animations in {elapsed_time:.2f} seconds")
-            
+        # Final progress update
+        ssp = context.scene.sub_scene_properties
+        total_animations = len(ssp.animation_import_files)
+        self.progress = 1.0
+        self.progress_text = f"Complete! Imported {self.imported_count}/{total_animations} animations"
+        
+        # Force final UI update
+        for area in context.screen.areas:
+            area.tag_redraw()
+        
+        self.report({"INFO"}, f"Successfully imported {self.imported_count}/{total_animations} animations")
         return {'FINISHED'}
-    
-    def draw(self, context):
-        layout = self.layout
-        layout.prop(self, "include_transform_track")
-        layout.prop(self, "include_material_track")
-        layout.prop(self, "include_visibility_track")
-        layout.prop(self, "first_blender_frame")
-        layout.prop(self, "use_debug_timer")
 
 class SUB_OP_import_selected_anim(bpy.types.Operator):
     bl_idname = 'sub.import_selected_anim'
@@ -186,10 +222,6 @@ class SUB_OP_import_selected_anim(bpy.types.Operator):
         ssp = context.scene.sub_scene_properties
         return len(ssp.animation_import_files) > 0 and ssp.animation_import_files_index < len(ssp.animation_import_files)
     
-    def invoke(self, context, event):
-        self.first_blender_frame = context.scene.frame_start
-        return context.window_manager.invoke_props_dialog(self)
-    
     def execute(self, context):
         ssp = context.scene.sub_scene_properties
         selected_anim = ssp.animation_import_files[ssp.animation_import_files_index]
@@ -201,35 +233,28 @@ class SUB_OP_import_selected_anim(bpy.types.Operator):
         ssp.last_anim_import_dir = str(Path(selected_anim.path).parent)
         obj: bpy.types.Object = context.object
         
-        with cProfile.Profile() as pr:
-            use_keyframe_insert_auto = bpy.context.scene.tool_settings.use_keyframe_insert_auto
-            bpy.context.scene.tool_settings.use_keyframe_insert_auto = False
-            if obj.type == 'ARMATURE':
-                # Theres a bpy.ops in import_model_anim that requires being in pose mode
-                # The mode setting stuff should be removed when the bpy.ops is no longer required
-                old_mode = context.mode
-                bpy.ops.object.mode_set(mode='POSE', toggle=False)
-                import_model_anim(context, selected_anim.path,
-                                        self.include_transform_track, self.include_material_track,
-                                        self.include_visibility_track, self.first_blender_frame)
-                bpy.ops.object.mode_set(mode=old_mode, toggle=False)
-            else:
-                import_camera_anim(self, context, selected_anim.path, self.first_blender_frame)
-            bpy.context.scene.tool_settings.use_keyframe_insert_auto = use_keyframe_insert_auto
-        if self.use_debug_timer:
-            stats = pstats.Stats(pr)
-            stats.sort_stats(pstats.SortKey.TIME)
-            stats.print_stats()
-            
+        # Use scene properties instead of operator properties
+        include_transform = ssp.anim_include_transform
+        include_material = ssp.anim_include_material  
+        include_visibility = ssp.anim_include_visibility
+        first_frame = 1
+        
+        use_keyframe_insert_auto = bpy.context.scene.tool_settings.use_keyframe_insert_auto
+        bpy.context.scene.tool_settings.use_keyframe_insert_auto = False
+        if obj.type == 'ARMATURE':
+            # Theres a bpy.ops in import_model_anim that requires being in pose mode
+            # The mode setting stuff should be removed when the bpy.ops is no longer required
+            old_mode = context.mode
+            bpy.ops.object.mode_set(mode='POSE', toggle=False)
+            import_model_anim(context, selected_anim.path,
+                                    include_transform, include_material,
+                                    include_visibility, first_frame)
+            bpy.ops.object.mode_set(mode=old_mode, toggle=False)
+        else:
+            import_camera_anim(self, context, selected_anim.path, first_frame)
+        bpy.context.scene.tool_settings.use_keyframe_insert_auto = use_keyframe_insert_auto
+        
         return {'FINISHED'}
-    
-    def draw(self, context):
-        layout = self.layout
-        layout.prop(self, "include_transform_track")
-        layout.prop(self, "include_material_track")
-        layout.prop(self, "include_visibility_track")
-        layout.prop(self, "first_blender_frame")
-        layout.prop(self, "use_debug_timer")
 
 class SUB_PT_import_anim(Panel):
     bl_space_type = 'VIEW_3D'
@@ -268,22 +293,44 @@ class SUB_PT_import_anim(Panel):
             row.operator(SUB_OP_select_animation_folder.bl_idname, icon='ZOOM_ALL', text='Browse Animation Folder')
             
             if ssp.animation_import_folder_path and len(ssp.animation_import_files) > 0:
+                # Collapsible Related Animations section
                 box = layout.box()
-                row = box.row()
-                row.label(text="Related Animations:")
-                if ssp.animation_import_folder_path:
+                header_row = box.row()
+                header_row.prop(ssp, "related_animations_expanded", 
+                               icon="TRIA_DOWN" if ssp.related_animations_expanded else "TRIA_RIGHT",
+                               icon_only=True, emboss=False)
+                header_row.label(text="Related Animations:")
+                
+                # Only show content if expanded
+                if ssp.related_animations_expanded:
+                    # Collapsible Import Options section
+                    header_row = box.row()
+                    header_row.prop(ssp, "import_options_expanded", 
+                                   icon="TRIA_DOWN" if ssp.import_options_expanded else "TRIA_RIGHT",
+                                   icon_only=True, emboss=False)
+                    header_row.label(text="Import Options:")
+                    
+                    # Only show import options if expanded
+                    if ssp.import_options_expanded:
+                        row = box.row()
+                        col = row.column()
+                        col.prop(ssp, "anim_include_transform", text="Include Transform")
+                        col.prop(ssp, "anim_include_material", text="Include Material")  
+                        col.prop(ssp, "anim_include_visibility", text="Include Visibility")
+                    
+                    if ssp.animation_import_folder_path:
+                        row = box.row()
+                        row.label(text=f"Folder: {ssp.animation_import_folder_path}")
+                    
                     row = box.row()
-                    row.label(text=f"Folder: {ssp.animation_import_folder_path}")
-                
-                row = box.row()
-                row.template_list("SUB_UL_animation_import_list", "", ssp, "animation_import_files", ssp, "animation_import_files_index")
-                
-                row = box.row()
-                row.operator(SUB_OP_import_selected_anim.bl_idname, text="Import Selected Animation")
-                
-                # Add batch import button
-                row = box.row()
-                row.operator(SUB_OP_import_all_animations.bl_idname, text="Import All Animations")
+                    row.template_list("SUB_UL_animation_import_list", "", ssp, "animation_import_files", ssp, "animation_import_files_index")
+                    
+                    row = box.row()
+                    row.operator(SUB_OP_import_selected_anim.bl_idname, text="Import Selected Animation")
+                    
+                    # Add batch import button
+                    row = box.row()
+                    row.operator(SUB_OP_import_all_animations.bl_idname, text="Import All Animations")
 
 class SUB_OP_import_anim(Operator):
     bl_idname = 'sub.import_anim'
@@ -332,7 +379,6 @@ class SUB_OP_import_anim(Operator):
         return True
     
     def invoke(self, context, _event):
-        self.first_blender_frame = context.scene.frame_start
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
@@ -344,25 +390,26 @@ class SUB_OP_import_anim(Operator):
         ssp.last_anim_import_dir = str(Path(self.filepath).parent)
         obj: bpy.types.Object = context.object
         
-        with cProfile.Profile() as pr:
-            use_keyframe_insert_auto = bpy.context.scene.tool_settings.use_keyframe_insert_auto
-            bpy.context.scene.tool_settings.use_keyframe_insert_auto = False
-            if obj.type == 'ARMATURE':
-                # Theres a bpy.ops in import_model_anim that requires being in pose mode
-                # The mode setting stuff should be removed when the bpy.ops is no longer required
-                old_mode = context.mode
-                bpy.ops.object.mode_set(mode='POSE', toggle=False)
-                import_model_anim(context, self.filepath,
-                                        self.include_transform_track, self.include_material_track,
-                                        self.include_visibility_track, self.first_blender_frame)
-                bpy.ops.object.mode_set(mode=old_mode, toggle=False)
-            else:
-                import_camera_anim(self, context, self.filepath, self.first_blender_frame)
-            bpy.context.scene.tool_settings.use_keyframe_insert_auto = use_keyframe_insert_auto
-        if self.use_debug_timer:
-            stats = pstats.Stats(pr)
-            stats.sort_stats(pstats.SortKey.TIME)
-            stats.print_stats()
+        # Use scene properties instead of operator properties
+        include_transform = ssp.anim_include_transform
+        include_material = ssp.anim_include_material  
+        include_visibility = ssp.anim_include_visibility
+        first_frame = 1
+        
+        use_keyframe_insert_auto = bpy.context.scene.tool_settings.use_keyframe_insert_auto
+        bpy.context.scene.tool_settings.use_keyframe_insert_auto = False
+        if obj.type == 'ARMATURE':
+            # Theres a bpy.ops in import_model_anim that requires being in pose mode
+            # The mode setting stuff should be removed when the bpy.ops is no longer required
+            old_mode = context.mode
+            bpy.ops.object.mode_set(mode='POSE', toggle=False)
+            import_model_anim(context, self.filepath,
+                                    include_transform, include_material,
+                                    include_visibility, first_frame)
+            bpy.ops.object.mode_set(mode=old_mode, toggle=False)
+        else:
+            import_camera_anim(self, context, self.filepath, first_frame)
+        bpy.context.scene.tool_settings.use_keyframe_insert_auto = use_keyframe_insert_auto
 
         return {'FINISHED'}
   

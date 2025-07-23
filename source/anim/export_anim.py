@@ -77,30 +77,35 @@ class SUB_PT_export_anim(Panel):
             else:
                 row.operator(SUB_OP_anim_export.bl_idname, icon='EXPORT', text='Export Current Animation')
                 
-                # Add batch export section
-                box = layout.box()
-                row = box.row()
-                row.label(text="Batch Export Actions")
-                
-                # Refresh actions button
-                row = box.row()
-                row.operator(SUB_OP_refresh_actions.bl_idname, icon='FILE_REFRESH', text="Refresh Action List")
-                
-                # Action list
+                # Add collapsible batch export section
                 ssp = context.scene.sub_scene_properties
-                row = box.row()
-                row.template_list("SUB_UL_action_export_list", "", ssp, "action_export_list", 
-                                 ssp, "action_export_list_index", rows=3)
+                box = layout.box()
+                header_row = box.row()
+                header_row.prop(ssp, "batch_export_actions_expanded", 
+                               icon="TRIA_DOWN" if ssp.batch_export_actions_expanded else "TRIA_RIGHT",
+                               icon_only=True, emboss=False)
+                header_row.label(text="Batch Export Actions")
                 
-                # Select/deselect all actions
-                row = box.row(align=True)
-                row.operator(SUB_OP_select_all_actions.bl_idname, text="Select All")
-                row.operator(SUB_OP_deselect_all_actions.bl_idname, text="Deselect All")
-                
-                # Batch export button
-                row = box.row()
-                row.scale_y = 1.2
-                row.operator(SUB_OP_batch_export_anim.bl_idname, icon='EXPORT', text='Export Selected Actions')
+                # Only show content if expanded
+                if ssp.batch_export_actions_expanded:
+                    # Refresh actions button
+                    row = box.row()
+                    row.operator(SUB_OP_refresh_actions.bl_idname, icon='FILE_REFRESH', text="Refresh Action List")
+                    
+                    # Action list
+                    row = box.row()
+                    row.template_list("SUB_UL_action_export_list", "", ssp, "action_export_list", 
+                                     ssp, "action_export_list_index", rows=3)
+                    
+                    # Select/deselect all actions
+                    row = box.row(align=True)
+                    row.operator(SUB_OP_select_all_actions.bl_idname, text="Select All")
+                    row.operator(SUB_OP_deselect_all_actions.bl_idname, text="Deselect All")
+                    
+                    # Batch export button
+                    row = box.row()
+                    row.scale_y = 1.2
+                    row.operator(SUB_OP_batch_export_anim.bl_idname, icon='EXPORT', text='Export Selected Actions')
         else:
             row.label(text=f'The selected {obj.type.lower()} is not an armature or a camera.')
 

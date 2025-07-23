@@ -24,6 +24,44 @@ class SUB_PT_animation_tools(Panel):
         layout = self.layout
         layout.use_property_split = False
 
+        # Add idle pose library (moved to top)
+        box = layout.box()
+        
+        # Collapsible header with toggle
+        header_row = box.row()
+        header_row.prop(ssp, "idle_pose_library_expanded", 
+                       icon="TRIA_DOWN" if ssp.idle_pose_library_expanded else "TRIA_RIGHT",
+                       icon_only=True, emboss=False)
+        header_row.label(text="Idle Pose Library")
+        
+        # Only show content if expanded
+        if ssp.idle_pose_library_expanded:
+            # Checkboxes
+            row = box.row(align=True)
+            row.prop(ssp, "idle_pose_include_trans", text="Include Trans Bone")
+            
+            row = box.row(align=True)
+            row.prop(ssp, "idle_pose_mirrored", text="Mirrored")
+            row.prop(ssp, "idle_pose_180_rotate", text="180 Rotate")
+            
+            # Store custom pose button (moved above dropdown)
+            row = box.row(align=True)
+            row.operator("sub.store_idle_pose", text="Store Custom Pose")
+            
+            # Dropdown for pose selection using template_list
+            row = box.row()
+            row.template_list("UI_UL_list", "idle_pose_list", ssp, "idle_pose_list", ssp, "idle_pose_list_index")
+            
+            # Apply button for selected pose
+            row = box.row(align=True)
+            if ssp.idle_pose_list and ssp.idle_pose_list_index < len(ssp.idle_pose_list):
+                row.operator("sub.apply_idle_pose_from_list", text="Apply Selected Pose")
+            else:
+                row.enabled = False
+                row.operator("sub.apply_idle_pose_from_list", text="Apply Selected Pose (None Selected)")
+
+        layout.separator()
+
         if context.mode != 'EDIT_ARMATURE':
             row = layout.row(align=True)
             row.operator("sub.create_ik_bones")
@@ -78,22 +116,6 @@ class SUB_PT_animation_tools(Panel):
                 row.operator("sub.invert_rotation_values", text="Invert Positive and Negative (Pose Mode Only)")
             else:
                 row.operator("sub.invert_rotation_values", text="Invert Positive and Negative (Select Bones)")
-        
-        # Add idle pose library buttons
-        layout.separator()
-        box = layout.box()
-        box.label(text="Idle Pose Library")
-        
-        row = box.row(align=True)
-        row.operator("sub.store_idle_pose", text="Store Idle Pose")
-        
-        # Only show apply button if there's stored data
-        row = box.row(align=True)
-        if "idle_pose_name" in context.scene:
-            row.operator("sub.apply_idle_pose", text=f"Apply '{context.scene.get('idle_pose_name', '')}' Pose")
-        else:
-            row.enabled = False
-            row.operator("sub.apply_idle_pose", text="Apply Idle Pose (None Stored)")
 
 class SUB_PT_misc_utilities(Panel):
     bl_space_type = 'VIEW_3D'
@@ -123,41 +145,32 @@ class SUB_PT_misc_utilities(Panel):
             row.enabled = False
             row.operator("sub.remove_selected_bones", text="Remove Bones (Edit Mode Only)")
         
-        # Add weight limiting operator
+        # Add collapsible model tools section
         layout.separator()
         box = layout.box()
-        box.label(text="Weight Tools")
-        row = box.row(align=True)
-        row.operator("sub.limit_weights", text="Limit Weights to 4")
         
-        # Add renaming tools operators (only available in Object mode)
-        layout.separator()
-        box = layout.box()
-        box.label(text="Renaming Tools")
+        # Get scene properties
+        ssp = context.scene.sub_scene_properties
         
-        # Rename Materials to Mesh button
-        row = box.row(align=True)
-        if context.mode == 'OBJECT':
-            row.operator("sub.rename_material_to_mesh", text="Rename Materials to Mesh")
-        else:
-            row.enabled = False
-            row.operator("sub.rename_material_to_mesh", text="Rename Materials to Mesh (Object Mode Only)")
+        # Collapsible header with toggle
+        header_row = box.row()
+        header_row.prop(ssp, "model_tools_expanded", 
+                       icon="TRIA_DOWN" if ssp.model_tools_expanded else "TRIA_RIGHT",
+                       icon_only=True, emboss=False)
+        header_row.label(text="Model Tools")
         
-        # Rename Textures to Material button
-        row = box.row(align=True)
-        if context.mode == 'OBJECT':
-            row.operator("sub.rename_texture_to_material", text="Rename Textures to Material")
-        else:
-            row.enabled = False
-            row.operator("sub.rename_texture_to_material", text="Rename Textures to Material (Object Mode Only)")
-        
-        # Add Mirror Vertex Groups button
-        row = box.row(align=True)
-        if context.mode == 'OBJECT':
-            row.operator("sub.mirror_vertex_groups", text="Mirror Vertex Groups")
-        else:
-            row.enabled = False
-            row.operator("sub.mirror_vertex_groups", text="Mirror Vertex Groups (Object Mode Only)")
+        # Only show content if expanded
+        if ssp.model_tools_expanded:
+            row = box.row(align=True)
+            row.operator("sub.limit_weights", text="Limit Weights to 4")
+            
+            # Add Mirror Vertex Groups button
+            row = box.row(align=True)
+            if context.mode == 'OBJECT':
+                row.operator("sub.mirror_vertex_groups", text="Mirror Vertex Groups")
+            else:
+                row.enabled = False
+                row.operator("sub.mirror_vertex_groups", text="Mirror Vertex Groups (Object Mode Only)")
         
     
         
