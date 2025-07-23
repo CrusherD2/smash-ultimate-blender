@@ -286,6 +286,24 @@ class PG_PT_smash_texture_materials(Panel):
         # Show material conversion button
         layout.operator(operators.SUB_OP_convert_blender_material.bl_idname, text="Convert to Smash Ultimate Material")
         
+        # Add Solid view fix buttons
+        box = layout.box()
+        box.label(text="Viewport Display Fixes:")
+        row = box.row()
+        row.operator(operators.SUB_OP_fix_solid_view_display.bl_idname, text="Fix This Material for Solid View")
+        row = box.row()
+        row.operator(operators.SUB_OP_fix_uvset_solid_view.bl_idname, text="Fix uvSet Textures in Solid View")
+        
+        # Show eye-specific fix only for eye materials
+        if 'Eye' in material.name:
+            row = box.row()
+            row.operator(operators.SUB_OP_fix_eye_uvset_solid_view.bl_idname, text="Fix Eye uvSet Textures in Solid View")
+            row = box.row()
+            row.operator(operators.SUB_OP_fix_eye_dual_uv_solid_view.bl_idname, text="Fix Eye Dual UV Maps in Solid View")
+        
+        row = box.row()
+        row.operator(operators.SUB_OP_fix_all_materials_solid_view.bl_idname, text="Fix All Materials for Solid View")
+        
         # Add a notice about supported material types
         box = layout.box()
         box.label(text="Supported Material Types:")

@@ -25,8 +25,12 @@ def reset_unanimated_bones_to_rest(armature, action):
             bpy.ops.object.mode_set(mode='POSE')
         
         if not action or not action.fcurves:
-            # If no action or no fcurves, reset all bones to rest
+            # If no action or no fcurves, reset all bones to rest (except _RET bones)
             for bone in armature.pose.bones:
+                # Skip bones with "_RET" suffix - don't reset them to rest pose
+                if bone.name.endswith("_RET"):
+                    continue
+                    
                 bone.location = (0, 0, 0)
                 bone.rotation_euler = (0, 0, 0)
                 bone.rotation_quaternion = (1, 0, 0, 0)
@@ -51,6 +55,10 @@ def reset_unanimated_bones_to_rest(armature, action):
         # Reset bones that are not animated to their rest positions
         for bone in armature.pose.bones:
             if bone.name not in animated_bones:
+                # Skip bones with "_RET" suffix - don't reset them to rest pose
+                if bone.name.endswith("_RET"):
+                    continue
+                    
                 # Reset location to rest position
                 bone.location = (0, 0, 0)
                 

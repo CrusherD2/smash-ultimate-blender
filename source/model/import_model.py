@@ -1083,6 +1083,14 @@ def setup_blender_mat(blender_mat:bpy.types.Material, material_label, ssbh_matl:
     if 'colorSet5' in required_attributes:
         create_and_enable_color_set('colorSet5', 1)
 
+    # Apply Solid view fixes to ensure proper display
+    from ..material.create_blender_materials_from_matl import setup_material_for_solid_view, setup_eye_material_for_solid_view
+    setup_material_for_solid_view(blender_mat)
+    
+    # Special handling for eye materials
+    if 'Eye' in material_label:
+        setup_eye_material_for_solid_view(blender_mat)
+
 """
 
 

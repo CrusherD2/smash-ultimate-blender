@@ -488,6 +488,240 @@ def get_vertex_attributes(shader_name:str)->list[str]:
         # The database has a single entry for each program, so don't include the render pass tag.
         return [row[0] for row in con.execute(sql, (shader_name[:len('SFX_PBS_0000000000000080')],)).fetchall()]
     
+def setup_material_for_solid_view(material: bpy.types.Material):
+    """
+    Ensures materials are properly configured to display correctly in Solid view mode.
+    This is particularly important for materials using multiple UV maps.
+    """
+    if not material.use_nodes or not material.node_tree:
+        return
+    
+    # Ensure the material has proper display settings for Solid view
+    material.use_backface_culling = True
+    
+    # Set up proper blend method for viewport display
+    if material.blend_method == 'OPAQUE':
+        # For opaque materials, ensure they display properly in Solid view
+        material.use_screen_refraction = False
+        material.use_refraction_depth = False
+    
+    # Check if material uses multiple UV maps and ensure proper setup
+    nodes = material.node_tree.nodes
+    uv_maps_used = set()
+    
+    for node in nodes:
+        if node.type == 'UVMAP':
+            if hasattr(node, 'uv_map') and node.uv_map:
+                uv_maps_used.add(node.uv_map)
+    
+    # If multiple UV maps are used, ensure proper material setup
+    if len(uv_maps_used) > 1:
+        # Ensure the material has proper viewport display settings
+        material.use_nodes = True
+        
+        # Set up proper material output for viewport display
+        output_nodes = [n for n in nodes if n.type == 'OUTPUT_MATERIAL']
+        if output_nodes:
+            for output_node in output_nodes:
+                # Ensure the output is properly connected for viewport display
+                if output_node.target == 'EEVEE':
+                    # Make sure EEVEE output is properly configured
+                    if not output_node.inputs[0].links:
+                        # If no surface input is connected, create a basic shader
+                        principled = nodes.new('ShaderNodeBsdfPrincipled')
+                        principled.location = (output_node.location[0] - 300, output_node.location[1])
+                        material.node_tree.links.new(principled.outputs[0], output_node.inputs[0])
+    
+    # Special handling for materials with uvSet UV map
+    if 'uvSet' in uv_maps_used:
+        # Find all texture nodes that use uvSet
+        uvset_texture_nodes = []
+        for node in nodes:
+            if node.type == 'TEX_IMAGE' and node.image:
+                # Check if this texture is connected to a uvSet UV map
+                for link in material.node_tree.links:
+                    if link.to_node == node and link.from_node.type == 'UVMAP':
+                        if hasattr(link.from_node, 'uv_map') and link.from_node.uv_map == 'uvSet':
+                            uvset_texture_nodes.append(node)
+                            break
+        
+        # Ensure uvSet textures are properly connected to the material output
+        if uvset_texture_nodes:
+            # Find or create a principled BSDF node
+            principled_node = None
+            for node in nodes:
+                if node.type == 'BSDF_PRINCIPLED':
+                    principled_node = node
+                    break
+            
+            if not principled_node:
+                principled_node = nodes.new('ShaderNodeBsdfPrincipled')
+                principled_node.location = (0, 0)
+            
+            # Connect uvSet textures to the principled BSDF
+            for tex_node in uvset_texture_nodes:
+                # Check if texture is already connected
+                connected = False
+                for link in material.node_tree.links:
+                    if link.from_node == tex_node and link.to_node == principled_node:
+                        connected = True
+                        break
+                
+                if not connected:
+                    # Connect texture to base color if not already connected
+                    if not principled_node.inputs['Base Color'].links:
+                        material.node_tree.links.new(tex_node.outputs['Color'], principled_node.inputs['Base Color'])
+                    else:
+                        # If base color is already connected, create a mix node
+                        mix_node = nodes.new('ShaderNodeMixRGB')
+                        mix_node.location = (principled_node.location[0] - 300, principled_node.location[1])
+                        mix_node.blend_type = 'MULTIPLY'
+                        mix_node.inputs[0].default_value = 1.0  # Factor
+                        
+                        # Connect existing base color to mix node
+                        existing_link = principled_node.inputs['Base Color'].links[0]
+                        material.node_tree.links.new(existing_link.from_node.outputs[existing_link.from_socket.name], mix_node.inputs[1])
+                        
+                        # Connect new texture to mix node
+                        material.node_tree.links.new(tex_node.outputs['Color'], mix_node.inputs[2])
+                        
+                        # Connect mix node to principled
+                        material.node_tree.links.new(mix_node.outputs[0], principled_node.inputs['Base Color'])
+            
+            # Ensure principled BSDF is connected to material output
+            output_nodes = [n for n in nodes if n.type == 'OUTPUT_MATERIAL']
+            for output_node in output_nodes:
+                if output_node.target == 'EEVEE':
+                    if not output_node.inputs[0].links:
+                        material.node_tree.links.new(principled_node.outputs[0], output_node.inputs[0])
+                    elif output_node.inputs[0].links[0].from_node != principled_node:
+                        # If connected to something else, create a mix shader
+                        mix_shader = nodes.new('ShaderNodeMixShader')
+                        mix_shader.location = (output_node.location[0] - 200, output_node.location[1])
+                        mix_shader.inputs[0].default_value = 0.5  # Factor
+                        
+                        # Connect existing shader to mix
+                        existing_link = output_node.inputs[0].links[0]
+                        material.node_tree.links.new(existing_link.from_node.outputs[existing_link.from_socket.name], mix_shader.inputs[1])
+                        
+                        # Connect principled to mix
+                        material.node_tree.links.new(principled_node.outputs[0], mix_shader.inputs[2])
+                        
+                        # Connect mix to output
+                        material.node_tree.links.new(mix_shader.outputs[0], output_node.inputs[0])
+
+def setup_eye_material_for_solid_view(material: bpy.types.Material):
+    """
+    Special handling for eye materials to ensure they display properly in Solid view mode.
+    Eye materials often use multiple UV maps and need special configuration.
+    """
+    if not material.use_nodes or not material.node_tree:
+        return
+    
+    # Eye materials often need special handling for viewport display
+    material.use_backface_culling = False  # Eyes often need to be visible from both sides
+    
+    # Ensure proper blend method for eye materials
+    if material.blend_method == 'OPAQUE':
+        # For eye materials, we might need to adjust the blend method
+        # Check if the material has transparency
+        nodes = material.node_tree.nodes
+        has_transparency = False
+        
+        for node in nodes:
+            if node.type == 'TEX_IMAGE' and node.image:
+                if node.image.alpha_mode != 'NONE':
+                    has_transparency = True
+                    break
+        
+        if has_transparency:
+            material.blend_method = 'HASHED'
+    
+    # Special handling for dual UV map eye materials (map1 + uvSet)
+    nodes = material.node_tree.nodes
+    links = material.node_tree.links
+    
+    # Find textures for both UV maps
+    map1_texture_nodes = []
+    uvset_texture_nodes = []
+    
+    for node in nodes:
+        if node.type == 'TEX_IMAGE' and node.image:
+            # Check which UV map this texture uses
+            for link in links:
+                if link.to_node == node and link.from_node.type == 'UVMAP':
+                    if hasattr(link.from_node, 'uv_map'):
+                        if link.from_node.uv_map == 'map1':
+                            map1_texture_nodes.append(node)
+                        elif link.from_node.uv_map == 'uvSet':
+                            uvset_texture_nodes.append(node)
+                        break
+    
+    # If we have both map1 and uvSet textures, combine them properly
+    if map1_texture_nodes and uvset_texture_nodes:
+        # Find or create material output node
+        output_node = None
+        for node in nodes:
+            if node.type == 'OUTPUT_MATERIAL' and node.target == 'EEVEE':
+                output_node = node
+                break
+        
+        if not output_node:
+            output_node = nodes.new('ShaderNodeOutputMaterial')
+            output_node.target = 'EEVEE'
+            output_node.location = (800, 0)
+        
+        # Create a principled BSDF for the combined result
+        principled_node = nodes.new('ShaderNodeBsdfPrincipled')
+        principled_node.location = (600, 0)
+        
+        # Connect map1 textures (white eye) as base
+        if map1_texture_nodes:
+            links.new(map1_texture_nodes[0].outputs['Color'], principled_node.inputs['Base Color'])
+        
+        # Connect uvSet textures (pupil) using mix nodes
+        if uvset_texture_nodes:
+            for i, tex_node in enumerate(uvset_texture_nodes):
+                mix_node = nodes.new('ShaderNodeMixRGB')
+                mix_node.location = (principled_node.location[0] - 300 * (i + 1), principled_node.location[1])
+                mix_node.blend_type = 'MULTIPLY'
+                mix_node.inputs[0].default_value = 1.0
+                
+                # Connect current base color to mix node
+                if i == 0:
+                    links.new(principled_node.inputs['Base Color'].links[0].from_node.outputs[principled_node.inputs['Base Color'].links[0].from_socket.name], mix_node.inputs[1])
+                else:
+                    prev_mix = nodes[f"mix_uvset_{i-1}"]
+                    links.new(prev_mix.outputs[0], mix_node.inputs[1])
+                
+                # Connect uvSet texture to mix node
+                links.new(tex_node.outputs['Color'], mix_node.inputs[2])
+                mix_node.name = f"mix_uvset_{i}"
+                
+                # Connect final mix to principled
+                if i == len(uvset_texture_nodes) - 1:
+                    links.new(mix_node.outputs[0], principled_node.inputs['Base Color'])
+        
+        # Connect principled BSDF to material output
+        links.new(principled_node.outputs[0], output_node.inputs[0])
+    
+    # Ensure proper UV map setup for eye materials
+    for node in nodes:
+        if node.type == 'UVMAP':
+            # Make sure UV map nodes are properly configured
+            if hasattr(node, 'uv_map') and node.uv_map:
+                # Ensure the UV map is properly assigned
+                if node.uv_map == 'uvSet':
+                    # For eye materials using uvSet, ensure proper texture assignment
+                    for tex_node in nodes:
+                        if tex_node.type == 'TEX_IMAGE' and tex_node.image:
+                            # Ensure texture is properly connected
+                            if not tex_node.outputs['Color'].links:
+                                # Connect to a basic shader if not connected
+                                principled = nodes.new('ShaderNodeBsdfPrincipled')
+                                principled.location = (tex_node.location[0] + 300, tex_node.location[1])
+                                links.new(tex_node.outputs['Color'], principled.inputs['Base Color'])
+
 def create_blender_materials_from_matl(operator: bpy.types.Operator, ssbh_matl: ssbh_data_py.matl_data.MatlData) -> dict[str, bpy.types.Material]:
     '''
     Creates a blender material with the sub_matl_data filled out for every entry in the ssbh_matl.
@@ -515,6 +749,25 @@ def create_blender_materials_from_matl(operator: bpy.types.Operator, ssbh_matl: 
         attrs = get_vertex_attributes(entry.shader_label)
         sub_matl_data.add_vertex_attributes(attrs)
         
+        # Setup the material node tree
+        setup_blender_material_node_tree(material_label_to_material[entry.material_label])
+        
+        # Configure material for proper Solid view display
+        setup_material_for_solid_view(material_label_to_material[entry.material_label])
+        
+        # Special handling for eye materials
+        if 'Eye' in entry.material_label:
+            setup_eye_material_for_solid_view(material_label_to_material[entry.material_label])
+        
+        # Set blend method based on shader and blend states
+        blend_method = get_blend_method(entry.shader_label, sub_matl_data.blend_states)
+        material_label_to_material[entry.material_label].blend_method = blend_method
+        
+        # Set backface culling based on rasterizer states
+        if len(sub_matl_data.rasterizer_states) > 0:
+            if sub_matl_data.rasterizer_states[0].cull_mode == 'Back':
+                material_label_to_material[entry.material_label].use_backface_culling = True
+
     # Eye materials implicitly use extra materials despite no mesh being explicitly assigned.
     # Need to track these to preserve them on export.
     for material_label, material in material_label_to_material.items():
@@ -526,10 +779,8 @@ def create_blender_materials_from_matl(operator: bpy.types.Operator, ssbh_matl: 
                     new_linked_material: SUB_PG_matl_linked_material = sub_matl_data.linked_materials.add()
                     new_linked_material.blender_material = linked_material
 
-                    
     # Make the blender material settings
     for material_label, material in material_label_to_material.items():
         setup_blender_material_settings(material)
-        setup_blender_material_node_tree(material)
 
     return material_label_to_material

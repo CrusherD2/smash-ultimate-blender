@@ -132,3 +132,413 @@ class SUB_OP_copy_from_ult_material(Operator):
 
     def execute(self, context):
         return {'FINISHED'} 
+
+class SUB_OP_fix_solid_view_display(bpy.types.Operator):
+    bl_idname = "smash_ultimate.fix_solid_view_display"
+    bl_label = "Fix Solid View Display"
+    bl_description = "Fixes materials that aren't displaying properly in Solid view mode, especially for materials using multiple UV maps"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    @classmethod
+    def poll(cls, context):
+        return context.material is not None
+    
+    def execute(self, context):
+        material = context.material
+        if not material:
+            self.report({'ERROR'}, "No material selected")
+            return {'CANCELLED'}
+        
+        # Import the setup functions
+        from .create_blender_materials_from_matl import setup_material_for_solid_view, setup_eye_material_for_solid_view
+        
+        # Apply fixes for Solid view display
+        setup_material_for_solid_view(material)
+        
+        # Special handling for eye materials
+        if 'Eye' in material.name:
+            setup_eye_material_for_solid_view(material)
+        
+        # Force viewport update
+        for area in bpy.context.screen.areas:
+            if area.type == 'VIEW_3D':
+                for space in area.spaces:
+                    if space.type == 'VIEW_3D':
+                        space.shading.type = space.shading.type  # Force refresh
+        
+        self.report({'INFO'}, f"Fixed Solid view display for material '{material.name}'")
+        return {'FINISHED'}
+
+class SUB_OP_fix_all_materials_solid_view(bpy.types.Operator):
+    bl_idname = "smash_ultimate.fix_all_materials_solid_view"
+    bl_label = "Fix All Materials for Solid View"
+    bl_description = "Fixes all materials in the scene to display properly in Solid view mode"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    def execute(self, context):
+        # Import the setup functions
+        from .create_blender_materials_from_matl import setup_material_for_solid_view, setup_eye_material_for_solid_view
+        
+        fixed_count = 0
+        
+        for material in bpy.data.materials:
+            if material.use_nodes and material.node_tree:
+                # Apply fixes for Solid view display
+                setup_material_for_solid_view(material)
+                
+                # Special handling for eye materials
+                if 'Eye' in material.name:
+                    setup_eye_material_for_solid_view(material)
+                
+                fixed_count += 1
+        
+        # Force viewport update
+        for area in bpy.context.screen.areas:
+            if area.type == 'VIEW_3D':
+                for space in area.spaces:
+                    if space.type == 'VIEW_3D':
+                        space.shading.type = space.shading.type  # Force refresh
+        
+        self.report({'INFO'}, f"Fixed Solid view display for {fixed_count} materials")
+        return {'FINISHED'} 
+
+class SUB_OP_fix_uvset_solid_view(bpy.types.Operator):
+    bl_idname = "smash_ultimate.fix_uvset_solid_view"
+    bl_label = "Fix uvSet Textures in Solid View"
+    bl_description = "Specifically fixes textures using the uvSet UV map to display properly in Solid view mode"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    @classmethod
+    def poll(cls, context):
+        return context.material is not None
+    
+    def execute(self, context):
+        material = context.material
+        if not material or not material.use_nodes or not material.node_tree:
+            self.report({'ERROR'}, "No material with nodes selected")
+            return {'CANCELLED'}
+        
+        nodes = material.node_tree.nodes
+        links = material.node_tree.links
+        
+        # Find all texture nodes that use uvSet
+        uvset_texture_nodes = []
+        for node in nodes:
+            if node.type == 'TEX_IMAGE' and node.image:
+                # Check if this texture is connected to a uvSet UV map
+                for link in links:
+                    if link.to_node == node and link.from_node.type == 'UVMAP':
+                        if hasattr(link.from_node, 'uv_map') and link.from_node.uv_map == 'uvSet':
+                            uvset_texture_nodes.append(node)
+                            break
+        
+        if not uvset_texture_nodes:
+            self.report({'WARNING'}, "No textures using uvSet UV map found")
+            return {'CANCELLED'}
+        
+        # Find or create a principled BSDF node
+        principled_node = None
+        for node in nodes:
+            if node.type == 'BSDF_PRINCIPLED':
+                principled_node = node
+                break
+        
+        if not principled_node:
+            principled_node = nodes.new('ShaderNodeBsdfPrincipled')
+            principled_node.location = (0, 0)
+        
+        # Connect uvSet textures to the principled BSDF
+        connected_count = 0
+        for tex_node in uvset_texture_nodes:
+            # Check if texture is already connected to principled
+            already_connected = False
+            for link in links:
+                if link.from_node == tex_node and link.to_node == principled_node:
+                    already_connected = True
+                    break
+            
+            if not already_connected:
+                # Connect texture to base color if not already connected
+                if not principled_node.inputs['Base Color'].links:
+                    links.new(tex_node.outputs['Color'], principled_node.inputs['Base Color'])
+                    connected_count += 1
+                else:
+                    # If base color is already connected, create a mix node
+                    mix_node = nodes.new('ShaderNodeMixRGB')
+                    mix_node.location = (principled_node.location[0] - 300, principled_node.location[1])
+                    mix_node.blend_type = 'MULTIPLY'
+                    mix_node.inputs[0].default_value = 1.0  # Factor
+                    
+                    # Connect existing base color to mix node
+                    existing_link = principled_node.inputs['Base Color'].links[0]
+                    links.new(existing_link.from_node.outputs[existing_link.from_socket.name], mix_node.inputs[1])
+                    
+                    # Connect new texture to mix node
+                    links.new(tex_node.outputs['Color'], mix_node.inputs[2])
+                    
+                    # Connect mix node to principled
+                    links.new(mix_node.outputs[0], principled_node.inputs['Base Color'])
+                    connected_count += 1
+        
+        # Ensure principled BSDF is connected to material output
+        output_nodes = [n for n in nodes if n.type == 'OUTPUT_MATERIAL']
+        for output_node in output_nodes:
+            if output_node.target == 'EEVEE':
+                if not output_node.inputs[0].links:
+                    links.new(principled_node.outputs[0], output_node.inputs[0])
+                elif output_node.inputs[0].links[0].from_node != principled_node:
+                    # If connected to something else, create a mix shader
+                    mix_shader = nodes.new('ShaderNodeMixShader')
+                    mix_shader.location = (output_node.location[0] - 200, output_node.location[1])
+                    mix_shader.inputs[0].default_value = 0.5  # Factor
+                    
+                    # Connect existing shader to mix
+                    existing_link = output_node.inputs[0].links[0]
+                    links.new(existing_link.from_node.outputs[existing_link.from_socket.name], mix_shader.inputs[1])
+                    
+                    # Connect principled to mix
+                    links.new(principled_node.outputs[0], mix_shader.inputs[2])
+                    
+                    # Connect mix to output
+                    links.new(mix_shader.outputs[0], output_node.inputs[0])
+        
+        # Force viewport update
+        for area in bpy.context.screen.areas:
+            if area.type == 'VIEW_3D':
+                for space in area.spaces:
+                    if space.type == 'VIEW_3D':
+                        space.shading.type = space.shading.type  # Force refresh
+        
+        self.report({'INFO'}, f"Fixed {connected_count} uvSet textures for Solid view display")
+        return {'FINISHED'} 
+
+class SUB_OP_fix_eye_uvset_solid_view(bpy.types.Operator):
+    bl_idname = "smash_ultimate.fix_eye_uvset_solid_view"
+    bl_label = "Fix Eye uvSet Textures in Solid View"
+    bl_description = "Specifically fixes eye materials with uvSet textures to display properly in Solid view mode"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    @classmethod
+    def poll(cls, context):
+        return context.material is not None and 'Eye' in context.material.name
+    
+    def execute(self, context):
+        material = context.material
+        if not material or not material.use_nodes or not material.node_tree:
+            self.report({'ERROR'}, "No eye material with nodes selected")
+            return {'CANCELLED'}
+        
+        nodes = material.node_tree.nodes
+        links = material.node_tree.links
+        
+        # Find all texture nodes that use uvSet
+        uvset_texture_nodes = []
+        for node in nodes:
+            if node.type == 'TEX_IMAGE' and node.image:
+                # Check if this texture is connected to a uvSet UV map
+                for link in links:
+                    if link.to_node == node and link.from_node.type == 'UVMAP':
+                        if hasattr(link.from_node, 'uv_map') and link.from_node.uv_map == 'uvSet':
+                            uvset_texture_nodes.append(node)
+                            break
+        
+        if not uvset_texture_nodes:
+            self.report({'WARNING'}, "No uvSet textures found in eye material")
+            return {'CANCELLED'}
+        
+        # For eye materials, we need to ensure the uvSet textures are properly connected
+        # to the material output for Solid view display
+        
+        # Find the material output node
+        output_node = None
+        for node in nodes:
+            if node.type == 'OUTPUT_MATERIAL' and node.target == 'EEVEE':
+                output_node = node
+                break
+        
+        if not output_node:
+            # Create output node if it doesn't exist
+            output_node = nodes.new('ShaderNodeOutputMaterial')
+            output_node.target = 'EEVEE'
+            output_node.location = (600, 0)
+        
+        # Create a principled BSDF specifically for the uvSet textures
+        principled_node = nodes.new('ShaderNodeBsdfPrincipled')
+        principled_node.location = (300, 0)
+        
+        # Connect uvSet textures to the principled BSDF
+        connected_count = 0
+        for tex_node in uvset_texture_nodes:
+            # Connect texture to base color
+            links.new(tex_node.outputs['Color'], principled_node.inputs['Base Color'])
+            connected_count += 1
+        
+        # Connect principled BSDF to material output
+        links.new(principled_node.outputs[0], output_node.inputs[0])
+        
+        # Set material properties for eye display
+        material.use_backface_culling = False  # Eyes should be visible from both sides
+        material.blend_method = 'OPAQUE'  # Ensure proper display in Solid view
+        
+        # Force viewport update
+        for area in bpy.context.screen.areas:
+            if area.type == 'VIEW_3D':
+                for space in area.spaces:
+                    if space.type == 'VIEW_3D':
+                        space.shading.type = space.shading.type  # Force refresh
+        
+        self.report({'INFO'}, f"Fixed {connected_count} uvSet textures in eye material for Solid view display")
+        return {'FINISHED'} 
+
+class SUB_OP_fix_eye_dual_uv_solid_view(bpy.types.Operator):
+    bl_idname = "smash_ultimate.fix_eye_dual_uv_solid_view"
+    bl_label = "Fix Eye Dual UV Maps in Solid View"
+    bl_description = "Combines map1 (white eye) and uvSet (pupil) textures for proper Solid view display"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    @classmethod
+    def poll(cls, context):
+        return context.material is not None and 'Eye' in context.material.name
+    
+    def execute(self, context):
+        material = context.material
+        if not material or not material.use_nodes or not material.node_tree:
+            self.report({'ERROR'}, "No eye material with nodes selected")
+            return {'CANCELLED'}
+        
+        nodes = material.node_tree.nodes
+        links = material.node_tree.links
+        
+        # Find textures for both UV maps
+        map1_texture_nodes = []
+        uvset_texture_nodes = []
+        
+        for node in nodes:
+            if node.type == 'TEX_IMAGE' and node.image:
+                # Check which UV map this texture uses
+                for link in links:
+                    if link.to_node == node and link.from_node.type == 'UVMAP':
+                        if hasattr(link.from_node, 'uv_map'):
+                            if link.from_node.uv_map == 'map1':
+                                map1_texture_nodes.append(node)
+                            elif link.from_node.uv_map == 'uvSet':
+                                uvset_texture_nodes.append(node)
+                            break
+        
+        if not map1_texture_nodes and not uvset_texture_nodes:
+            self.report({'WARNING'}, "No map1 or uvSet textures found in eye material")
+            return {'CANCELLED'}
+        
+        # Find or create material output node
+        output_node = None
+        for node in nodes:
+            if node.type == 'OUTPUT_MATERIAL' and node.target == 'EEVEE':
+                output_node = node
+                break
+        
+        if not output_node:
+            output_node = nodes.new('ShaderNodeOutputMaterial')
+            output_node.target = 'EEVEE'
+            output_node.location = (800, 0)
+        
+        # Create a principled BSDF for the combined result
+        principled_node = nodes.new('ShaderNodeBsdfPrincipled')
+        principled_node.location = (600, 0)
+        
+        # Connect map1 textures (white eye) to base color
+        if map1_texture_nodes:
+            # Use the first map1 texture as base color
+            links.new(map1_texture_nodes[0].outputs['Color'], principled_node.inputs['Base Color'])
+            
+            # If there are multiple map1 textures, mix them
+            if len(map1_texture_nodes) > 1:
+                for i, tex_node in enumerate(map1_texture_nodes[1:], 1):
+                    mix_node = nodes.new('ShaderNodeMixRGB')
+                    mix_node.location = (principled_node.location[0] - 300 * i, principled_node.location[1])
+                    mix_node.blend_type = 'MULTIPLY'
+                    mix_node.inputs[0].default_value = 1.0
+                    
+                    # Connect previous result to mix node
+                    if i == 1:
+                        links.new(map1_texture_nodes[0].outputs['Color'], mix_node.inputs[1])
+                    else:
+                        prev_mix = nodes[f"mix_map1_{i-1}"]
+                        links.new(prev_mix.outputs[0], mix_node.inputs[1])
+                    
+                    # Connect new texture to mix node
+                    links.new(tex_node.outputs['Color'], mix_node.inputs[2])
+                    mix_node.name = f"mix_map1_{i}"
+                    
+                    # Connect final mix to principled
+                    if i == len(map1_texture_nodes) - 1:
+                        links.new(mix_node.outputs[0], principled_node.inputs['Base Color'])
+        
+        # Connect uvSet textures (pupil) using mix nodes
+        if uvset_texture_nodes:
+            if map1_texture_nodes:
+                # Mix uvSet textures with existing base color
+                for i, tex_node in enumerate(uvset_texture_nodes):
+                    mix_node = nodes.new('ShaderNodeMixRGB')
+                    mix_node.location = (principled_node.location[0] - 300 * (len(map1_texture_nodes) + i), principled_node.location[1])
+                    mix_node.blend_type = 'MULTIPLY'
+                    mix_node.inputs[0].default_value = 1.0
+                    
+                    # Connect current base color to mix node
+                    if i == 0:
+                        links.new(principled_node.inputs['Base Color'].links[0].from_node.outputs[principled_node.inputs['Base Color'].links[0].from_socket.name], mix_node.inputs[1])
+                    else:
+                        prev_mix = nodes[f"mix_uvset_{i-1}"]
+                        links.new(prev_mix.outputs[0], mix_node.inputs[1])
+                    
+                    # Connect uvSet texture to mix node
+                    links.new(tex_node.outputs['Color'], mix_node.inputs[2])
+                    mix_node.name = f"mix_uvset_{i}"
+                    
+                    # Connect final mix to principled
+                    if i == len(uvset_texture_nodes) - 1:
+                        links.new(mix_node.outputs[0], principled_node.inputs['Base Color'])
+            else:
+                # No map1 textures, use uvSet as base color
+                links.new(uvset_texture_nodes[0].outputs['Color'], principled_node.inputs['Base Color'])
+                
+                # If multiple uvSet textures, mix them
+                if len(uvset_texture_nodes) > 1:
+                    for i, tex_node in enumerate(uvset_texture_nodes[1:], 1):
+                        mix_node = nodes.new('ShaderNodeMixRGB')
+                        mix_node.location = (principled_node.location[0] - 300 * i, principled_node.location[1])
+                        mix_node.blend_type = 'MULTIPLY'
+                        mix_node.inputs[0].default_value = 1.0
+                        
+                        # Connect previous result to mix node
+                        if i == 1:
+                            links.new(uvset_texture_nodes[0].outputs['Color'], mix_node.inputs[1])
+                        else:
+                            prev_mix = nodes[f"mix_uvset_{i-1}"]
+                            links.new(prev_mix.outputs[0], mix_node.inputs[1])
+                        
+                        # Connect new texture to mix node
+                        links.new(tex_node.outputs['Color'], mix_node.inputs[2])
+                        mix_node.name = f"mix_uvset_{i}"
+                        
+                        # Connect final mix to principled
+                        if i == len(uvset_texture_nodes) - 1:
+                            links.new(mix_node.outputs[0], principled_node.inputs['Base Color'])
+        
+        # Connect principled BSDF to material output
+        links.new(principled_node.outputs[0], output_node.inputs[0])
+        
+        # Set material properties for eye display
+        material.use_backface_culling = False  # Eyes should be visible from both sides
+        material.blend_method = 'OPAQUE'  # Ensure proper display in Solid view
+        
+        # Force viewport update
+        for area in bpy.context.screen.areas:
+            if area.type == 'VIEW_3D':
+                for space in area.spaces:
+                    if space.type == 'VIEW_3D':
+                        space.shading.type = space.shading.type  # Force refresh
+        
+        map1_count = len(map1_texture_nodes)
+        uvset_count = len(uvset_texture_nodes)
+        self.report({'INFO'}, f"Combined {map1_count} map1 textures (white eye) and {uvset_count} uvSet textures (pupil) for Solid view display")
+        return {'FINISHED'} 
