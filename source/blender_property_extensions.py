@@ -273,6 +273,11 @@ class SubSceneProperties(PropertyGroup):
         description="Whether the Idle Pose Library section is expanded",
         default=False
     )
+    ik_tools_expanded: BoolProperty(
+        name="IK Tools Expanded",
+        description="Whether the IK Tools section is expanded",
+        default=False
+    )
     related_animations_expanded: BoolProperty(
         name="Related Animations Expanded",
         description="Whether the Related Animations section is expanded",

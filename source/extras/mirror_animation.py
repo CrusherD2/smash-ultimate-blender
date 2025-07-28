@@ -56,19 +56,44 @@ def create_mirror_map(names, patterns=None):
     mirror_map = {}
 
     if patterns == None:
-        # Insert more default pattern if necessary
-        patterns = (('l', 'r'), ('left', 'right'))
+        # Insert more default pattern if necessary - add Smash Ultimate specific patterns
+        patterns = (
+            ('l', 'r'), 
+            ('left', 'right'),
+            ('L', 'R'),  # Add capitalized L/R for Smash Ultimate
+            ('Left', 'Right')  # Add capitalized words
+        )
     
     # lower case and remove difference eg. remove 't' from 'Left', 'Right'
     patterns = tuple(lower_tuple(difference(*pattern)) for pattern in patterns)
     rpatterns = tuple(pattern[::-1] for pattern in patterns)
 
+    # First pass: exact pattern matching for clear L/R pairs
     for lname in names:
         for name in names:
+            if lname == name:
+                continue  # Skip same name
             if lower_tuple(difference(lname, name)) in (*patterns, *rpatterns):
                 rname = name
                 mirror_map[lname] = rname
                 break
+    
+    # Second pass: handle Smash Ultimate specific naming patterns
+    # Look for bones ending in L/R that weren't caught by the first pass
+    unmatched_names = [name for name in names if name not in mirror_map]
+    for bone_name in unmatched_names:
+        if bone_name.endswith('L'):
+            # Look for corresponding R bone
+            r_bone_name = bone_name[:-1] + 'R'
+            if r_bone_name in names:
+                mirror_map[bone_name] = r_bone_name
+                mirror_map[r_bone_name] = bone_name
+        elif bone_name.endswith('R'):
+            # Look for corresponding L bone  
+            l_bone_name = bone_name[:-1] + 'L'
+            if l_bone_name in names:
+                mirror_map[bone_name] = l_bone_name
+                mirror_map[l_bone_name] = bone_name
     
     return mirror_map
 

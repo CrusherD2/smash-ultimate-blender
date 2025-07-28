@@ -82,8 +82,17 @@ class SUB_OP_import_all_animations(bpy.types.Operator):
             
     def modal(self, context, event):
         if event.type == 'TIMER':
-            self.import_next_animation(context)
-            return {'RUNNING_MODAL'}
+            # Check if we're still importing to prevent multiple calls
+            if self.is_importing:
+                self.import_next_animation(context)
+                return {'RUNNING_MODAL'}
+            else:
+                # Import is finished, clean up and exit
+                return {'FINISHED'}
+        elif event.type == 'ESC':
+            # Cancel the import process
+            self.cancel_import(context)
+            return {'FINISHED'}
         return {'PASS_THROUGH'}
             
     def execute(self, context):
@@ -124,8 +133,9 @@ class SUB_OP_import_all_animations(bpy.types.Operator):
         total_animations = len(ssp.animation_import_files)
         
         if self.current_animation_index >= total_animations:
-            # Import complete
-            self.finish_import(context)
+            # Import complete - only finish if we're still importing
+            if self.is_importing:
+                self.finish_import(context)
             return
         
         anim_item = ssp.animation_import_files[self.current_animation_index]
@@ -155,9 +165,37 @@ class SUB_OP_import_all_animations(bpy.types.Operator):
         
         self.current_animation_index += 1
     
+    def cancel_import(self, context):
+        # Clean up
+        if hasattr(self, '_timer'):
+            context.window_manager.event_timer_remove(self._timer)
+            delattr(self, '_timer')
+        
+        # Restore original mode
+        obj = context.object
+        if obj.type == 'ARMATURE' and self.old_mode != 'POSE':
+            bpy.ops.object.mode_set(mode=self.old_mode, toggle=False)
+        
+        # Restore auto-keyframe setting
+        context.scene.tool_settings.use_keyframe_insert_auto = self.use_keyframe_insert_auto
+        
+        # Mark as finished to prevent multiple reports
+        self.is_importing = False
+        
+        # Report cancellation
+        ssp = context.scene.sub_scene_properties
+        total_animations = len(ssp.animation_import_files)
+        self.report({"WARNING"}, f"Bulk import cancelled. Imported {self.imported_count}/{total_animations} animations")
+        
+        # Force UI update
+        for area in context.screen.areas:
+            area.tag_redraw()
+    
     def finish_import(self, context):
         # Clean up
-        context.window_manager.event_timer_remove(self._timer)
+        if hasattr(self, '_timer'):
+            context.window_manager.event_timer_remove(self._timer)
+            delattr(self, '_timer')
         
         # Restore original mode
         obj = context.object
@@ -176,6 +214,9 @@ class SUB_OP_import_all_animations(bpy.types.Operator):
         # Force final UI update
         for area in context.screen.areas:
             area.tag_redraw()
+        
+        # Mark as finished to prevent multiple reports
+        self.is_importing = False
         
         self.report({"INFO"}, f"Successfully imported {self.imported_count}/{total_animations} animations")
         return {'FINISHED'}
@@ -587,6 +628,27 @@ class BoneFCurves():
         self.scale.set_keyframe_values_from_stash()
 
 
+def reset_bones_to_rest_pose(armature):
+    """Reset all bones in the armature to their rest pose."""
+    if armature.type != 'ARMATURE':
+        return
+    
+    # Store current mode
+    old_mode = bpy.context.mode
+    
+    # Switch to pose mode if needed
+    if old_mode != 'POSE':
+        bpy.ops.object.mode_set(mode='POSE', toggle=False)
+    
+    # Reset all bones to rest pose
+    for bone in armature.pose.bones:
+        bone.matrix_basis = Matrix.Identity(4)
+    
+    # Restore original mode
+    if old_mode != 'POSE':
+        bpy.ops.object.mode_set(mode=old_mode, toggle=False)
+
+
 def import_model_anim(context: bpy.types.Context, filepath: str,
                       include_transform_track, include_material_track,
                       include_visibility_track, first_blender_frame):
@@ -615,6 +677,9 @@ def import_model_anim(context: bpy.types.Context, filepath: str,
         bone_to_node = {bones[n.name]:n for n in transform_group.nodes if n.name in bones}
         reordered: list[bpy.types.PoseBone] = get_heirarchy_order(list(bones)) # Do this to gaurantee we never process a child before its parent
         bone_to_fcurves = {b:BoneFCurves(b.name, arma.animation_data.action.fcurves, len(n.tracks[0].values)) for b,n in bone_to_node.items()} # only create fcurves for animated bones
+
+        # Reset all bones to rest pose before importing this animation
+        reset_bones_to_rest_pose(arma)
 
         for index, frame in enumerate(range(scene.frame_start, scene.frame_end + 1)): # +1 because range() excludes the final value
             for bone in reordered:

@@ -56,6 +56,75 @@ def apply_pose_with_options(context, pose_data_str, include_trans=True, mirrored
         # Get the stored pose data
         pose_data = json.loads(pose_data_str)
         
+        # If mirrored, create mirrored pose data BEFORE applying (like the external script)
+        if mirrored:
+            print("=== CREATING MIRRORED POSE DATA ===")
+            mirrored_pose_data = {}
+            
+            # Pre-identify bones that should be excluded from mirroring
+            excluded_bones = set()
+            for bone in armature.pose.bones:
+                # Exclude finger bones
+                if bone.name.startswith('Finger'):
+                    excluded_bones.add(bone.name)
+                    continue
+                
+                # Exclude Face bone and all its children (including mouth_group)
+                if bone.name == 'Face':
+                    excluded_bones.add(bone.name)
+                    # Add all children of Face bone
+                    for child in armature.pose.bones:
+                        if child.parent and child.parent.name == 'Face':
+                            excluded_bones.add(child.name)
+                    continue
+                
+                # Check if this bone is a child of Face bone
+                if bone.parent and bone.parent.name == 'Face':
+                    excluded_bones.add(bone.name)
+                    continue
+            
+            # First, handle L/R bone swapping and axis negation
+            for bone_name, data in pose_data.items():
+                target_bone_name = bone_name
+                mirrored_data = data.copy()
+                
+                # Swap L/R bone names (like the external script does)
+                if bone_name.endswith('L'):
+                    target_bone_name = bone_name[:-1] + 'R'
+                elif bone_name.endswith('R'):
+                    target_bone_name = bone_name[:-1] + 'L'
+                
+                # Skip facial/hair bones, finger bones, and mouth_group bones from mirroring
+                if (bone_name.startswith('S_') or 
+                    any(keyword in bone_name.lower() for keyword in ['brow', 'lip', 'eye', 'nose', 'cheek', 'jaw', 'mouth']) or
+                    bone_name in excluded_bones):
+                    # Keep original data for non-body bones
+                    mirrored_pose_data[bone_name] = data
+                    continue
+                
+                # Apply axis negations (based on the external script pattern)
+                # translateZ -> negate Z location
+                translation = mirrored_data["translation"].copy()
+                translation[2] = -translation[2]  # Negate Z
+                mirrored_data["translation"] = translation
+                
+                # rotateX and rotateY -> negate X and Y rotation (quaternion components)
+                rotation = mirrored_data["rotation"].copy()
+                # For quaternions [x, y, z, w], negate x and y components
+                rotation[0] = -rotation[0]  # Negate X
+                rotation[1] = -rotation[1]  # Negate Y
+                mirrored_data["rotation"] = rotation
+                
+                # Store the mirrored data for the target bone
+                mirrored_pose_data[target_bone_name] = mirrored_data
+                
+                print(f"  {bone_name} -> {target_bone_name} (mirrored)")
+            
+            # Use the mirrored data instead of original
+            pose_data = mirrored_pose_data
+            print(f"Created mirrored data for {len(mirrored_pose_data)} bones")
+            print("====================================")
+        
         # Create a mapping for quick access to stored node data
         bone_to_node_data = {}
         for bone in armature.pose.bones:
@@ -63,6 +132,7 @@ def apply_pose_with_options(context, pose_data_str, include_trans=True, mirrored
                 # Skip Trans bone if include_trans is False
                 if not include_trans and bone.name == "Trans":
                     continue
+                
                 bone_to_node_data[bone] = pose_data[bone.name]
         
         # Process bones in hierarchy order
@@ -122,9 +192,12 @@ def apply_pose_with_options(context, pose_data_str, include_trans=True, mirrored
                 
                 # Apply to bone similar to import_model_anim
                 bone.matrix = bone.parent.matrix @ get_blender_transform(raw_matrix).transposed()
-            
-            # Always keyframe all transform properties to ensure they're saved
-            # Ensure keyframe insertion regardless of transform flags
+        
+        # IMPORTANT: Keyframe ALL bones to prevent animation interference
+        # This ensures the pose is applied cleanly regardless of existing animation
+        print("=== KEYFRAMING ALL BONES ===")
+        keyframed_count = 0
+        for bone in armature.pose.bones:
             bone.keyframe_insert(data_path="location", frame=current_frame)
             
             if bone.rotation_mode == 'QUATERNION':
@@ -133,17 +206,25 @@ def apply_pose_with_options(context, pose_data_str, include_trans=True, mirrored
                 bone.keyframe_insert(data_path="rotation_euler", frame=current_frame)
             
             bone.keyframe_insert(data_path="scale", frame=current_frame)
+            keyframed_count += 1
         
-        # Apply mirroring if requested
-        if mirrored and armature.animation_data and armature.animation_data.action:
-            # Mirror the current frame only using Y axis
-            mirror_action(armature.animation_data.action, axis='Y', selected_bones_only=False, context=context, only_active_frame=True)
-            
-            # Apply 180 rotate AFTER mirroring (so it rotates the mirrored pose)
-            if rotate_180:
-                rotate_hip_180(armature, 'Y', only_active_frame=True, current_frame=current_frame)
-        elif rotate_180:
-            # Apply 180 rotate if only rotation is requested (no mirroring)
+        print(f"Keyframed {keyframed_count} bones to ensure clean pose application")
+        print("============================")
+        
+        # Update the view and ensure pose is fully applied before mirroring
+        context.view_layer.update()
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+        
+        # Small delay to ensure pose is fully processed
+        import time
+        time.sleep(0.01)
+        
+        # No need for additional mirroring - it's already done in the pose data if requested
+        
+        # Apply 180 rotate if requested (after pose application and mirroring)
+        if rotate_180 and armature.animation_data and armature.animation_data.action:
             rotate_hip_180(armature, 'Y', only_active_frame=True, current_frame=current_frame)
         
         # Update the view

@@ -1,7 +1,7 @@
 import bpy
 
 class SUB_OP_apply_ik_animation_operator(bpy.types.Operator):
-    """Bake IK Animation to Original Bones and Remove IK Bones"""
+    """Bake IK Animation to Original Bones and Remove IK/FK Bones"""
     bl_idname = "sub.apply_ik_animation"
     bl_label = "Apply IK Animation"
     bl_options = {'REGISTER', 'UNDO'}
@@ -36,7 +36,7 @@ class SUB_OP_apply_ik_animation_operator(bpy.types.Operator):
         # After baking, remove all constraints from original bones
         side = ("L", "R")
         for i in side:
-            for bone_type in ["Arm", "Hand", "Leg", "Knee", "Foot"]:
+            for bone_type in ["Shoulder", "Arm", "Hand", "Leg", "Knee", "Foot"]:
                 bone_name = f"{bone_type}{i}"
                 bone = armature_object.pose.bones.get(bone_name)
                 
@@ -45,17 +45,17 @@ class SUB_OP_apply_ik_animation_operator(bpy.types.Operator):
                     while bone.constraints:
                         bone.constraints.remove(bone.constraints[0])
         
-        # Get a list of IK bones to delete (store them before switching to edit mode)
-        ik_bones_to_delete = []
+        # Get a list of IK and FK bones to delete (store them before switching to edit mode)
+        bones_to_delete = []
         for bone in armature_object.pose.bones:
-            if "IK" in bone.name:
-                ik_bones_to_delete.append(bone.name)
+            if "IK" in bone.name or "FK" in bone.name:
+                bones_to_delete.append(bone.name)
         
-        # Now delete the IK bones
+        # Now delete the IK and FK bones
         bpy.ops.object.mode_set(mode='EDIT')
         
-        # Delete all IK bones
-        for bone_name in ik_bones_to_delete:
+        # Delete all IK and FK bones
+        for bone_name in bones_to_delete:
             bone = armature_object.data.edit_bones.get(bone_name)
             if bone:
                 armature_object.data.edit_bones.remove(bone)
@@ -68,9 +68,9 @@ class SUB_OP_apply_ik_animation_operator(bpy.types.Operator):
             action = armature_object.animation_data.action
             fcurves_to_remove = []
             
-            # Find all fcurves related to the deleted IK bones
+            # Find all fcurves related to the deleted IK/FK bones
             for i, fcurve in enumerate(action.fcurves):
-                for bone_name in ik_bones_to_delete:
+                for bone_name in bones_to_delete:
                     # Check if fcurve data_path contains bone name in the format pose.bones["BoneName"]
                     if f'pose.bones["{bone_name}"]' in fcurve.data_path:
                         fcurves_to_remove.append(i)
@@ -81,33 +81,18 @@ class SUB_OP_apply_ik_animation_operator(bpy.types.Operator):
                 action.fcurves.remove(action.fcurves[i])
             
             if fcurves_to_remove:
-                self.report({'INFO'}, f"Removed {len(fcurves_to_remove)} keyframe channels from deleted IK bones.")
+                self.report({'INFO'}, f"Removed {len(fcurves_to_remove)} keyframe channels from deleted IK/FK bones.")
         
-        self.report({'INFO'}, "Animation baked to original bones and IK bones removed.")
+        self.report({'INFO'}, "Animation baked to original bones and IK/FK bones removed.")
         return {'FINISHED'}
-
-
-class SUB_PT_apply_ik_animation_panel(bpy.types.Panel):
-    """Creates a Panel in the 3D Viewport"""
-    bl_label = "Apply IK Animation"
-    bl_idname = "SUB_PT_apply_ik_animation_panel"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'IK Bones'
-
-    def draw(self, context):
-        layout = self.layout
-        layout.operator("sub.apply_ik_animation", text="Bake & Remove IK")
 
 
 def register():
     bpy.utils.register_class(SUB_OP_apply_ik_animation_operator)
-    bpy.utils.register_class(SUB_PT_apply_ik_animation_panel)
 
 
 def unregister():
     bpy.utils.unregister_class(SUB_OP_apply_ik_animation_operator)
-    bpy.utils.unregister_class(SUB_PT_apply_ik_animation_panel)
 
 
 if __name__ == "__main__":

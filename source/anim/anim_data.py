@@ -824,6 +824,108 @@ class SUB_OP_insert_all_vis_entry_keyframes(Operator):
             arma.data.keyframe_insert(data_path=f'sub_anim_properties.vis_track_entries[{index}].value', group='Visibility')
         return {'FINISHED'}
 
+class SUB_OP_organize_vis_entries_alphabetically(Operator):
+    bl_idname = 'sub.organize_vis_entries_alphabetically'
+    bl_label = 'Organize Vis Entries Alphabetically'
+
+    @classmethod
+    def poll(cls, context):
+        if not context.object:
+            return False
+        return context.object.type == 'ARMATURE'
+    
+    def execute(self, context):
+        arma: bpy.types.Object = context.object
+        sap: SUB_PG_sub_anim_data = arma.data.sub_anim_properties
+        
+        # Get all entries and sort them alphabetically by full name
+        entries = list(sap.vis_track_entries)
+        entries.sort(key=lambda x: x.name.lower())
+        
+        # Use bubble sort approach to avoid conflicts
+        for i in range(len(entries)):
+            for j in range(len(entries) - 1):
+                current_entry = sap.vis_track_entries[j]
+                next_entry = sap.vis_track_entries[j + 1]
+                
+                # Compare names (case-insensitive)
+                if current_entry.name.lower() > next_entry.name.lower():
+                    # Swap positions
+                    sap.vis_track_entries.move(j, j + 1)
+        
+        # Reset active index
+        sap.active_vis_track_index = 0
+        
+        refresh_visibility_drivers(context)
+        return {'FINISHED'}
+
+class SUB_OP_organize_vis_entries_by_move(Operator):
+    bl_idname = 'sub.organize_vis_entries_by_move'
+    bl_label = 'Organize Vis Entries by Move'
+
+    @classmethod
+    def poll(cls, context):
+        if not context.object:
+            return False
+        return context.object.type == 'ARMATURE'
+    
+    def execute(self, context):
+        arma: bpy.types.Object = context.object
+        sap: SUB_PG_sub_anim_data = arma.data.sub_anim_properties
+        
+        # Get all entries
+        entries = list(sap.vis_track_entries)
+        
+        # Group entries by their move type (last part after underscore)
+        move_groups = {}
+        for entry in entries:
+            # Split by underscore and get the last part
+            parts = entry.name.split('_')
+            if len(parts) > 1:
+                move_type = parts[-1]  # Last part after underscore
+                if move_type not in move_groups:
+                    move_groups[move_type] = []
+                move_groups[move_type].append(entry)
+            else:
+                # If no underscore, put in a special group
+                if 'no_move_type' not in move_groups:
+                    move_groups['no_move_type'] = []
+                move_groups['no_move_type'].append(entry)
+        
+        # Sort move types alphabetically
+        sorted_move_types = sorted(move_groups.keys())
+        
+        # Create the desired order - group by move type, then sort alphabetically within each group
+        desired_order = []
+        for move_type in sorted_move_types:
+            # Sort entries within each move type alphabetically
+            move_entries = sorted(move_groups[move_type], key=lambda x: x.name.lower())
+            desired_order.extend(move_entries)
+        
+        # Move entries to their correct positions using a more direct approach
+        # Create a mapping of entry names to their desired positions
+        name_to_desired = {entry.name: i for i, entry in enumerate(desired_order)}
+        
+        # Sort the current list based on the desired order
+        for i in range(len(sap.vis_track_entries)):
+            for j in range(len(sap.vis_track_entries) - 1):
+                current_entry = sap.vis_track_entries[j]
+                next_entry = sap.vis_track_entries[j + 1]
+                
+                # Get desired positions
+                current_desired = name_to_desired.get(current_entry.name, len(desired_order))
+                next_desired = name_to_desired.get(next_entry.name, len(desired_order))
+                
+                # If they're in wrong order, swap them
+                if current_desired > next_desired:
+                    sap.vis_track_entries.move(j, j + 1)
+        
+        # Reset active index
+        sap.active_vis_track_index = 0
+        
+        refresh_visibility_drivers(context)
+        return {'FINISHED'}
+
 def remove_visibility_drivers(context):
     arma = context.object
     mesh_children = [child for child in arma.children if child.type == 'MESH']
@@ -876,6 +978,9 @@ class SUB_MT_vis_entry_context_menu(Menu):
         layout.separator()
         layout.operator('sub.auto_fill_vis_entries', icon='SHADERFX', text='Autofill Visibility Entries')
         layout.operator('sub.insert_all_vis_entry_keyframes', icon='KEY_HLT', text='Insert Keyframes for All Entries')
+        layout.separator()
+        layout.operator('sub.organize_vis_entries_alphabetically', icon='SORTALPHA', text='Organize Alphabetically')
+        layout.operator('sub.organize_vis_entries_by_move', icon='SORTSIZE', text='Organize by Move')
         layout.separator()
         layout.operator('sub.set_all_vis_entries_false', icon='HIDE_ON', text='Set All Entries Off')
         layout.operator('sub.set_all_vis_entries_true', icon='HIDE_OFF', text='Set All Entries On')

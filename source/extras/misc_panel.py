@@ -62,34 +62,39 @@ class SUB_PT_animation_tools(Panel):
 
         layout.separator()
 
-        if context.mode != 'EDIT_ARMATURE':
-            row = layout.row(align=True)
-            row.operator("sub.create_ik_bones")
-            
-            row = layout.row(align=True)
-            row.operator("sub.create_arm_ik")
-            
-            row = layout.row(align=True)
-            row.operator("sub.create_foot_ik")
-            layout.separator()
+        # Add IK Tools collapsible section (similar to Idle Pose Library)
+        box = layout.box()
         
-        # Add button to apply IK animation
-        layout.separator()  # Add a separator for better UI organization
-        layout.operator("sub.apply_ik_animation", text="Apply IK Animation")
+        # Collapsible header with toggle
+        header_row = box.row()
+        header_row.prop(ssp, "ik_tools_expanded", 
+                       icon="TRIA_DOWN" if ssp.ik_tools_expanded else "TRIA_RIGHT",
+                       icon_only=True, emboss=False)
+        header_row.label(text="IK Tools")
         
-        # Add button for IK influence toggle
-        layout.operator("sub.toggle_ik_influence", text="Toggle IK Influence")
-        
-        # Add FK to IK transfer button (disabled if not in pose mode)
-        row = layout.row()
-        if context.mode == 'POSE':
-            row.operator("sub.fk_to_ik_transfer", text="Position IK to Match FK Pose")
-        else:
-            row.enabled = False
-            row.operator("sub.fk_to_ik_transfer", text="Position IK to Match FK Pose (Pose Mode Only)")
+        # Only show content if expanded
+        if ssp.ik_tools_expanded:
+            if context.mode != 'EDIT_ARMATURE':
+                # IK Setup section (moved to top)
+                col = box.column(align=True)
+                col.label(text="IK Setup:")
+                col.operator("sub.create_fk_ik_setup", text="Create FK/IK Setup")
+                col.operator("sub.quick_switch_ik_fk", text="Switch IK/FK")
+                col.separator()
+                
+                # Animation Tools section
+                col.label(text="Animation Tools:")
+                col.operator("sub.apply_ik_animation", text="Bake & Remove IK/FK")
+                col.separator()
+                
+                # IK/FK Control section (moved to bottom)
+                col.label(text="IK/FK Control:")
+                col.operator("sub.advanced_ik_fk_control", text="Advanced IK/FK Control")
+                col.operator("sub.toggle_ik_influence", text="Toggle IK Influence")
+
+        layout.separator()
         
         # Add button for hip animation transfer
-        layout.separator()
         row = layout.row(align=True)
         row.operator("sub.transfer_hip_animation", text="Transfer Hip Animation to Trans")
         

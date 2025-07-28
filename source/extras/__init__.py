@@ -11,8 +11,9 @@ from . import apply_ik_animation
 from . import hip_animation_transfer
 from . import idle_pose_library
 from . import ik_influence_toggle
+from . import ik_fk_switch
+from . import ik_pole_alignment
 from . import limit_weights
-from . import fk_to_ik
 from . import rename_utils
 
 # Import reset_animation module and ensure it's properly registered
@@ -36,8 +37,15 @@ def register():
     # Register animation_scroll
     animation_scroll.register()
     
-    # Register misc_panel's new operator
+    # Register misc_panel first since IK panel depends on it
     misc_panel.register()
+    
+    # Register FK/IK modules
+    create_ik_arms.register()
+    create_ik_legs.register()
+    create_ik_armsandlegs.register()
+    ik_fk_switch.register()
+    ik_pole_alignment.register()
     
 def unregister():
     # Unregister animation_scroll
@@ -52,5 +60,12 @@ def unregister():
     # Unregister mirror_animation
     mirror_animation.unregister()
     
-    # Unregister misc_panel's new operator
+    # Unregister FK/IK modules (reverse order)
+    ik_pole_alignment.unregister()
+    create_ik_armsandlegs.unregister()
+    create_ik_legs.unregister()
+    create_ik_arms.unregister()
+    ik_fk_switch.unregister()
+    
+    # Unregister misc_panel last
     misc_panel.unregister()

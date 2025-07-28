@@ -281,6 +281,9 @@ class SUB_OP_batch_export_anim(Operator):
             expected_sap_action_name = f"{obj.name} {action_name} SAP Data"
             expected_sap_action = bpy.data.actions.get(expected_sap_action_name)
             if expected_sap_action:
+                # Ensure animation_data exists on the armature data
+                if obj.data.animation_data is None:
+                    obj.data.animation_data_create()
                 obj.data.animation_data.action = expected_sap_action
             # --------------------------------------------------------------
             
