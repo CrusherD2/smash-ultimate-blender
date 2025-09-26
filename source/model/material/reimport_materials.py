@@ -129,7 +129,7 @@ def reimport_materials(operator: Operator, context):
         return
     
     ssbh_matl = ssbh_data_py.matl_data.read_matl(str(ssp.material_reimport_numatb_path))
-    material_label_to_material = create_blender_materials_from_matl(operator, ssbh_matl)
+    material_label_to_material = create_blender_materials_from_matl(operator, ssbh_matl, ssp.material_reimport_folder)
     for mesh_object in mesh_objects:
         for material_slot in mesh_object.material_slots:
             new_material = material_label_to_material.get(trim_name(material_slot.material.name))

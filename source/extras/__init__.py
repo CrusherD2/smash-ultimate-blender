@@ -15,6 +15,8 @@ from . import ik_fk_switch
 from . import ik_pole_alignment
 from . import limit_weights
 from . import rename_utils
+from . import fk_to_ik
+from . import user_poses
 
 # Import reset_animation module and ensure it's properly registered
 from . import reset_animation
@@ -39,8 +41,11 @@ def register():
     
     # Register misc_panel first since IK panel depends on it
     misc_panel.register()
+    # Ensure user_poses module is imported so class references are available
+    # (classes are registered via new_classes_to_register)
     
     # Register FK/IK modules
+    fk_to_ik.register()
     create_ik_arms.register()
     create_ik_legs.register()
     create_ik_armsandlegs.register()
@@ -66,6 +71,7 @@ def unregister():
     create_ik_legs.unregister()
     create_ik_arms.unregister()
     ik_fk_switch.unregister()
+    fk_to_ik.unregister()
     
     # Unregister misc_panel last
     misc_panel.unregister()

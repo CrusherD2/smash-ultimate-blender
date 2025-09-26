@@ -39,7 +39,9 @@ class SUB_PT_ik_animation_tools(Panel):
         box.label(text="IK Setup:", icon="BONE_DATA")
 
         col = box.column(align=True)
-        col.operator("sub.create_fk_ik_setup", text="Create FK/IK Setup", icon="CONSTRAINT_BONE")
+        col.operator("sub.create_ik_bones", text="Create IK Bones (Arms + Legs)", icon="CONSTRAINT_BONE")
+        col.operator("sub.create_arm_ik", text="Create Arm IK Bones", icon="CONSTRAINT_BONE")
+        col.operator("sub.create_foot_ik", text="Create Foot IK Bones", icon="CONSTRAINT_BONE")
         col.operator("sub.quick_switch_ik_fk", text="Switch IK/FK", icon="ARROW_LEFTRIGHT")
 
         # Animation Tools section

@@ -1,31 +1,19 @@
 import bpy
 import mathutils
-from mathutils import Vector, Matrix
+from mathutils import Vector
 import math
+from . import fk_to_ik
 
 class SUB_OP_create_foot_ik_operator(bpy.types.Operator):
-    """Generate FK/IK Setup for Legs with Animation Transfer"""
+    """Generate Foot and Knee IK Bones with Constraints"""
     bl_idname = "sub.create_foot_ik"
-    bl_label = "Create Leg FK/IK Setup"
+    bl_label = "Create Foot IK Bones"
     bl_options = {'REGISTER', 'UNDO'}
     
-    side: bpy.props.EnumProperty(
-        name="Side",
-        description="Which side to apply IK/FK setup",
-        items=[
-            ('BOTH', 'Both Sides', 'Apply to both L and R'),
-            ('L', 'Left Side', 'Apply to L side only'),
-            ('R', 'Right Side', 'Apply to R side only')
-        ],
-        default='BOTH'
-    )
-    
-    ik_scale_factor: bpy.props.FloatProperty(
-        name="IK Scale",
-        description="Scale factor for IK bones (makes them larger for easier selection)",
-        default=1.5,
-        min=0.1,
-        max=5.0
+    match_position: bpy.props.BoolProperty(
+        name="Match IK to FK Position",
+        description="Match IK bones position to FK bones after creation",
+        default=True
     )
     
     def execute(self, context):
@@ -35,351 +23,204 @@ class SUB_OP_create_foot_ik_operator(bpy.types.Operator):
             self.report({'ERROR'}, "No armature selected. Please select an armature in Object Mode.")
             return {'CANCELLED'}
         
-        # Determine which sides to process
-        if self.side == 'BOTH':
-            sides = ["L", "R"]
-        else:
-            sides = [self.side]
-            
-        bpy.ops.object.mode_set(mode='EDIT')
-        
-        # Store original bone data before modifications
-        original_bone_data = {}
         armature = armature_object.data
         
-        for i in sides:
+        bpy.ops.object.mode_set(mode="EDIT")
+        side = ("L", "R")
+        # We'll use a larger size for IK bones for better visibility
+        ik_scale_factor = 1.5  # IK bones will be 1.5x larger
+
+        # Add small offsets to help with IK alignment
+        for i in side:
             leg_bone = armature.edit_bones.get("Leg"+i)
-            knee_bone = armature.edit_bones.get("Knee"+i)
+            knee_bone = armature.edit_bones.get("Knee"+i) # This is the FK shin bone
             foot_bone = armature.edit_bones.get("Foot"+i)
             
-            if not leg_bone or not knee_bone or not foot_bone:
+            if not knee_bone or not foot_bone or not leg_bone:
+                self.report({'WARNING'}, f"Skipping {i} leg due to missing FK bones (Leg, Knee, or Foot).")
                 continue
             
-            # Store original bone matrices for FK bone creation
-            original_bone_data[f"Leg{i}"] = leg_bone.matrix.copy()
-            original_bone_data[f"Knee{i}"] = knee_bone.matrix.copy()
-            original_bone_data[f"Foot{i}"] = foot_bone.matrix.copy()
-            
-            # Create FK bones (duplicates of original bones)
-            leg_fk_bone = armature.edit_bones.new("LegFK" + i)
-            leg_fk_bone.head = leg_bone.head.copy()
-            leg_fk_bone.tail = leg_bone.tail.copy()
-            leg_fk_bone.roll = leg_bone.roll
-            leg_fk_bone.parent = leg_bone.parent
-            
-            knee_fk_bone = armature.edit_bones.new("KneeFK" + i)
-            knee_fk_bone.head = knee_bone.head.copy()
-            knee_fk_bone.tail = knee_bone.tail.copy()
-            knee_fk_bone.roll = knee_bone.roll
-            knee_fk_bone.parent = leg_fk_bone
-            
-            foot_fk_bone = armature.edit_bones.new("FootFK" + i)
-            foot_fk_bone.head = foot_bone.head.copy()
-            foot_fk_bone.tail = foot_bone.tail.copy()
-            foot_fk_bone.roll = foot_bone.roll
-            foot_fk_bone.parent = knee_fk_bone
-            
-            # Add small offset to improve IK solving for original bones
+            # Add small offset to improve IK solving
             leg_bone.tail += Vector((0.0, -0.05, 0.0))
+            knee_bone.head += Vector((0.0, -0.05, 0.0))
+
+            # --- New Pole Target Placement Logic ---
+            fk_knee_pos = knee_bone.head # Position of the FK shin bone's head (the knee joint)
             
-            # Determine direction of the leg for pole target placement
-            # The knee should point backward if it's not already bent backward
-            knee_ik_bone = armature.edit_bones.new("KneeIK" + i)
+            # Armature's local -Y axis (character forward in armature space)
+            char_forward_local = Vector((0.0, -1.0, 0.0))
             
-            # Get the thigh bone vector for context
+            # Thigh bone vector and normalized direction (in armature space)
             thigh_vec = leg_bone.tail - leg_bone.head
+            thigh_dir = thigh_vec.normalized() if thigh_vec.length > 0.001 else Vector((0,0,1)) # Fallback to Z-up
+
+            # Calculate pole direction: char_forward_local projected to be orthogonal to thigh_dir
+            pole_dir_initial = char_forward_local - char_forward_local.project(thigh_dir)
             
-            # Position the pole target in front of the knee
-            knee_forward_direction = Vector((0.0, 1.0, 0.0))  # Assume character faces forward
-            pole_distance = thigh_vec.length * 1.0  # Distance from knee
-            
-            knee_ik_bone.head = knee_bone.head.copy()
-            
-            # Calculate initial pole direction based on current knee bend
-            shinbone_vec = foot_bone.head - knee_bone.head
-            thigh_bone_vec = knee_bone.head - leg_bone.head
-            
-            # Cross product to get pole direction
-            cross_vec = thigh_bone_vec.cross(shinbone_vec).normalized()
-            
-            # If no bend, use forward direction
-            if cross_vec.length < 0.01:
-                pole_dir_initial = knee_forward_direction
-            else:
-                pole_dir_initial = cross_vec
-            
-            # Scale and position the pole bone
-            pole_bone_length = leg_bone.length * 0.15 * self.ik_scale_factor
+            if pole_dir_initial.length < 0.01: # If char forward is (anti-)aligned with thigh
+                # Try armature's local Z-axis (character up)
+                char_up_local = Vector((0.0, 0.0, 1.0))
+                pole_dir_initial = char_up_local - char_up_local.project(thigh_dir)
+                if pole_dir_initial.length < 0.01: # Fallback to armature's local X-axis
+                    char_right_local = Vector((1.0, 0.0, 0.0))
+                    pole_dir_initial = char_right_local - char_right_local.project(thigh_dir)
+
+            if pole_dir_initial.length > 0.001:
+                pole_dir_initial.normalize()
+            else: 
+                # Ultimate fallback if all are aligned (very unlikely unless thigh is zero length)
+                pole_dir_initial = Vector((0.0, -1.0, 0.0)) 
+
+            pole_distance_factor = 0.75 # Distance from knee, as a factor of thigh length
+            actual_pole_distance = leg_bone.length * pole_distance_factor
+            if actual_pole_distance < 0.1: actual_pole_distance = 0.5 # Min distance
+
+            knee_ik_bone = armature.edit_bones.new("KneeIK"+i)
+            knee_ik_bone.head = fk_knee_pos + pole_dir_initial * actual_pole_distance
+            # Make the pole bone a reasonable length, e.g., 20% of thigh length or a fixed small amount
+            pole_bone_length = max(leg_bone.length * 0.2, 0.2) * ik_scale_factor  # Now using scale factor 
             knee_ik_bone.tail = knee_ik_bone.head + pole_dir_initial * pole_bone_length
             
-            # Create foot IK target with proper orientation
-            foot_ik_bone = armature.edit_bones.new("FootIK" + i)
-            foot_ik_bone.head = knee_bone.tail.copy() # FK Shin bone's tail (ankle position)
+            # Align roll of the pole target bone
+            if pole_dir_initial.length > 0.001:
+                knee_ik_bone.align_roll(pole_dir_initial)
+            else:
+                knee_ik_bone.roll = 0.0
+
+            foot_ik_bone = armature.edit_bones.new("FootIK"+i)
+            foot_ik_bone.head = knee_bone.tail # FK Shin bone's tail (ankle position)
             
-            # Calculate foot direction and make it longer
-            foot_direction = (foot_bone.tail - foot_bone.head).normalized()
+            # Make the foot IK bone larger
             foot_ik_length = foot_bone.length if foot_bone.length > 0.01 else leg_bone.length * 0.3
-            foot_ik_length *= self.ik_scale_factor
+            foot_ik_length *= ik_scale_factor  # Apply scale factor
             
-            # Set tail in the same direction as the original foot bone
-            foot_ik_bone.tail = foot_ik_bone.head + foot_direction * foot_ik_length
-            foot_ik_bone.roll = foot_bone.roll  # Match the roll of the original foot
+            if foot_ik_length < 0.1: foot_ik_length = 0.3
+            
+            # Align FootIK with the Foot FK bone
+            foot_fk_dir = (foot_bone.tail - foot_bone.head).normalized() if foot_bone.length > 0.001 else Vector((0,0,-1))
+            foot_ik_bone.tail = foot_ik_bone.head + foot_fk_dir * foot_ik_length
+            
+            foot_ik_bone.roll = math.radians(90.0)
 
         bpy.ops.object.mode_set(mode="POSE")
         
-        # Transfer animation from original bones to FK bones
-        self.transfer_animation_to_fk_bones(context, armature_object, sides)
-        
-        # Setup constraints so original bones follow FK bones by default
-        self.setup_fk_constraints(context, armature_object, sides)
-        
-        # Setup bone collections and coloring
-        self.setup_bone_collections_and_colors(context, armature_object)
-        
-        # Setup FK bone groups for better organization
-        self.setup_bone_groups(context, armature_object, sides)
-        
-        self.report({'INFO'}, "FK/IK leg setup created successfully!")
-        return {'FINISHED'}
-    
-    def transfer_animation_to_fk_bones(self, context, armature_object, sides):
-        """Transfer animation from original bones to FK bones"""
-        if not armature_object.animation_data or not armature_object.animation_data.action:
-            return  # No animation to transfer
-        
-        action = armature_object.animation_data.action
-        bone_mapping = {}
-        
-        # Create mapping of original bones to FK bones
-        for side in sides:
-            bone_mapping[f"Leg{side}"] = f"LegFK{side}"
-            bone_mapping[f"Knee{side}"] = f"KneeFK{side}"  
-            bone_mapping[f"Foot{side}"] = f"FootFK{side}"
-        
-        # Copy FCurves from original bones to FK bones
-        for original_bone, fk_bone in bone_mapping.items():
-            if armature_object.pose.bones.get(fk_bone):  # FK bone exists
-                # Find FCurves for the original bone
-                original_fcurves = [fc for fc in action.fcurves 
-                                    if f'pose.bones["{original_bone}"]' in fc.data_path]
-                
-                # Create matching FCurves for the FK bone
-                for fc in original_fcurves:
-                    new_data_path = fc.data_path.replace(f'pose.bones["{original_bone}"]', 
-                                                        f'pose.bones["{fk_bone}"]')
-                    
-                    # Create new FCurve for FK bone
-                    new_fc = action.fcurves.new(data_path=new_data_path, index=fc.array_index)
-                    
-                    # Copy all keyframe points
-                    new_fc.keyframe_points.clear()
-                    for kf in fc.keyframe_points:
-                        new_kf = new_fc.keyframe_points.insert(kf.co[0], kf.co[1])
-                        new_kf.handle_left = kf.handle_left
-                        new_kf.handle_right = kf.handle_right
-                        new_kf.interpolation = kf.interpolation
-                        new_kf.easing = kf.easing
-                    
-                    new_fc.update()
-    
-    def setup_fk_constraints(self, context, armature_object, sides):
-        """Setup both FK and IK constraints with FK enabled by default"""
-        for side in sides:
-            # Setup leg constraint
-            leg_bone = armature_object.pose.bones.get(f"Leg{side}")
-            leg_fk_bone = armature_object.pose.bones.get(f"LegFK{side}")
-            if leg_bone and leg_fk_bone:
-                # FK constraint
-                fk_constraint = leg_bone.constraints.new('COPY_TRANSFORMS')
-                fk_constraint.target = armature_object
-                fk_constraint.subtarget = f"LegFK{side}"
-                fk_constraint.name = "FK_Copy"
-                fk_constraint.influence = 1.0  # Enabled by default
+        # Store the original position data for later precise matching
+        fk_positions = {}
+        for i in side:
+            foot_bone = armature_object.pose.bones.get("Foot"+i)
+            knee_bone = armature_object.pose.bones.get("Knee"+i)
             
-            # Setup knee constraint
-            knee_bone = armature_object.pose.bones.get(f"Knee{side}")
-            knee_fk_bone = armature_object.pose.bones.get(f"KneeFK{side}")
-            if knee_bone and knee_fk_bone:
-                # FK constraint
-                fk_constraint = knee_bone.constraints.new('COPY_TRANSFORMS')
-                fk_constraint.target = armature_object
-                fk_constraint.subtarget = f"KneeFK{side}"
-                fk_constraint.name = "FK_Copy"
-                fk_constraint.influence = 1.0  # Enabled by default
+            if foot_bone:
+                # Store world space foot position and rotation
+                fk_positions[f"foot_matrix_{i}"] = foot_bone.matrix.copy()
+                fk_positions[f"foot_loc_{i}"] = foot_bone.location.copy()
+                fk_positions[f"foot_rot_{i}"] = foot_bone.rotation_quaternion.copy() if foot_bone.rotation_mode == 'QUATERNION' else foot_bone.rotation_euler.copy()
             
-            # Setup foot constraint with both FK and IK
-            foot_bone = armature_object.pose.bones.get(f"Foot{side}")
-            foot_fk_bone = armature_object.pose.bones.get(f"FootFK{side}")
-            foot_ik_bone = armature_object.pose.bones.get(f"FootIK{side}")
-            knee_ik_bone = armature_object.pose.bones.get(f"KneeIK{side}")
+            if knee_bone:
+                # Store knee position for pole angle calculations
+                fk_positions[f"knee_matrix_{i}"] = knee_bone.matrix.copy()
+
+        # Create constraints
+        for i in side:
+            knee_pose = armature_object.pose.bones.get("Knee"+i)
+            foot_pose = armature_object.pose.bones.get("Foot"+i)
             
-            if foot_bone and foot_fk_bone:
-                # FK constraint
-                fk_constraint = foot_bone.constraints.new('COPY_TRANSFORMS')
-                fk_constraint.target = armature_object
-                fk_constraint.subtarget = f"FootFK{side}"
-                fk_constraint.name = "FK_Copy"
-                fk_constraint.influence = 1.0  # Enabled by default
-                
-            # Add IK constraint to foot bone if IK bones exist
-            if foot_bone and foot_ik_bone:
-                ik_constraint = foot_bone.constraints.new('IK')
-                ik_constraint.name = "IK_Constraint"
-                ik_constraint.target = armature_object
-                ik_constraint.subtarget = f"FootIK{side}"
-                ik_constraint.chain_count = 3  # Include hip/pelvis connection
-                ik_constraint.influence = 0.0  # Disabled by default
-                
-                # Add pole target if knee IK bone exists
-                if knee_ik_bone:
-                    ik_constraint.pole_target = armature_object
-                    ik_constraint.pole_subtarget = f"KneeIK{side}"
-                    ik_constraint.pole_angle = 0.0
-    
-    def setup_bone_collections_and_colors(self, context, armature_object):
-        """Setup bone collections and colors for FK/IK bones"""
-        armature = armature_object.data
-        
-        # Create collections with better organization
-        fk_collection_name = "FK Control Bones"
-        ik_collection_name = "IK Control Bones"
-        
-        if fk_collection_name not in armature.collections:
-            fk_collection = armature.collections.new(name=fk_collection_name)
-        else:
-            fk_collection = armature.collections[fk_collection_name]
-        
-        if ik_collection_name not in armature.collections:
-            ik_collection = armature.collections.new(name=ik_collection_name)
-        else:
-            ik_collection = armature.collections[ik_collection_name]
-        
-        # Assign bones to collections and set colors
+            # Check if bones and target bones exist before constraining
+            knee_ik_target_bone = armature_object.pose.bones.get("FootIK"+i)
+            knee_pole_target_bone = armature_object.pose.bones.get("KneeIK"+i)
+
+            if not knee_pose or not foot_pose or not knee_ik_target_bone or not knee_pole_target_bone:
+                self.report({'WARNING'}, f"Skipping constraints for {i} leg due to missing pose bones or IK target bones.")
+                continue
+
+            knee_ik_constraint = knee_pose.constraints.new("IK")
+            knee_ik_constraint.target = armature_object
+            knee_ik_constraint.subtarget = knee_ik_target_bone.name
+            knee_ik_constraint.pole_target = armature_object
+            knee_ik_constraint.pole_subtarget = knee_pole_target_bone.name
+            knee_ik_constraint.chain_count = 2
+            knee_ik_constraint.pole_angle = 0.0  # Will be calculated properly later
+
+            foot_rot_constraint = foot_pose.constraints.new("COPY_ROTATION")
+            foot_rot_constraint.target = armature_object
+            foot_rot_constraint.subtarget = knee_ik_target_bone.name
+
+        # Apply red color to all IK bones
+        bpy.ops.object.mode_set(mode="POSE")
         for bone in armature.bones:
-            if "FK" in bone.name and "IK" not in bone.name:
-                fk_collection.assign(bone)
-                # Set FK bones to green (THEME03)
-                if bone.name in armature_object.pose.bones:
-                    armature_object.pose.bones[bone.name].color.palette = 'THEME03'
-                    bone.color.palette = 'THEME03'
-            elif "IK" in bone.name:
-                ik_collection.assign(bone)
-                # Set IK bones to red (THEME01)
-                if bone.name in armature_object.pose.bones:
-                    armature_object.pose.bones[bone.name].color.palette = 'THEME01'
-                    bone.color.palette = 'THEME01'
-    
-    def setup_bone_groups(self, context, armature_object, sides):
-        """Setup bone groups for better organization"""
-        # This method can be expanded for additional organization if needed
-        pass
+            if "IK" in bone.name:
+                bone.color.palette = 'THEME01'
 
+        # Create and assign bones to the IK Bones collection
+        ik_bone_collection_name = "FootIK Bones"
+        if ik_bone_collection_name not in armature.collections:
+            ik_bone_collection = armature.collections.new(name=ik_bone_collection_name)
+        else:
+            ik_bone_collection = armature.collections[ik_bone_collection_name]
 
-# Snap FK to IK operator with animation range dialog
-class SUB_OP_snap_fk_to_ik_legs(bpy.types.Operator):
-    """Snap FK controls to match IK pose for legs"""
-    bl_idname = "sub.snap_fk_to_ik_legs"
-    bl_label = "Snap FK to IK (Legs)"
-    bl_options = {'REGISTER', 'UNDO'}
-    
-    entire_animation: bpy.props.BoolProperty(
-        name="Entire Animation",
-        description="Apply to the entire animation instead of just the current frame",
-        default=False
-    )
-    
-    auto_keyframe: bpy.props.BoolProperty(
-        name="Auto Keyframe",
-        description="Automatically insert keyframes when applying to the entire animation",
-        default=True
-    )
+        for bone in armature.bones:
+            if "IK" in bone.name:
+                ik_bone_collection.assign(bone)
+
+        # Accurately position the IK bones to match FK
+        for i in side:
+            foot_ik_bone = armature_object.pose.bones.get("FootIK"+i)
+            if foot_ik_bone and f"foot_matrix_{i}" in fk_positions:
+                # Exact position matching
+                foot_ik_bone.matrix = fk_positions[f"foot_matrix_{i}"]
+                
+                # Ensure the exact transform is applied
+                if f"foot_loc_{i}" in fk_positions:
+                    foot_ik_bone.location = fk_positions[f"foot_loc_{i}"]
+                
+                foot_rot = fk_positions.get(f"foot_rot_{i}")
+                if foot_rot:
+                    if isinstance(foot_rot, mathutils.Quaternion):
+                        foot_ik_bone.rotation_quaternion = foot_rot
+                    else:
+                        foot_ik_bone.rotation_euler = foot_rot
+        
+        self.report({'INFO'}, "Foot and knee IK bones successfully created and assigned.")
+        
+        # Prompt for position matching if requested
+        if self.match_position:
+            fk_to_ik.invoke_position_match_dialog()
+            
+        return {'FINISHED'}
 
     def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self)
+        wm = context.window_manager
+        return wm.invoke_props_dialog(self)
     
     def draw(self, context):
         layout = self.layout
-        layout.prop(self, "entire_animation")
-        
-        # Only show auto keyframe option if entire animation is selected
-        if self.entire_animation:
-            layout.prop(self, "auto_keyframe")
+        layout.prop(self, "match_position")
 
-    def execute(self, context):
-        armature_object = context.object
-        
-        if not armature_object or armature_object.type != 'ARMATURE':
-            self.report({'ERROR'}, "No armature selected")
-            return {'CANCELLED'}
-        
-        # Determine frame range
-        if self.entire_animation:
-            frame_start = bpy.context.scene.frame_start
-            frame_end = bpy.context.scene.frame_end
-        else:
-            frame_start = frame_end = bpy.context.scene.frame_current
-        
-        # Snap for each frame in range
-        for frame in range(frame_start, frame_end + 1):
-            bpy.context.scene.frame_set(frame)
-            self.snap_fk_to_ik_frame(armature_object)
-            
-            if self.entire_animation and self.auto_keyframe:
-                self.insert_keyframes(armature_object)
-        
-        if self.entire_animation:
-            self.report({'INFO'}, f"FK snapped to IK for frames {frame_start}-{frame_end}")
-        else:
-            self.report({'INFO'}, "FK snapped to IK for current frame")
-        
-        return {'FINISHED'}
-    
-    def snap_fk_to_ik_frame(self, armature_object):
-        """Snap FK bones to match IK pose for current frame"""
-        sides = ["L", "R"]
-        
-        for side in sides:
-            # Get bones
-            leg_bone = armature_object.pose.bones.get(f"Leg{side}")
-            knee_bone = armature_object.pose.bones.get(f"Knee{side}")
-            foot_bone = armature_object.pose.bones.get(f"Foot{side}")
-            
-            leg_fk_bone = armature_object.pose.bones.get(f"LegFK{side}")
-            knee_fk_bone = armature_object.pose.bones.get(f"KneeFK{side}")
-            foot_fk_bone = armature_object.pose.bones.get(f"FootFK{side}")
-            
-            # Copy transforms from deformed bones to FK bones
-            if leg_bone and leg_fk_bone:
-                leg_fk_bone.matrix = leg_bone.matrix.copy()
-            
-            if knee_bone and knee_fk_bone:
-                knee_fk_bone.matrix = knee_bone.matrix.copy()
-            
-            if foot_bone and foot_fk_bone:
-                foot_fk_bone.matrix = foot_bone.matrix.copy()
-    
-    def insert_keyframes(self, armature_object):
-        """Insert keyframes for FK bones"""
-        sides = ["L", "R"]
-        
-        for side in sides:
-            for bone_name in [f"LegFK{side}", f"KneeFK{side}", f"FootFK{side}"]:
-                bone = armature_object.pose.bones.get(bone_name)
-                if bone:
-                    bone.keyframe_insert(data_path="rotation_quaternion")
-                    bone.keyframe_insert(data_path="location")
-                    bone.keyframe_insert(data_path="scale")
+
+class SUB_PT_foot_ik_panel(bpy.types.Panel):
+    """Creates a Panel in the 3D Viewport"""
+    bl_label = "Foot IK Bone Generator"
+    bl_idname = "SUB_PT_foot_ik_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'IK Bones'
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("sub.create_foot_ik", text="Generate Foot IK Bones")
 
 
 def register():
     bpy.utils.register_class(SUB_OP_create_foot_ik_operator)
-    bpy.utils.register_class(SUB_OP_snap_fk_to_ik_legs)
+    bpy.utils.register_class(SUB_PT_foot_ik_panel)
 
 
 def unregister():
     bpy.utils.unregister_class(SUB_OP_create_foot_ik_operator)
-    bpy.utils.unregister_class(SUB_OP_snap_fk_to_ik_legs)
+    bpy.utils.unregister_class(SUB_PT_foot_ik_panel)
 
 
 if __name__ == "__main__":
     register()
+    
+

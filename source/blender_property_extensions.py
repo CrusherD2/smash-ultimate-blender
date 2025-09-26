@@ -67,6 +67,19 @@ bpy.utils.register_class(ModelImportFile)
 bpy.utils.register_class(ModelImportItem)
 bpy.utils.register_class(AnimationImportFile)
 
+class UserPoseItem(PropertyGroup):
+    name: StringProperty(
+        name="Pose Name",
+        description="Name of the user pose",
+        default=""
+    )
+    data: StringProperty(
+        name="Pose Data",
+        description="JSON string containing the saved transforms for selected bones",
+        default=""
+    )
+
+
 class SubSceneProperties(PropertyGroup):
     model_import_folder_path: StringProperty(
         name="Model Import Folder Path",
@@ -273,6 +286,11 @@ class SubSceneProperties(PropertyGroup):
         description="Whether the Idle Pose Library section is expanded",
         default=False
     )
+    user_poses_expanded: BoolProperty(
+        name="User Poses Expanded",
+        description="Whether the User Poses section is expanded",
+        default=False
+    )
     ik_tools_expanded: BoolProperty(
         name="IK Tools Expanded",
         description="Whether the IK Tools section is expanded",
@@ -312,6 +330,22 @@ class SubSceneProperties(PropertyGroup):
         name="Include Visibility",
         description="Include Visibility Track",
         default=True
+    )
+
+    # User Pose Library Properties
+    user_pose_list: CollectionProperty(
+        name="User Pose List",
+        description="List of user-created poses (selected bones at a specific frame)",
+        type=UserPoseItem
+    )
+    user_pose_list_index: IntProperty(
+        name="User Pose List Index",
+        default=0
+    )
+    user_pose_apply_only_selected: BoolProperty(
+        name="Apply to only selected bones",
+        description="If enabled, applying a user pose will affect only currently selected pose bones",
+        default=False
     )
 
 

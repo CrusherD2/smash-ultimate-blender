@@ -64,6 +64,11 @@ class SUB_PT_matl_data_master(MaterialPanel):
         box = layout.box()
         box.prop(sub_matl_data, "shader_label", emboss=False)
         box.menu(SUB_MT_material_specials.bl_idname)
+        
+        # Add Convert Smash Material button
+        row = layout.row()
+        row.operator(operators.SUB_OP_convert_smash_material.bl_idname, text="Convert to Principled BSDF", icon='MATERIAL')
+        row.scale_y = 1.5
 
 class SUB_PT_matl_data_bools(MaterialPanel):
     bl_label = "Bools"

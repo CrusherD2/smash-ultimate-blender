@@ -62,6 +62,35 @@ class SUB_PT_animation_tools(Panel):
 
         layout.separator()
 
+        # User Poses section (below Idle Pose Library)
+        box = layout.box()
+
+        header_row = box.row()
+        header_row.prop(ssp, "user_poses_expanded",
+                        icon="TRIA_DOWN" if ssp.user_poses_expanded else "TRIA_RIGHT",
+                        icon_only=True, emboss=False)
+        header_row.label(text="User Poses")
+
+        if ssp.user_poses_expanded:
+            # Controls above list
+            controls = box.row(align=True)
+            controls.operator("sub.user_pose_add", text="Add (+)", icon='ADD')
+            controls.operator("sub.user_pose_remove", text="Remove (-)", icon='REMOVE')
+
+            # List
+            row = box.row()
+            row.template_list("UI_UL_list", "user_pose_list", ssp, "user_pose_list", ssp, "user_pose_list_index")
+
+            # Options and Apply below list
+            box.prop(ssp, "user_pose_apply_only_selected", text="Apply to only selected bones")
+
+            apply_row = box.row(align=True)
+            if ssp.user_pose_list and ssp.user_pose_list_index < len(ssp.user_pose_list):
+                apply_row.operator("sub.user_pose_apply_selected", text="Apply to Current Frame")
+            else:
+                apply_row.enabled = False
+                apply_row.operator("sub.user_pose_apply_selected", text="Apply to Current Frame (None Selected)")
+
         # Add IK Tools collapsible section (similar to Idle Pose Library)
         box = layout.box()
         
@@ -75,10 +104,12 @@ class SUB_PT_animation_tools(Panel):
         # Only show content if expanded
         if ssp.ik_tools_expanded:
             if context.mode != 'EDIT_ARMATURE':
-                # IK Setup section (moved to top)
+                # IK Setup section (using OG operators)
                 col = box.column(align=True)
                 col.label(text="IK Setup:")
-                col.operator("sub.create_fk_ik_setup", text="Create FK/IK Setup")
+                col.operator("sub.create_ik_bones", text="Create IK Bones (Arms + Legs)")
+                col.operator("sub.create_arm_ik", text="Create Arm IK Bones")
+                col.operator("sub.create_foot_ik", text="Create Foot IK Bones")
                 col.operator("sub.quick_switch_ik_fk", text="Switch IK/FK")
                 col.separator()
                 

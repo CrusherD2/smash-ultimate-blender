@@ -83,6 +83,16 @@ def import_texture_to_blender(operator: bpy.types.Operator, texture_name: str, m
     #image.type = 'FILE' # Its read-only
     image.source = 'FILE'
 
+    # Debug: Print what directory is being searched and what files are found
+    operator.report({"INFO"}, f"Searching for texture '{texture_name}' in directory: {model_dir}")
+    nutexb_files = list(Path(model_dir).glob("*.nutexb"))
+    png_files = list(Path(model_dir).glob("*.png"))
+    operator.report({"INFO"}, f"Found {len(nutexb_files)} .nutexb files and {len(png_files)} .png files in directory")
+    if nutexb_files:
+        operator.report({"INFO"}, f".nutexb files: {[f.name for f in nutexb_files]}")
+    if png_files:
+        operator.report({"INFO"}, f".png files: {[f.name for f in png_files]}")
+
     matching_nutexb_path = get_matching_nutexb_path(texture_name, model_dir)
     matching_png_path = get_matching_png_path(texture_name, model_dir)
     match (matching_nutexb_path is not None, matching_png_path is not None):
@@ -722,7 +732,7 @@ def setup_eye_material_for_solid_view(material: bpy.types.Material):
                                 principled.location = (tex_node.location[0] + 300, tex_node.location[1])
                                 links.new(tex_node.outputs['Color'], principled.inputs['Base Color'])
 
-def create_blender_materials_from_matl(operator: bpy.types.Operator, ssbh_matl: ssbh_data_py.matl_data.MatlData) -> dict[str, bpy.types.Material]:
+def create_blender_materials_from_matl(operator: bpy.types.Operator, ssbh_matl: ssbh_data_py.matl_data.MatlData, model_dir: str = None) -> dict[str, bpy.types.Material]:
     '''
     Creates a blender material with the sub_matl_data filled out for every entry in the ssbh_matl.
     Returns a dictionary mapping the material_label to the created blender material to handle multiple models 
@@ -734,7 +744,9 @@ def create_blender_materials_from_matl(operator: bpy.types.Operator, ssbh_matl: 
     material_label_to_material: dict[str, bpy.types.Material] = \
         {entry.material_label : bpy.data.materials.new(entry.material_label) for entry in ssbh_matl.entries}
     # Import images 
-    texture_name_to_image_dict = import_material_images(operator, ssbh_matl, bpy.context.scene.sub_scene_properties.model_import_folder_path)
+    if model_dir is None:
+        model_dir = bpy.context.scene.sub_scene_properties.model_import_folder_path
+    texture_name_to_image_dict = import_material_images(operator, ssbh_matl, model_dir)
     # Fill out the sub_matl_data of each material
     for entry in ssbh_matl.entries:
         sub_matl_data: SUB_PG_sub_matl_data = material_label_to_material[entry.material_label].sub_matl_data

@@ -52,6 +52,7 @@ class SUB_OP_apply_material_preset(Operator):
         return {'FINISHED'} 
     
 from .convert_blender_material import convert_blender_material, rename_mesh_attributes_of_meshes_using_material
+from .convert_smash_material import convert_smash_material_to_principled, has_smash_material_data, has_prm_texture
 class SUB_OP_convert_blender_material(Operator):
     bl_idname = 'sub.convert_blender_material'
     bl_label = 'Convert Blender Material (Creates PRM, uses existing normal)'
@@ -541,4 +542,35 @@ class SUB_OP_fix_eye_dual_uv_solid_view(bpy.types.Operator):
         map1_count = len(map1_texture_nodes)
         uvset_count = len(uvset_texture_nodes)
         self.report({'INFO'}, f"Combined {map1_count} map1 textures (white eye) and {uvset_count} uvSet textures (pupil) for Solid view display")
-        return {'FINISHED'} 
+        return {'FINISHED'}
+
+class SUB_OP_convert_smash_material(Operator):
+    bl_idname = 'sub.convert_smash_material'
+    bl_label = 'Convert Smash Material to Principled BSDF'
+    bl_description = 'Convert a Smash Ultimate material to a standard Principled BSDF with decomposed PRM texture'
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    @classmethod
+    def poll(cls, context):
+        material = context.object.active_material if context.object else None
+        return material is not None and has_smash_material_data(material)
+    
+    def execute(self, context):
+        material = context.object.active_material
+        if not material:
+            self.report({'ERROR'}, "No active material")
+            return {'CANCELLED'}
+        
+        if not has_smash_material_data(material):
+            self.report({'ERROR'}, f"Material '{material.name}' is not a Smash Ultimate material")
+            return {'CANCELLED'}
+        
+        # Perform the conversion
+        success = convert_smash_material_to_principled(self, material)
+        
+        if success:
+            self.report({'INFO'}, f"Successfully converted Smash material '{material.name}' to Principled BSDF")
+            return {'FINISHED'}
+        else:
+            self.report({'ERROR'}, f"Failed to convert material '{material.name}'")
+            return {'CANCELLED'} 

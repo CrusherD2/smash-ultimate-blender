@@ -210,7 +210,7 @@ def make_sphere_object(name, radius, offset=[0,0,0]):
     obj: bpy.types.Object = bpy.data.objects.new(mesh.name, mesh)
     make_sphere(obj, radius, offset)
     return obj
-
+    
 """def make_ellipsoid_object(name, radius=1.0, offset=Vector([0.0,0.0,0.0]), rotation=Vector([0.0,0.0,0.0]), scale=Vector([1.0,1.0,1.0])):
     mesh: bpy.types.Mesh = bpy.data.meshes.new(name)
     obj: bpy.types.Object = bpy.data.objects.new(mesh.name, mesh)
@@ -336,3 +336,4 @@ class SUB_OP_make_capsule(Operator):
         make_capsule(obj, self.start_radius, self.end_radius, self.length)
         return {'FINISHED'}
 """
+

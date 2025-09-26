@@ -335,9 +335,17 @@ def download_update_with_progress(url, destination, progress_callback=None):
                 if chunk:
                     f.write(chunk)
                     downloaded += len(chunk)
-                    if progress_callback and total_size > 0:
-                        progress = downloaded / total_size
+                    if progress_callback:
+                        if total_size > 0:
+                            progress = downloaded / total_size
+                        else:
+                            # If we don't know total size, show progress based on chunks downloaded
+                            progress = min(0.95, downloaded / (8192 * 100))  # Estimate based on chunks
                         progress_callback(progress)
+        
+        # Ensure we show 100% when complete
+        if progress_callback:
+            progress_callback(1.0)
         
         return True
     except Exception as e:
@@ -381,9 +389,14 @@ class SUB_OP_download_update(Operator):
         self._download_path = download_path
 
         def progress_callback(progress):
-            self._progress = progress
-            global UPDATE_DOWNLOAD_PROGRESS
-            UPDATE_DOWNLOAD_PROGRESS = progress
+            try:
+                # Update progress from background thread
+                self._progress = progress
+                global UPDATE_DOWNLOAD_PROGRESS
+                UPDATE_DOWNLOAD_PROGRESS = progress
+                # Note: UI updates will be handled by the modal timer on the main thread
+            except Exception as e:
+                print(f"Error in progress callback: {e}")
 
         def thread_func():
             try:
@@ -410,9 +423,9 @@ class SUB_OP_download_update(Operator):
         # Start background thread
         self._thread = threading.Thread(target=thread_func)
         self._thread.start()
-        # Add a timer to poll for progress
+        # Add a timer to poll for progress - increased frequency for smoother updates
         wm = context.window_manager
-        self._timer = wm.event_timer_add(0.2, window=context.window)
+        self._timer = wm.event_timer_add(0.1, window=context.window)
         wm.modal_handler_add(self)
         return {'RUNNING_MODAL'}
 
@@ -445,6 +458,10 @@ class SUB_OP_download_update(Operator):
                 except Exception:
                     pass
                 return {'CANCELLED'}
+            
+            # Force UI redraw to update progress bar
+            for area in context.screen.areas:
+                area.tag_redraw()
         return {'PASS_THROUGH'}
 
     def _install_update(self, download_path, context):
