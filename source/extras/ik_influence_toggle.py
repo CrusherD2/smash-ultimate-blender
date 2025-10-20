@@ -60,65 +60,61 @@ class SUB_OP_toggle_ik_influence(Operator):
             self.report({'ERROR'}, "No armature selected")
             return {'CANCELLED'}
         
+        # Lists of bone name patterns to identify different bone types
+        arm_bones = ['arm', 'elbow', 'clavicle', 'shoulder', 'upperarm', 'ArmIK', 
+                     'hand', 'wrist', 'finger', 'thumb', 'palm', 'HandIK']
+        leg_bones = ['leg', 'knee', 'thigh', 'calf', 'shin', 'LegIK',
+                     'foot', 'ankle', 'toe', 'heel', 'ball', 'FootIK']
+        
         constraints_modified = 0
         modified_types = set()
         
-        # Process specific bones with our new constraint system
-        sides = ["L", "R"]
-        
-        for side in sides:
-            # Handle Arm bones - IK_Constraint
-            if self.arms_enabled:
-                arm_bone = armature.pose.bones.get(f"Arm{side}")
-                if arm_bone:
-                    for constraint in arm_bone.constraints:
-                        if constraint.name == "IK_Constraint":
-                            constraint.influence = self.influence_value
-                            if self.insert_keyframe:
-                                constraint.keyframe_insert(data_path="influence", frame=current_frame)
-                            constraints_modified += 1
+        # Process all pose bones
+        for bone in armature.pose.bones:
+            # Check if the bone has relevant constraints
+            for constraint in bone.constraints:
+                # For IK or Copy Rotation constraints
+                if constraint.type in ['IK', 'COPY_ROTATION']:
+                    # Check which type of bone this is
+                    is_arm_bone = any(arm_pattern.lower() in bone.name.lower() for arm_pattern in arm_bones)
+                    is_leg_bone = any(leg_pattern.lower() in bone.name.lower() for leg_pattern in leg_bones)
+                    
+                    # Apply influence based on selection
+                    should_modify = (is_arm_bone and self.arms_enabled) or \
+                                   (is_leg_bone and self.legs_enabled)
+                    
+                    # If bone doesn't match any categories but has one of these constraints, 
+                    # do a simpler check
+                    if not (is_arm_bone or is_leg_bone):
+                        if 'arm' in bone.name.lower() or 'hand' in bone.name.lower():
+                            should_modify = self.arms_enabled
+                            is_arm_bone = True
+                        elif 'leg' in bone.name.lower() or 'foot' in bone.name.lower():
+                            should_modify = self.legs_enabled
+                            is_leg_bone = True
+                    
+                    if should_modify:
+                        # Set the influence value
+                        constraint.influence = self.influence_value
+                        
+                        # Insert keyframe if requested
+                        if self.insert_keyframe:
+                            constraint.keyframe_insert(data_path="influence", frame=current_frame)
+                        
+                        constraints_modified += 1
+                        
+                        # Track which types of bones were modified for reporting
+                        if is_arm_bone: 
                             modified_types.add("arms")
-                
-                # Handle Hand bones - IK_Hand_Rotation
-                hand_bone = armature.pose.bones.get(f"Hand{side}")
-                if hand_bone:
-                    for constraint in hand_bone.constraints:
-                        if constraint.name == "IK_Hand_Rotation":
-                            constraint.influence = self.influence_value
-                            if self.insert_keyframe:
-                                constraint.keyframe_insert(data_path="influence", frame=current_frame)
-                            constraints_modified += 1
-                            modified_types.add("arms")
-            
-            # Handle Knee bones - IK_Constraint
-            if self.legs_enabled:
-                knee_bone = armature.pose.bones.get(f"Knee{side}")
-                if knee_bone:
-                    for constraint in knee_bone.constraints:
-                        if constraint.name == "IK_Constraint":
-                            constraint.influence = self.influence_value
-                            if self.insert_keyframe:
-                                constraint.keyframe_insert(data_path="influence", frame=current_frame)
-                            constraints_modified += 1
-                            modified_types.add("legs")
-                
-                # Handle Foot bones - IK_Foot_Rotation
-                foot_bone = armature.pose.bones.get(f"Foot{side}")
-                if foot_bone:
-                    for constraint in foot_bone.constraints:
-                        if constraint.name == "IK_Foot_Rotation":
-                            constraint.influence = self.influence_value
-                            if self.insert_keyframe:
-                                constraint.keyframe_insert(data_path="influence", frame=current_frame)
-                            constraints_modified += 1
+                        if is_leg_bone: 
                             modified_types.add("legs")
         
         # Report the result
         if constraints_modified > 0:
             modified_types_str = ", ".join(modified_types)
-            self.report({'INFO'}, f"Modified {constraints_modified} IK constraints on {modified_types_str} with influence {self.influence_value}")
+            self.report({'INFO'}, f"Modified {constraints_modified} constraints on {modified_types_str} with influence {self.influence_value}")
         else:
-            self.report({'WARNING'}, "No IK constraints found to modify")
+            self.report({'WARNING'}, "No matching constraints found to modify")
         
         # Update the view
         for area in context.screen.areas:

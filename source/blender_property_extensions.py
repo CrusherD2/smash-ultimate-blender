@@ -316,6 +316,20 @@ class SubSceneProperties(PropertyGroup):
         description="Whether the Model Tools section is expanded",
         default=False
     )
+    mirror_animation_expanded: BoolProperty(
+        name="Mirror Animation Expanded",
+        description="Whether the Mirror Animation section is expanded",
+        default=False
+    )
+    mirror_space: EnumProperty(
+        name="Mirror Space",
+        description="Coordinate space to use for mirroring",
+        default='LOCAL',
+        items = (
+            ('LOCAL', 'Local', "Mirror using local/bone coordinate space"),
+            ('GLOBAL', 'Global', "Mirror using world/global coordinate space"),
+        )
+    )
     anim_include_transform: BoolProperty(
         name="Include Transform",
         description="Include Transform Track",
@@ -330,6 +344,27 @@ class SubSceneProperties(PropertyGroup):
         name="Include Visibility",
         description="Include Visibility Track",
         default=True
+    )
+
+    # Transform override bone filtering (shared by exporters)
+    anim_override_bone_list: CollectionProperty(
+        name="Transform Override Bone List",
+        description="Bones listed here are used to filter which bones receive transform overrides",
+        type=export_anim.SUB_PG_bone_override_item
+    )
+    anim_override_bone_list_index: IntProperty(
+        name="Transform Override Bone List Index",
+        default=0
+    )
+    anim_override_use_exclude_list: BoolProperty(
+        name="Use Exclude List",
+        description="If enabled, overrides apply to all bones except those in the list. If disabled, overrides apply only to bones in the list.",
+        default=True
+    )
+    anim_override_armature_name: StringProperty(
+        name="Override List Source Armature",
+        description="Internal: name of the armature the override bone list was last populated from",
+        default=""
     )
 
     # User Pose Library Properties

@@ -5,15 +5,15 @@ from bpy.props import BoolProperty, EnumProperty, FloatProperty
 class SUB_OP_cleanup_unused_exo_bones(Operator):
     bl_idname = "sub.cleanup_unused_exo_bones"
     bl_label = "Cleanup Unused Exo Bones"
-    bl_description = "Remove unused exo bones by transferring their weights to parents"
+    bl_description = "Remove unused exo bones by transferring their weights to the nearest paired exo bone in the parent chain"
     bl_options = {'REGISTER', 'UNDO'}
     
     weight_transfer_method: EnumProperty(
         name="Weight Transfer Method",
         description="How to transfer weights from unused bones to their parents",
         items=[
-            ('PARENT', "Transfer to Parent", "Transfer weights to the immediate parent bone"),
-            ('CONSTRAINT', "Transfer to Constraint Target", "Transfer weights to the constraint target bone (if available)")
+            ('PARENT', "Recursive Parent Chain", "Transfer weights up the parent chain until reaching a paired exo bone"),
+            ('CONSTRAINT', "Direct Constraint Target", "Transfer weights directly to the constraint target bone (if available)")
         ],
         default='PARENT'
     )
@@ -30,19 +30,6 @@ class SUB_OP_cleanup_unused_exo_bones(Operator):
         default=True
     )
     
-    mix_mode: BoolProperty(
-        name="Mix with Existing Weights",
-        description="Mix transferred weights with existing weights on the target bone",
-        default=True
-    )
-    
-    mix_factor: FloatProperty(
-        name="Mix Factor",
-        description="Amount of mixing with existing weights (1.0 = full source weight)",
-        default=1.0,
-        min=0.0,
-        max=1.0
-    )
     
     @classmethod
     def poll(cls, context):
@@ -59,36 +46,36 @@ class SUB_OP_cleanup_unused_exo_bones(Operator):
         layout.prop(self, "weight_transfer_method")
         layout.prop(self, "delete_bones")
         layout.prop(self, "show_report")
-        layout.prop(self, "mix_mode")
-        if self.mix_mode:
-            layout.prop(self, "mix_factor", slider=True)
+        
+        # Add explanation about the weight transfer method
+        box = layout.box()
+        box.label(text="Weight Transfer Method:")
+        box.label(text="• Finds exo bones not paired with standard bones")
+        box.label(text="• Transfers weights up parent chain recursively")
+        box.label(text="• Stops at first exo bone paired with standard bone")
     
     def execute(self, context):
         armature = context.active_object
         helper_bone_data = armature.data.sub_helper_bone_data
         
-        # Get used exo bones from helper bone data
+        # Get used exo bones from helper bone data - these are exo bones paired with standard bones
         used_exo_bones = set()
         
-        # Process orient constraints to find which exo bones are in use
+        # Process orient constraints to find which exo bones are paired with standard bones
         for constraint in helper_bone_data.orient_constraints:
-            # Check if this is an Exo bone constraint
+            # Check if this is an Exo bone constraint where the target is an exo bone
             if "H_Exo_" in constraint.target_bone_name:
-                used_exo_bones.add(constraint.target_bone_name)
-                # Also add the source bone since it's part of the constraint pair
-                used_exo_bones.add(constraint.source_bone_name)
+                # The source bone should be a standard bone (not starting with H_Exo_)
+                if not constraint.source_bone_name.startswith("H_Exo_"):
+                    used_exo_bones.add(constraint.target_bone_name)
         
         # Process aim constraints as well
         for constraint in helper_bone_data.aim_constraints:
-            # Check if this is an Exo bone constraint
-            if "H_Exo_" in constraint.aim_bone_name1:
+            # Check for exo bones that are paired with standard bones
+            if "H_Exo_" in constraint.aim_bone_name1 and not constraint.target_bone_name1.startswith("H_Exo_"):
                 used_exo_bones.add(constraint.aim_bone_name1)
-            if "H_Exo_" in constraint.aim_bone_name2:
+            if "H_Exo_" in constraint.aim_bone_name2 and not constraint.target_bone_name2.startswith("H_Exo_"):
                 used_exo_bones.add(constraint.aim_bone_name2)
-            if "H_Exo_" in constraint.target_bone_name1:
-                used_exo_bones.add(constraint.target_bone_name1)
-            if "H_Exo_" in constraint.target_bone_name2:
-                used_exo_bones.add(constraint.target_bone_name2)
         
         # Find all exo bones in the armature
         all_exo_bones = []
@@ -117,6 +104,37 @@ class SUB_OP_cleanup_unused_exo_bones(Operator):
         bones_to_delete = []
         weights_transferred = 0
         
+        # Helper function to find the target bone for weight transfer
+        def find_target_bone_for_transfer(bone_name, processed_bones=None):
+            if processed_bones is None:
+                processed_bones = set()
+            
+            # Prevent infinite recursion
+            if bone_name in processed_bones:
+                return None
+            processed_bones.add(bone_name)
+            
+            # If this bone is already paired with a standard bone, use it as target
+            if bone_name in used_exo_bones:
+                return bone_name
+            
+            if self.weight_transfer_method == 'CONSTRAINT':
+                # For constraint method, look for direct constraint targets
+                for constraint in helper_bone_data.orient_constraints:
+                    if constraint.target_bone_name == bone_name and constraint.source_bone_name not in processed_bones:
+                        return find_target_bone_for_transfer(constraint.source_bone_name, processed_bones)
+                # If no constraint found, fall back to parent
+                if bone_name in exo_bone_parents:
+                    parent_name = exo_bone_parents[bone_name]
+                    return find_target_bone_for_transfer(parent_name, processed_bones)
+            else:
+                # For PARENT method (recursive parent chain)
+                if bone_name in exo_bone_parents:
+                    parent_name = exo_bone_parents[bone_name]
+                    return find_target_bone_for_transfer(parent_name, processed_bones)
+            
+            return None
+        
         # Process each mesh object parented to the armature to transfer weights
         if armature.children:
             for obj in armature.children:
@@ -133,13 +151,12 @@ class SUB_OP_cleanup_unused_exo_bones(Operator):
                         source_group = obj.vertex_groups[bone_name]
                         source_group_index = source_group.index
                         
-                        # Determine the target bone
-                        target_bone_name = None
-                        if self.weight_transfer_method == 'PARENT' and bone_name in exo_bone_parents:
-                            target_bone_name = exo_bone_parents[bone_name]
+                        # Find the target bone using recursive parent search
+                        target_bone_name = find_target_bone_for_transfer(bone_name)
                         
                         # If we don't have a target bone, skip this bone
                         if not target_bone_name:
+                            self.report({'WARNING'}, f"Could not find suitable target bone for {bone_name}")
                             continue
                         
                         # Create target vertex group if it doesn't exist
@@ -148,7 +165,7 @@ class SUB_OP_cleanup_unused_exo_bones(Operator):
                         else:
                             target_group = obj.vertex_groups[target_bone_name]
                         
-                        # Transfer weights
+                        # Transfer weights using the same method as Remove Selected Bones
                         for v in obj.data.vertices:
                             # Find weight in source group
                             source_weight = 0
@@ -158,22 +175,11 @@ class SUB_OP_cleanup_unused_exo_bones(Operator):
                                     break
                             
                             if source_weight > 0:
-                                if self.mix_mode:
-                                    # Mix weights - first get existing weight if any
-                                    try:
-                                        existing_weight = target_group.weight(v.index)
-                                    except:
-                                        existing_weight = 0
-                                        
-                                    # Calculate mixed weight
-                                    mixed_weight = existing_weight * (1 - self.mix_factor) + source_weight * self.mix_factor
-                                    
-                                    # Set mixed weight
-                                    target_group.add([v.index], mixed_weight, 'REPLACE')
-                                else:
-                                    # Direct replacement mode
-                                    target_group.add([v.index], source_weight, 'REPLACE')
+                                # Use ADD mode like the Remove Selected Bones method
+                                target_group.add([v.index], source_weight, 'ADD')
                         
+                        # Remove the source vertex group after transfer
+                        obj.vertex_groups.remove(source_group)
                         weights_transferred += 1
                         weights_modified = True
                         

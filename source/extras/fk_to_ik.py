@@ -87,33 +87,59 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
             knee_ik_bone = armature_object.pose.bones.get(f"KneeIK{side}")
             
             if all([leg_bone, knee_bone, foot_bone, foot_ik_bone, knee_ik_bone]):
-                # Get FK chain positions in armature space
+                # Get world space positions
                 leg_pos = leg_bone.matrix.to_translation()
                 knee_pos = knee_bone.matrix.to_translation()
                 foot_pos = foot_bone.matrix.to_translation()
-
-                # 1) Place FootIK to EXACT FK Foot transform (matrix copy keeps rotation perfect)
+                
+                # Position foot IK at EXACT foot position with EXACT rotation
+                # Copy the entire matrix to ensure perfect positioning
                 foot_ik_bone.matrix = foot_bone.matrix.copy()
+                
+                # Calculate knee pole target position
+                # Vector from leg to foot (IK chain direction)
+                leg_to_foot = foot_pos - leg_pos
+                leg_to_foot.normalize()
+                
+                # Projected knee position onto leg-foot line
+                knee_proj = leg_pos + leg_to_foot * leg_to_foot.dot(knee_pos - leg_pos)
+                
+                # Vector from projected knee to actual knee (bend direction)
+                pole_dir = knee_pos - knee_proj
+                
+                # If knee is almost perfectly straight, use armature object relative direction
+                if pole_dir.length < 0.001:
+                    arm_obj_forward_local = Vector((0.0, -1.0, 0.0)) 
+                    arm_obj_forward_world = armature_object.matrix_world.to_3x3() @ arm_obj_forward_local
+                    
+                    chain_axis = (foot_pos - leg_pos).normalized()
+                    
+                    pole_dir = arm_obj_forward_world - arm_obj_forward_world.project(chain_axis)
+                    if pole_dir.length < 0.01: # If char forward is aligned with leg, use char up
+                        arm_obj_up_local = Vector((0.0, 0.0, 1.0))
+                        arm_obj_up_world = armature_object.matrix_world.to_3x3() @ arm_obj_up_local
+                        pole_dir = arm_obj_up_world - arm_obj_up_world.project(chain_axis)
+                        if pole_dir.length < 0.01: # Fallback if char up is also aligned (e.g. leg pointing up)
+                            arm_obj_right_local = Vector((1.0, 0.0, 0.0))
+                            arm_obj_right_world = armature_object.matrix_world.to_3x3() @ arm_obj_right_local
+                            pole_dir = arm_obj_right_world - arm_obj_right_world.project(chain_axis)
+                    
+                    if pole_dir.length > 0.0001: # Ensure pole_dir is not zero
+                        pole_dir.normalize()
+                    else: # Ultimate fallback to a world vector if all else fails
+                        pole_dir = Vector((0,1,0)) # Default to world +Y (arbitrary)
 
-                # 2) Compute analytic pole target and pole angle that reproduces the FK bend plane
-                pole_pos, pole_angle = self.compute_pole_target_and_angle_analytic(
-                    armature_object,
-                    leg_pos,
-                    knee_pos,
-                    foot_pos,
-                    default_distance=(foot_pos - leg_pos).length * 0.75
-                )
-                knee_ik_bone.matrix = Matrix.Translation(pole_pos)
-
-                # Defer applying the pole angle until after constraints are restored below
-
-                # Keep for keyframing later
+                else:
+                    pole_dir.normalize()
+                    
+                # Scale the vector and position the pole target
+                pole_distance = 4.0
+                knee_ik_bone.matrix = Matrix.Translation(knee_pos + pole_dir * pole_distance)
+                
+                # Add to keyframing list
                 bones_to_keyframe.append(foot_ik_bone)
                 bones_to_keyframe.append(knee_ik_bone)
-
-                # Stash per-side pole angles to apply after restoring constraints
-                setattr(self, f"_leg_pole_angle_{side}", pole_angle)
-
+                
                 transfer_count += 1
                 
             # -- ARM CHAIN --
@@ -124,37 +150,67 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
             arm_ik_bone = armature_object.pose.bones.get(f"ArmIK{side}")
             
             if all([arm_bone, hand_bone, hand_ik_bone, arm_ik_bone]):
-                # Get FK chain positions in armature space
+                # Get world space positions
                 if shoulder_bone:
                     shoulder_pos = shoulder_bone.matrix.to_translation()
                 else:
+                    # Fake a shoulder position if none exists
                     shoulder_dir = arm_bone.matrix.to_translation() - hand_bone.matrix.to_translation()
-                    if shoulder_dir.length > 0.001:
-                        shoulder_dir.normalize()
+                    shoulder_dir.normalize()
                     shoulder_pos = arm_bone.matrix.to_translation() + shoulder_dir * 1.0
-
-                elbow_pos = arm_bone.matrix.to_translation()
+                
+                arm_pos = arm_bone.matrix.to_translation()
                 hand_pos = hand_bone.matrix.to_translation()
-
-                # 1) Place HandIK to EXACT FK Hand transform
+                
+                # Position hand IK at EXACT hand position with EXACT rotation
+                # Copy the entire matrix to ensure perfect positioning
                 hand_ik_bone.matrix = hand_bone.matrix.copy()
+                
+                # Calculate elbow pole target position
+                # Vector from shoulder to hand (IK chain direction)
+                shoulder_to_hand = hand_pos - shoulder_pos
+                shoulder_to_hand.normalize()
+                
+                # Projected elbow position onto shoulder-hand line
+                arm_proj = shoulder_pos + shoulder_to_hand * shoulder_to_hand.dot(arm_pos - shoulder_pos)
+                
+                # Vector from projected elbow to actual elbow (bend direction)
+                pole_dir = arm_pos - arm_proj
+                
+                # If elbow is almost perfectly straight, use armature object relative direction
+                if pole_dir.length < 0.001:
+                    arm_obj_backward_local = Vector((0.0, 1.0, 0.0))
+                    arm_obj_backward_world = armature_object.matrix_world.to_3x3() @ arm_obj_backward_local
+                    
+                    # Ensure shoulder_pos is valid (it's calculated earlier)
+                    chain_axis = (hand_pos - shoulder_pos).normalized()
 
-                # 2) Compute analytic pole target and pole angle for elbow
-                pole_pos, pole_angle = self.compute_pole_target_and_angle_analytic(
-                    armature_object,
-                    shoulder_pos,
-                    elbow_pos,
-                    hand_pos,
-                    default_distance=(hand_pos - shoulder_pos).length * 0.75,
-                    arm_chain=True
-                )
-                arm_ik_bone.matrix = Matrix.Translation(pole_pos)
+                    pole_dir = arm_obj_backward_world - arm_obj_backward_world.project(chain_axis)
+                    if pole_dir.length < 0.01: # If char backward is aligned with arm, use char up
+                        arm_obj_up_local = Vector((0.0, 0.0, 1.0))
+                        arm_obj_up_world = armature_object.matrix_world.to_3x3() @ arm_obj_up_local
+                        pole_dir = arm_obj_up_world - arm_obj_up_world.project(chain_axis)
+                        if pole_dir.length < 0.01: # Fallback if char up is also aligned
+                            arm_obj_right_local = Vector((1.0, 0.0, 0.0))
+                            arm_obj_right_world = armature_object.matrix_world.to_3x3() @ arm_obj_right_local
+                            pole_dir = arm_obj_right_world - arm_obj_right_world.project(chain_axis)
 
+                    if pole_dir.length > 0.0001: # Ensure pole_dir is not zero
+                        pole_dir.normalize()
+                    else: # Ultimate fallback
+                        pole_dir = Vector((0,-1,0)) # Default to world -Y for arms
+
+                else:
+                    pole_dir.normalize()
+                    
+                # Scale the vector and position the pole target
+                pole_distance = 4.0
+                arm_ik_bone.matrix = Matrix.Translation(arm_pos + pole_dir * pole_distance)
+                
+                # Add to keyframing list
                 bones_to_keyframe.append(hand_ik_bone)
                 bones_to_keyframe.append(arm_ik_bone)
-
-                setattr(self, f"_arm_pole_angle_{side}", pole_angle)
-
+                
                 transfer_count += 1
         
         # Update view layer before restoring constraints
@@ -194,7 +250,8 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
         # Wait for the IK system to update before applying pole angles
         context.view_layer.update()
         
-        # Now apply the calculated pole angles for each bone (analytic result)
+        # Now apply the calculated pole angles for each bone
+        # Calculate pole angles dynamically based on KneeIK positions
         for side in ["L", "R"]:
             knee_bone = armature_object.pose.bones.get(f"Knee{side}")
             knee_ik_bone = armature_object.pose.bones.get(f"KneeIK{side}")
@@ -210,10 +267,13 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
                         break
                 
                 if ik_constraint:
-                    pole_angle_attr = getattr(self, f"_leg_pole_angle_{side}", None)
-                    if pole_angle_attr is not None:
-                        ik_constraint.pole_angle = pole_angle_attr
-                        # Keyframe pole angle if requested later
+                    # Calculate the required pole angle to point knee toward KneeIK
+                    pole_angle_rad = self.calculate_pole_angle_to_target(
+                        armature_object, knee_bone, knee_ik_bone, leg_bone, foot_bone
+                    )
+                    
+                    # Apply the calculated pole angle
+                    ik_constraint.pole_angle = pole_angle_rad
         
         # Final update to apply pole angles
         context.view_layer.update()
@@ -241,7 +301,7 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
                 if hand_ik_bone not in bones_to_keyframe:
                     bones_to_keyframe.append(hand_ik_bone)
         
-        # Also handle arms if needed (apply analytic pole angles)
+        # Also handle arms if needed
         for side in ["L", "R"]:
             arm_bone = armature_object.pose.bones.get(f"Arm{side}")
             arm_ik_bone = armature_object.pose.bones.get(f"ArmIK{side}")
@@ -257,9 +317,9 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
                         break
                 
                 if ik_constraint:
-                    pole_angle_attr = getattr(self, f"_arm_pole_angle_{side}", None)
-                    if pole_angle_attr is not None:
-                        ik_constraint.pole_angle = pole_angle_attr
+                    # For arms, use a simpler approach or set to 0 for now
+                    ik_constraint.pole_angle = 0.0
+                    print(f"Applied default pole angle to Arm{side}: 0.0°")
         
         # Auto keyframe if needed
         if self.entire_animation and self.auto_keyframe:
@@ -269,30 +329,6 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
                 bone.keyframe_insert(data_path="rotation_quaternion", frame=current_frame)
                 bone.keyframe_insert(data_path="rotation_euler", frame=current_frame)
                 bone.keyframe_insert(data_path="scale", frame=current_frame)
-
-            # Keyframe pole angles for IK constraints (knees and arms)
-            for side in ["L", "R"]:
-                # Knee pole
-                knee = armature_object.pose.bones.get(f"Knee{side}")
-                if knee:
-                    ikc = None
-                    for c in knee.constraints:
-                        if c.type == 'IK':
-                            ikc = c
-                            break
-                    if ikc:
-                        ikc.keyframe_insert(data_path="pole_angle", frame=current_frame)
-
-                # Arm pole
-                arm = armature_object.pose.bones.get(f"Arm{side}")
-                if arm:
-                    ikc = None
-                    for c in arm.constraints:
-                        if c.type == 'IK':
-                            ikc = c
-                            break
-                    if ikc:
-                        ikc.keyframe_insert(data_path="pole_angle", frame=current_frame)
         
         # Final update
         context.view_layer.update()
@@ -300,7 +336,7 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
         return transfer_count
 
     def calculate_pole_angle_to_target(self, armature_object, knee_bone, knee_ik_bone, leg_bone, foot_bone):
-        """Deprecated iterative method retained as a fallback. Prefers analytic solution below."""
+        """Calculate the pole angle needed to make the knee bone head point toward the KneeIK bone head"""
         
         # Find the IK constraint on the knee bone
         ik_constraint = None
@@ -403,72 +439,6 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
         bpy.context.view_layer.update()
         
         return best_angle
-
-    @staticmethod
-    def _project_onto_plane(vector: Vector, normal: Vector) -> Vector:
-        return vector - vector.dot(normal) * normal
-
-    @staticmethod
-    def _safe_normalize(vector: Vector, fallback: Vector) -> Vector:
-        if vector.length > 1e-5:
-            v = vector.copy()
-            v.normalize()
-            return v
-        return fallback.copy()
-
-    def compute_pole_target_and_angle_analytic(self, armature_object, root_pos: Vector, mid_pos: Vector, end_pos: Vector, default_distance: float, arm_chain: bool = False):
-        """Compute an analytic pole target position and pole angle that reproduces the FK bend plane.
-
-        Returns (pole_target_position, pole_angle_radians)
-        """
-        # Chain axis from root to end
-        chain_axis = end_pos - root_pos
-        chain_axis = self._safe_normalize(chain_axis, Vector((0.0, 1.0, 0.0)))
-
-        # Vector from root to mid projected onto the plane orthogonal to the chain axis
-        mid_from_root = mid_pos - root_pos
-        mid_proj = self._project_onto_plane(mid_from_root, chain_axis)
-
-        if mid_proj.length < 1e-5:
-            # Straight limb fallback: use armature local axes to pick a stable plane
-            basis_candidates = [
-                Vector((0.0, -1.0, 0.0)),  # forward
-                Vector((0.0, 0.0, 1.0)),   # up
-                Vector((1.0, 0.0, 0.0)),   # right
-            ]
-            best = None
-            for cand_local in basis_candidates:
-                cand_world = armature_object.matrix_world.to_3x3() @ cand_local
-                proj = self._project_onto_plane(cand_world, chain_axis)
-                if proj.length > 1e-4:
-                    best = proj
-                    break
-            if best is None:
-                best = Vector((0.0, 1.0, 0.0))
-            mid_proj = best
-
-        bend_dir = self._safe_normalize(mid_proj, Vector((0.0, 1.0, 0.0)))
-
-        # Choose a reasonable pole distance if too small
-        pole_distance = max(default_distance, 0.25)
-
-        # Place the pole target along the bend direction from the ROOT position
-        pole_target_pos = root_pos + bend_dir * pole_distance
-
-        # Compute the reference vector from root to pole projected on plane
-        pole_from_root = pole_target_pos - root_pos
-        pole_proj = self._project_onto_plane(pole_from_root, chain_axis)
-        pole_proj = self._safe_normalize(pole_proj, bend_dir)
-
-        # Analytic signed angle between current pole reference and desired bend direction
-        # Use right-hand rule around chain_axis
-        angle = math.atan2(chain_axis.dot(pole_proj.cross(bend_dir)), pole_proj.dot(bend_dir))
-
-        # For arms many rigs use opposite convention for pole axis; allow small bias
-        if arm_chain and angle == 0.0:
-            angle = 0.0
-
-        return pole_target_pos, angle
 
     def execute(self, context):
         if self.entire_animation:
@@ -679,10 +649,9 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
 
 def register():
     bpy.utils.register_class(SUB_OP_fk_to_ik_transfer)
-    
+
 def unregister():
     bpy.utils.unregister_class(SUB_OP_fk_to_ik_transfer)
-    
-if __name__ == "__main__":
-    register() 
 
+if __name__ == "__main__":
+    register()

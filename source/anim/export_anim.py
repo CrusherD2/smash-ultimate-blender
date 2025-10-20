@@ -29,6 +29,107 @@ if TYPE_CHECKING:
     fcurve: bpy.types.FCurve # Workaround for typechecking, remove if obsolete
     from ..blender_property_extensions import SubSceneProperties
 
+# Bone override list items used to filter which bones receive transform flags
+class SUB_PG_bone_override_item(bpy.types.PropertyGroup):
+    name: StringProperty(name="Bone Name")
+
+class SUB_UL_bone_override_list(UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        if self.layout_type in {'DEFAULT', 'COMPACT'}:
+            layout.label(text=item.name)
+        elif self.layout_type in {'GRID'}:
+            layout.alignment = 'CENTER'
+            layout.label(text=item.name)
+
+def ensure_override_bone_list_populated(context: bpy.types.Context):
+    ssp = context.scene.sub_scene_properties
+    obj = context.active_object
+    if not obj or obj.type != 'ARMATURE':
+        return
+    # Populate if empty or if switching to a different armature than last time
+    if len(ssp.anim_override_bone_list) == 0 or getattr(ssp, 'anim_override_armature_name', '') != obj.name:
+        # Perform changes outside of draw; this function is called from invoke
+        ssp.anim_override_bone_list.clear()
+        for bone in obj.data.bones:
+            item = ssp.anim_override_bone_list.add()
+            item.name = bone.name
+        ssp.anim_override_armature_name = obj.name
+
+class SUB_OP_add_selected_bones_to_override(Operator):
+    bl_idname = 'sub.add_selected_bones_to_override'
+    bl_label = 'Add Selected Bones'
+    bl_description = 'Add currently selected pose bones to the override bone list'
+
+    def execute(self, context):
+        ssp = context.scene.sub_scene_properties
+        arma = context.active_object if context.active_object and context.active_object.type == 'ARMATURE' else None
+        if arma is None:
+            self.report({'WARNING'}, 'Select an Armature first.')
+            return {'CANCELLED'}
+        selected_names = set()
+        # Prefer explicit context collections for reliability
+        if context.mode == 'POSE' and getattr(context, 'selected_pose_bones', None):
+            selected_names = {b.name for b in context.selected_pose_bones}
+        elif context.mode == 'EDIT_ARMATURE' and getattr(context, 'selected_bones', None):
+            selected_names = {b.name for b in context.selected_bones}
+        else:
+            # Fallback: scan pose bones for selected flag
+            selected_names = {b.name for b in arma.pose.bones if getattr(b.bone, 'select', False)}
+        if not selected_names:
+            self.report({'WARNING'}, 'No bones selected. Enter Pose Mode and select bones to add.')
+            return {'CANCELLED'}
+        existing = {i.name for i in ssp.anim_override_bone_list}
+        for name in sorted(selected_names):
+            if name not in existing:
+                item = ssp.anim_override_bone_list.add()
+                item.name = name
+        return {'FINISHED'}
+
+class SUB_OP_remove_active_bone_from_override(Operator):
+    bl_idname = 'sub.remove_active_bone_from_override'
+    bl_label = 'Remove Selected Entry'
+    bl_description = 'Remove the active entry from the override bone list'
+
+    def execute(self, context):
+        ssp = context.scene.sub_scene_properties
+        idx = ssp.anim_override_bone_list_index
+        if 0 <= idx < len(ssp.anim_override_bone_list):
+            ssp.anim_override_bone_list.remove(idx)
+            ssp.anim_override_bone_list_index = min(idx, len(ssp.anim_override_bone_list) - 1)
+        return {'FINISHED'}
+
+class SUB_OP_clear_bone_override_list(Operator):
+    bl_idname = 'sub.clear_bone_override_list'
+    bl_label = 'Clear List'
+    bl_description = 'Clear the override bone list'
+
+    def execute(self, context):
+        ssp = context.scene.sub_scene_properties
+        ssp.anim_override_bone_list.clear()
+        return {'FINISHED'}
+
+class SUB_OP_populate_override_from_armature(Operator):
+    bl_idname = 'sub.populate_override_from_armature'
+    bl_label = 'Populate From Armature'
+    bl_description = 'Fill the override list with all bones from the active armature'
+    clear_existing: BoolProperty(name='Clear Existing', default=True)
+
+    def execute(self, context):
+        ssp = context.scene.sub_scene_properties
+        arma = context.active_object if context.active_object and context.active_object.type == 'ARMATURE' else None
+        if arma is None:
+            self.report({'WARNING'}, 'Select an Armature first.')
+            return {'CANCELLED'}
+        if self.clear_existing:
+            ssp.anim_override_bone_list.clear()
+        existing = {i.name for i in ssp.anim_override_bone_list}
+        for bone in arma.data.bones:
+            if bone.name not in existing:
+                item = ssp.anim_override_bone_list.add()
+                item.name = bone.name
+        ssp.anim_override_armature_name = arma.name
+        return {'FINISHED'}
+
 # Action item for the batch export list
 class SUB_PG_anim_action_item(bpy.types.PropertyGroup):
     name: StringProperty(name="Name")
@@ -182,6 +283,32 @@ class SUB_OP_batch_export_anim(Operator):
         description='Include Visibility Track',
         default=True,
     )
+    # Transform flags
+    transform_compensate_scale: BoolProperty(
+        name='Compensate Scale',
+        description='Enable compensate scale on Transform tracks',
+        default=False,
+    )
+    transform_override_translation: BoolProperty(
+        name='Override Translation',
+        description='Force overriding translation on Transform tracks',
+        default=False,
+    )
+    transform_override_rotation: BoolProperty(
+        name='Override Rotation',
+        description='Force overriding rotation on Transform tracks',
+        default=False,
+    )
+    transform_override_scale: BoolProperty(
+        name='Override Scale',
+        description='Force overriding scale on Transform tracks',
+        default=False,
+    )
+    transform_override_compensate_scale: BoolProperty(
+        name='Override Compensate Scale',
+        description='Force overriding compensate scale on Transform tracks',
+        default=False,
+    )
     first_blender_frame: IntProperty(
         name='Start Frame',
         description='First Exported Frame',
@@ -220,6 +347,12 @@ class SUB_OP_batch_export_anim(Operator):
         elif ssp.last_anim_import_dir:
             self.directory = ssp.last_anim_import_dir
         
+        # Ensure bone list populated for the active armature
+        try:
+            ensure_override_bone_list_populated(context)
+        except Exception:
+            pass
+
         # Open file browser
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
@@ -229,6 +362,35 @@ class SUB_OP_batch_export_anim(Operator):
         layout.prop(self, "include_transform_track")
         layout.prop(self, "include_material_track")
         layout.prop(self, "include_visibility_track")
+        # Bone filter controls
+        ssp = context.scene.sub_scene_properties
+        box = layout.box()
+        row = box.row()
+        row.label(text="Transform Override Bone Filter")
+        if hasattr(ssp, "anim_override_use_exclude_list"):
+            use_exclude = getattr(ssp, "anim_override_use_exclude_list", True)
+            row.prop(ssp, "anim_override_use_exclude_list", text=("Exclude List" if use_exclude else "Include List"))
+        else:
+            row.label(text="(reload addon to enable toggle)")
+        row = box.row()
+        if hasattr(ssp, "anim_override_bone_list") and hasattr(ssp, "anim_override_bone_list_index"):
+            row.template_list("SUB_UL_bone_override_list", "", ssp, "anim_override_bone_list", ssp, "anim_override_bone_list_index", rows=6)
+            col = row.column(align=True)
+            col.operator(SUB_OP_add_selected_bones_to_override.bl_idname, text="Add Select")
+            col.operator(SUB_OP_populate_override_from_armature.bl_idname, text="Populate")
+            col.operator(SUB_OP_remove_active_bone_from_override.bl_idname, text="Remove")
+            col.operator(SUB_OP_clear_bone_override_list.bl_idname, text="Clear")
+        else:
+            row.label(text="(reload addon to enable list)")
+        # Transform Flags
+        col = layout.column(align=True)
+        col.enabled = self.include_transform_track
+        col.label(text="Transform Flags")
+        col.prop(self, "transform_compensate_scale")
+        col.prop(self, "transform_override_translation")
+        col.prop(self, "transform_override_rotation")
+        col.prop(self, "transform_override_scale")
+        col.prop(self, "transform_override_compensate_scale")
         layout.prop(self, "first_blender_frame")
         layout.prop(self, "use_auto_range", text="Auto-Detect Frame Range")
         layout.prop(self, "use_debug_timer")
@@ -307,11 +469,23 @@ class SUB_OP_batch_export_anim(Operator):
                         context, self, obj, filepath,
                         self.include_transform_track, self.include_material_track,
                         self.include_visibility_track, self.first_blender_frame,
-                        last_blender_frame)
+                        last_blender_frame,
+                        self.transform_compensate_scale,
+                        self.transform_override_translation,
+                        self.transform_override_rotation,
+                        self.transform_override_scale,
+                        self.transform_override_compensate_scale,
+                        [i.name for i in ssp.anim_override_bone_list],
+                        ssp.anim_override_use_exclude_list)
                 else:
                     # Camera export
                     export_camera_anim(context, self, obj, filepath,
-                        self.first_blender_frame, last_blender_frame)
+                        self.first_blender_frame, last_blender_frame,
+                        self.transform_compensate_scale,
+                        self.transform_override_translation,
+                        self.transform_override_rotation,
+                        self.transform_override_scale,
+                        self.transform_override_compensate_scale)
                 
                 export_count += 1
                 # Report progress
@@ -370,6 +544,32 @@ class SUB_OP_anim_export(Operator):
         description='Include Visibility Track',
         default=True,
     )
+    # Transform flags
+    transform_compensate_scale: BoolProperty(
+        name='Compensate Scale',
+        description='Enable compensate scale on Transform tracks',
+        default=False,
+    )
+    transform_override_translation: BoolProperty(
+        name='Override Translation',
+        description='Force overriding translation on Transform tracks',
+        default=False,
+    )
+    transform_override_rotation: BoolProperty(
+        name='Override Rotation',
+        description='Force overriding rotation on Transform tracks',
+        default=False,
+    )
+    transform_override_scale: BoolProperty(
+        name='Override Scale',
+        description='Force overriding scale on Transform tracks',
+        default=False,
+    )
+    transform_override_compensate_scale: BoolProperty(
+        name='Override Compensate Scale',
+        description='Force overriding compensate scale on Transform tracks',
+        default=False,
+    )
     first_blender_frame: IntProperty(
         name='Start Frame',
         description='First Exported Frame',
@@ -420,8 +620,51 @@ class SUB_OP_anim_export(Operator):
         elif ssp.last_anim_import_dir:
             self.filepath = os.path.join(ssp.last_anim_import_dir, safe_name)
         
+        # Ensure bone list populated for the active armature
+        try:
+            ensure_override_bone_list_populated(context)
+        except Exception:
+            pass
+
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "include_transform_track")
+        layout.prop(self, "include_material_track")
+        layout.prop(self, "include_visibility_track")
+        # Bone filter controls
+        ssp = context.scene.sub_scene_properties
+        box = layout.box()
+        row = box.row()
+        row.label(text="Transform Override Bone Filter")
+        if hasattr(ssp, "anim_override_use_exclude_list"):
+            use_exclude = getattr(ssp, "anim_override_use_exclude_list", True)
+            row.prop(ssp, "anim_override_use_exclude_list", text=("Exclude List" if use_exclude else "Include List"))
+        else:
+            row.label(text="(reload addon to enable toggle)")
+        row = box.row()
+        if hasattr(ssp, "anim_override_bone_list") and hasattr(ssp, "anim_override_bone_list_index"):
+            row.template_list("SUB_UL_bone_override_list", "", ssp, "anim_override_bone_list", ssp, "anim_override_bone_list_index", rows=6)
+            col = row.column(align=True)
+            col.operator(SUB_OP_add_selected_bones_to_override.bl_idname, text="Add Select")
+            col.operator(SUB_OP_populate_override_from_armature.bl_idname, text="Populate")
+            col.operator(SUB_OP_remove_active_bone_from_override.bl_idname, text="Remove")
+            col.operator(SUB_OP_clear_bone_override_list.bl_idname, text="Clear")
+        else:
+            row.label(text="(reload addon to enable list)")
+        # Transform Flags
+        col = layout.column(align=True)
+        col.enabled = self.include_transform_track
+        col.label(text="Transform Flags")
+        col.prop(self, "transform_compensate_scale")
+        col.prop(self, "transform_override_translation")
+        col.prop(self, "transform_override_rotation")
+        col.prop(self, "transform_override_scale")
+        col.prop(self, "transform_override_compensate_scale")
+        layout.prop(self, "first_blender_frame")
+        layout.prop(self, "last_blender_frame")
 
     def execute(self, context):
         # Save directory for future use
@@ -449,11 +692,23 @@ class SUB_OP_anim_export(Operator):
             context, self, obj, filepath,
                 self.include_transform_track, self.include_material_track,
                 self.include_visibility_track, self.first_blender_frame,
-                self.last_blender_frame)
+                self.last_blender_frame,
+                self.transform_compensate_scale,
+                self.transform_override_translation,
+                self.transform_override_rotation,
+                self.transform_override_scale,
+                self.transform_override_compensate_scale,
+                [i.name for i in ssp.anim_override_bone_list],
+                ssp.anim_override_use_exclude_list)
         else:
         # Camera export
             export_camera_anim(context, self, obj, filepath,
-                self.first_blender_frame, self.last_blender_frame)  
+                self.first_blender_frame, self.last_blender_frame,
+                self.transform_compensate_scale,
+                self.transform_override_translation,
+                self.transform_override_rotation,
+                self.transform_override_scale,
+                self.transform_override_compensate_scale)  
 
         self.report({'INFO'}, f"Successfully exported animation to {os.path.basename(filepath)}")
         return {'FINISHED'}
@@ -545,7 +800,7 @@ def does_armature_data_have_fcurves(arma: bpy.types.Object) -> bool:
         return False
     return True
 
-def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.types.Object, filepath, include_transform_track, include_material_track, include_visibility_track, first_blender_frame, last_blender_frame):
+def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.types.Object, filepath, include_transform_track, include_material_track, include_visibility_track, first_blender_frame, last_blender_frame, transform_compensate_scale: bool = False, transform_override_translation: bool = False, transform_override_rotation: bool = False, transform_override_scale: bool = False, transform_override_compensate_scale: bool = False, override_bone_names: list[str] | None = None, use_exclude_list: bool = True):
     # SSBH Anim Setup
     ssbh_anim_data =  ssbh_data_py.anim_data.AnimData()
     final_frame_index = last_blender_frame - first_blender_frame
@@ -681,10 +936,27 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
         ssbh_anim_data.groups.append(trans_group)
 
         # Create ssbh nodes for the animated bones, no values just yet tho. Also, its normal for smash anims to skip some un-animated bones.
+        # Prepare bone name filter
+        override_name_set = set(override_bone_names) if override_bone_names else set()
+
         for bone in animated_pose_bones:
             node = ssbh_data_py.anim_data.NodeData(bone.name)
             track = ssbh_data_py.anim_data.TrackData('Transform')
-            track.compensate_scale = False
+            # Determine if overrides should apply to this bone
+            apply_overrides = True
+            if override_name_set:
+                if use_exclude_list:
+                    apply_overrides = bone.name not in override_name_set
+                else:
+                    apply_overrides = bone.name in override_name_set
+            if apply_overrides:
+                track.compensate_scale = transform_compensate_scale
+                track.transform_flags = ssbh_data_py.anim_data.TransformFlags(
+                    override_translation=transform_override_translation,
+                    override_rotation=transform_override_rotation,
+                    override_scale=transform_override_scale,
+                    override_compensate_scale=transform_override_compensate_scale
+                )
             node.tracks.append(track)
             trans_group.nodes.append(node)
 
@@ -881,7 +1153,7 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
     # Done!
     ssbh_anim_data.save(filepath)        
                 
-def export_camera_anim(context, operator, camera: bpy.types.Object, filepath, first_blender_frame, last_blender_frame):
+def export_camera_anim(context, operator, camera: bpy.types.Object, filepath, first_blender_frame, last_blender_frame, transform_compensate_scale: bool = False, transform_override_translation: bool = False, transform_override_rotation: bool = False, transform_override_scale: bool = False, transform_override_compensate_scale: bool = False):
     ssbh_anim_data = ssbh_data_py.anim_data.AnimData()
     ssbh_anim_data.final_frame_index = last_blender_frame - first_blender_frame
     
@@ -897,6 +1169,14 @@ def export_camera_anim(context, operator, camera: bpy.types.Object, filepath, fi
 
     track_name_to_track = {track.name : track for track in camera_group.nodes[0].tracks}
     trans_track = transform_group.nodes[0].tracks[0]
+    # Apply flags to the camera transform track as well
+    trans_track.compensate_scale = transform_compensate_scale
+    trans_track.transform_flags = ssbh_data_py.anim_data.TransformFlags(
+        override_translation=transform_override_translation,
+        override_rotation=transform_override_rotation,
+        override_scale=transform_override_scale,
+        override_compensate_scale=transform_override_compensate_scale
+    )
     for index, frame in enumerate(range(first_blender_frame, last_blender_frame + 1)):
         context.scene.frame_set(frame)
         track_name_to_track['FieldOfView'].values.append(camera.data.angle_y)

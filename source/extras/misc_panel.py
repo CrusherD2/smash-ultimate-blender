@@ -129,10 +129,40 @@ class SUB_PT_animation_tools(Panel):
         row = layout.row(align=True)
         row.operator("sub.transfer_hip_animation", text="Transfer Hip Animation to Trans")
         
-        # Add Mirror Animation button
+        # Add Mirror Animation section
         layout.separator()
-        row = layout.row(align=True)
-        row.operator("sub.mirror_action", text="Mirror Animation")
+        box = layout.box()
+        
+        # Collapsible header with toggle
+        ssp = context.scene.sub_scene_properties
+        header_row = box.row()
+        header_row.prop(ssp, "mirror_animation_expanded", 
+                       icon="TRIA_DOWN" if ssp.mirror_animation_expanded else "TRIA_RIGHT",
+                       icon_only=True, emboss=False)
+        header_row.label(text="Mirror Animation")
+        
+        # Only show content if expanded
+        if ssp.mirror_animation_expanded:
+            col = box.column(align=True)
+            
+            # Add some spacing
+            col.separator()
+            
+            # Mirror space option
+            col.prop(ssp, "mirror_space", text="Space")
+            
+            # Add spacing between dropdown and button
+            col.separator()
+            
+            # Mirror Animation button
+            col.operator("sub.mirror_action", text="Mirror Animation")
+            
+            # Add bottom spacing
+            col.separator()
+        else:
+            # Show simple button when collapsed
+            row = box.row(align=True)
+            row.operator("sub.mirror_action", text="Mirror Animation")
         
         # Add Reset Bone Locations button - just a button, not a section
         row = layout.row(align=True)

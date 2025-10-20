@@ -42,10 +42,8 @@ class SUB_OP_create_arm_ik_operator(bpy.types.Operator):
             if not arm_bone or not hand_bone:
                 continue
                 
-            # Add small offset to improve IK solving
-            if shoulder_bone:
-                shoulder_bone.tail += Vector((0.0, -0.05, 0.0))
-            arm_bone.head += Vector((0.0, -0.05, 0.0))
+            # NOTE: Removed base bone modifications to preserve armature integrity
+            # The original code modified shoulder_bone.tail and arm_bone.head which caused armature deformation
             
             arm_ik_bone = armature.edit_bones.new("ArmIK" + i)
             # Position the pole target at a fixed distance behind
@@ -184,5 +182,3 @@ def unregister():
 
 if __name__ == "__main__":
     register()
-    
-

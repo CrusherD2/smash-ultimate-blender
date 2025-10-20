@@ -117,7 +117,46 @@ def negate_fcurve(fcurve, only_active_frame=False, current_frame=None):
             k.handle_left[1] = -k.handle_left[1]
             k.handle_right[1] = -k.handle_right[1]
 
-def mirror_action(act, axis='X', selected_bones_only=False, context=None, only_active_frame=False):
+def apply_global_mirror_transform(value, axis, object_matrix):
+    """Apply global mirroring transformation considering object's world matrix"""
+    if object_matrix is None:
+        return -value
+    
+    # Create a vector for the value
+    if axis == 'X':
+        vec = mathutils.Vector((value, 0, 0))
+    elif axis == 'Y':
+        vec = mathutils.Vector((0, value, 0))
+    elif axis == 'Z':
+        vec = mathutils.Vector((0, 0, value))
+    else:
+        return -value
+    
+    # Transform to world space
+    world_vec = object_matrix @ vec
+    
+    # Mirror in world space
+    if axis == 'X':
+        world_vec.x = -world_vec.x
+    elif axis == 'Y':
+        world_vec.y = -world_vec.y
+    elif axis == 'Z':
+        world_vec.z = -world_vec.z
+    
+    # Transform back to local space
+    local_vec = object_matrix.inverted() @ world_vec
+    
+    # Return the appropriate component
+    if axis == 'X':
+        return local_vec.x
+    elif axis == 'Y':
+        return local_vec.y
+    elif axis == 'Z':
+        return local_vec.z
+    
+    return -value
+
+def mirror_action(act, axis='X', selected_bones_only=False, context=None, only_active_frame=False, mirror_space='LOCAL'):
     
     if not (act and act.fcurves):
         print("No Keyframes")
@@ -132,6 +171,11 @@ def mirror_action(act, axis='X', selected_bones_only=False, context=None, only_a
     selected_bone_names = set()
     if selected_bones_only and context and context.active_object and context.active_object.type == 'ARMATURE':
         selected_bone_names = {bone.name for bone in context.selected_pose_bones or []}
+    
+    # Get object transformation matrix for global mirroring
+    object_matrix = None
+    if mirror_space == 'GLOBAL' and context and context.active_object:
+        object_matrix = context.active_object.matrix_world.copy()
     
     # create name map
     # strip attribute suffix eg. 'pose.bones["root"].location' -> 'pose.bones["root"]'
@@ -192,9 +236,14 @@ def mirror_action(act, axis='X', selected_bones_only=False, context=None, only_a
             
             # Apply negation if needed
             if (attribute, array_index) in negate_data_path_tuples:
-                value = -value
-                left_handle = -left_handle
-                right_handle = -right_handle
+                if mirror_space == 'GLOBAL':
+                    value = apply_global_mirror_transform(value, axis, object_matrix)
+                    left_handle = apply_global_mirror_transform(left_handle, axis, object_matrix)
+                    right_handle = apply_global_mirror_transform(right_handle, axis, object_matrix)
+                else:
+                    value = -value
+                    left_handle = -left_handle
+                    right_handle = -right_handle
             
             # Find target fcurve (mirrored bone)
             target_data_path = data_path
@@ -244,7 +293,18 @@ def mirror_action(act, axis='X', selected_bones_only=False, context=None, only_a
                 fc.data_path = "".join((mirror_map[path], _dot, attribute))
             
             if (attribute, array_index) in negate_data_path_tuples:
-                negate_fcurve(fc, only_active_frame=False, current_frame=None)
+                if mirror_space == 'GLOBAL':
+                    # Apply global mirroring to all keyframes
+                    for k in fc.keyframe_points:
+                        original_value = k.co[1]
+                        original_left = k.handle_left[1]
+                        original_right = k.handle_right[1]
+                        
+                        k.co[1] = apply_global_mirror_transform(original_value, axis, object_matrix)
+                        k.handle_left[1] = apply_global_mirror_transform(original_left, axis, object_matrix)
+                        k.handle_right[1] = apply_global_mirror_transform(original_right, axis, object_matrix)
+                else:
+                    negate_fcurve(fc, only_active_frame=False, current_frame=None)
 
 
 #########################################################################################
@@ -404,6 +464,7 @@ class SUB_OT_mirror_action(Operator):
         default=False
     )
 
+
     @classmethod
     def poll(cls, context):
         return context.active_object
@@ -423,37 +484,41 @@ class SUB_OT_mirror_action(Operator):
         # Get current frame for hip rotation
         current_frame = context.scene.frame_current if self.only_active_frame else None
         
+        # Get mirror space from scene properties
+        ssp = context.scene.sub_scene_properties
+        mirror_space = ssp.mirror_space
+        
         # Apply mirroring
         if self.axis in ('X', 'Y', 'Z'): 
-            mirror_action(context.active_object.animation_data.action, axis=self.axis, selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame)
+            mirror_action(context.active_object.animation_data.action, axis=self.axis, selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space)
             # Apply 180 rotation to hip if enabled
             if self.rotate_180:
                 rotate_hip_180(context.active_object, self.axis, only_active_frame=self.only_active_frame, current_frame=current_frame)
         elif self.axis == 'XY':
-            mirror_action(context.active_object.animation_data.action, axis='X', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame)
-            mirror_action(context.active_object.animation_data.action, axis='Y', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame)
+            mirror_action(context.active_object.animation_data.action, axis='X', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space)
+            mirror_action(context.active_object.animation_data.action, axis='Y', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space)
             # Apply 180 rotation to hip if enabled (for each axis)
             if self.rotate_180:
                 rotate_hip_180(context.active_object, 'X', only_active_frame=self.only_active_frame, current_frame=current_frame)
                 rotate_hip_180(context.active_object, 'Y', only_active_frame=self.only_active_frame, current_frame=current_frame)
         elif self.axis == 'XZ':
-            mirror_action(context.active_object.animation_data.action, axis='X', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame)
-            mirror_action(context.active_object.animation_data.action, axis='Z', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame)
+            mirror_action(context.active_object.animation_data.action, axis='X', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space)
+            mirror_action(context.active_object.animation_data.action, axis='Z', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space)
             # Apply 180 rotation to hip if enabled (for each axis)
             if self.rotate_180:
                 rotate_hip_180(context.active_object, 'X', only_active_frame=self.only_active_frame, current_frame=current_frame)
                 rotate_hip_180(context.active_object, 'Z', only_active_frame=self.only_active_frame, current_frame=current_frame)
         elif self.axis == 'YZ':
-            mirror_action(context.active_object.animation_data.action, axis='Y', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame)
-            mirror_action(context.active_object.animation_data.action, axis='Z', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame)
+            mirror_action(context.active_object.animation_data.action, axis='Y', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space)
+            mirror_action(context.active_object.animation_data.action, axis='Z', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space)
             # Apply 180 rotation to hip if enabled (for each axis)
             if self.rotate_180:
                 rotate_hip_180(context.active_object, 'Y', only_active_frame=self.only_active_frame, current_frame=current_frame)
                 rotate_hip_180(context.active_object, 'Z', only_active_frame=self.only_active_frame, current_frame=current_frame)
         elif self.axis == 'XYZ':
-            mirror_action(context.active_object.animation_data.action, axis='X', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame)
-            mirror_action(context.active_object.animation_data.action, axis='Y', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame)
-            mirror_action(context.active_object.animation_data.action, axis='Z', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame)
+            mirror_action(context.active_object.animation_data.action, axis='X', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space)
+            mirror_action(context.active_object.animation_data.action, axis='Y', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space)
+            mirror_action(context.active_object.animation_data.action, axis='Z', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space)
             # Apply 180 rotation to hip if enabled (for each axis)
             if self.rotate_180:
                 rotate_hip_180(context.active_object, 'X', only_active_frame=self.only_active_frame, current_frame=current_frame)
@@ -462,7 +527,7 @@ class SUB_OT_mirror_action(Operator):
         # Skip 'O'; helps back and forth between poses
         
         # Update success message to include hip rotation info
-        message = f"Action mirrored on {self.axis}-axis!"
+        message = f"Action mirrored on {self.axis}-axis using {mirror_space.lower()} space!"
         if self.rotate_180:
             message += f" Hip rotated 180° on {self.axis}-axis."
         self.report({"INFO"}, message)

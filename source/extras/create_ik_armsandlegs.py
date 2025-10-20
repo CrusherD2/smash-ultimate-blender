@@ -43,13 +43,9 @@ class SUB_OP_create_ik_bones_operator(bpy.types.Operator):
             # Skip if bones don't exist
             if not all([bone for bone in [leg_bone, knee_bone, foot_bone, arm_bone, hand_bone]]):
                 continue
-
-            # Add small offset to improve IK solving
-            leg_bone.tail += Vector((0.0, -0.05, 0.0))
-            knee_bone.head += Vector((0.0, -0.05, 0.0))
-            if shoulder_bone:
-                shoulder_bone.tail += Vector((0.0, -0.05, 0.0))
-            arm_bone.head += Vector((0.0, -0.05, 0.0))
+            
+            # NOTE: Removed base bone modifications to preserve armature integrity
+            # The original code modified base bone positions which caused armature deformation
             
             # Create knee IK pole target
             knee_ik_bone = armature.edit_bones.new("KneeIK"+i)
@@ -200,11 +196,8 @@ class SUB_OP_create_ik_bones_operator(bpy.types.Operator):
                 foot_rot = fk_positions.get(f"foot_rot_{i}")
                 if foot_rot:
                     if isinstance(foot_rot, mathutils.Quaternion):
-                        foot_ik_bone.rotation_mode = 'QUATERNION'
                         foot_ik_bone.rotation_quaternion = foot_rot
                     else:
-                        # Euler rotation
-                        foot_ik_bone.rotation_mode = getattr(foot_rot, 'order', 'XYZ')
                         foot_ik_bone.rotation_euler = foot_rot
             
             # Position hand IK bones
@@ -220,11 +213,8 @@ class SUB_OP_create_ik_bones_operator(bpy.types.Operator):
                 hand_rot = fk_positions.get(f"hand_rot_{i}")
                 if hand_rot:
                     if isinstance(hand_rot, mathutils.Quaternion):
-                        hand_ik_bone.rotation_mode = 'QUATERNION'
                         hand_ik_bone.rotation_quaternion = hand_rot
                     else:
-                        # Euler rotation
-                        hand_ik_bone.rotation_mode = getattr(hand_rot, 'order', 'XYZ')
                         hand_ik_bone.rotation_euler = hand_rot
         
         self.report({'INFO'}, "IK bones successfully created, aligned, colored red, and added to the 'IK Bones' collection.")
@@ -266,4 +256,3 @@ def unregister():
 
 if __name__ == "__main__":
     register()
-

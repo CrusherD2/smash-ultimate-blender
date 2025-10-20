@@ -15,14 +15,14 @@ class SUB_OP_create_foot_ik_operator(bpy.types.Operator):
         description="Match IK bones position to FK bones after creation",
         default=True
     )
-    
+
     def execute(self, context):
         armature_object = context.object
         
         if not armature_object or armature_object.type != 'ARMATURE':
             self.report({'ERROR'}, "No armature selected. Please select an armature in Object Mode.")
             return {'CANCELLED'}
-        
+
         armature = armature_object.data
         
         bpy.ops.object.mode_set(mode="EDIT")
@@ -39,10 +39,9 @@ class SUB_OP_create_foot_ik_operator(bpy.types.Operator):
             if not knee_bone or not foot_bone or not leg_bone:
                 self.report({'WARNING'}, f"Skipping {i} leg due to missing FK bones (Leg, Knee, or Foot).")
                 continue
-            
-            # Add small offset to improve IK solving
-            leg_bone.tail += Vector((0.0, -0.05, 0.0))
-            knee_bone.head += Vector((0.0, -0.05, 0.0))
+                
+            # NOTE: Removed base bone modifications to preserve armature integrity
+            # The original code modified leg_bone.tail and knee_bone.head which caused armature deformation
 
             # --- New Pole Target Placement Logic ---
             fk_knee_pos = knee_bone.head # Position of the FK shin bone's head (the knee joint)
@@ -51,7 +50,7 @@ class SUB_OP_create_foot_ik_operator(bpy.types.Operator):
             char_forward_local = Vector((0.0, -1.0, 0.0))
             
             # Thigh bone vector and normalized direction (in armature space)
-            thigh_vec = leg_bone.tail - leg_bone.head
+            thigh_vec = leg_bone.tail - leg_bone.head 
             thigh_dir = thigh_vec.normalized() if thigh_vec.length > 0.001 else Vector((0,0,1)) # Fallback to Z-up
 
             # Calculate pole direction: char_forward_local projected to be orthogonal to thigh_dir
@@ -103,7 +102,7 @@ class SUB_OP_create_foot_ik_operator(bpy.types.Operator):
             foot_ik_bone.roll = math.radians(90.0)
 
         bpy.ops.object.mode_set(mode="POSE")
-        
+
         # Store the original position data for later precise matching
         fk_positions = {}
         for i in side:
@@ -187,7 +186,7 @@ class SUB_OP_create_foot_ik_operator(bpy.types.Operator):
             fk_to_ik.invoke_position_match_dialog()
             
         return {'FINISHED'}
-
+    
     def invoke(self, context, event):
         wm = context.window_manager
         return wm.invoke_props_dialog(self)
@@ -222,5 +221,3 @@ def unregister():
 
 if __name__ == "__main__":
     register()
-    
-

@@ -123,6 +123,24 @@ class SUB_OP_import_model(bpy.types.Operator):
     bl_options = {'UNDO'}
 
     model_path: StringProperty()
+    confirm_message: StringProperty(default="")
+
+    @classmethod
+    def description(cls, _context, properties):
+        # Show a custom confirm message when provided, otherwise default help.
+        msg = getattr(properties, 'confirm_message', "")
+        return msg if msg else "Import a model from the selected folder."
+
+    def invoke(self, context, event):
+        ssp: SubSceneProperties = context.scene.sub_scene_properties
+        # If NUHLPB is missing in this folder, ask to continue.
+        nuhlpb = getattr(ssp, 'model_import_nuhlpb_file_name', '')
+        folder = self.model_path if self.model_path else ssp.model_import_folder_path
+        missing = (not nuhlpb) or (not os.path.exists(os.path.join(folder, nuhlpb)))
+        if missing:
+            self.confirm_message = "NUHLPB file is missing. Continue import without helper bone data?"
+            return context.window_manager.invoke_confirm(self, event)
+        return self.execute(context)
 
     def execute(self, context):
         ssp: SubSceneProperties = context.scene.sub_scene_properties
@@ -154,6 +172,24 @@ class SUB_OP_import_selected_model(bpy.types.Operator):
     bl_idname = 'sub.import_selected_model'
     bl_label = 'Import Selected Model'
     bl_options = {'UNDO'}
+
+    confirm_message: StringProperty(default="")
+
+    @classmethod
+    def description(cls, _context, properties):
+        msg = getattr(properties, 'confirm_message', "")
+        return msg if msg else "Import the currently selected model."
+
+    def invoke(self, context, event):
+        ssp: SubSceneProperties = context.scene.sub_scene_properties
+        selected_model = ssp.model_import_models[ssp.model_import_models_index]
+        nuhlpb = getattr(ssp, 'model_import_nuhlpb_file_name', '')
+        folder = selected_model.path
+        missing = (not nuhlpb) or (not os.path.exists(os.path.join(folder, nuhlpb)))
+        if missing:
+            self.confirm_message = "NUHLPB file is missing. Continue import without helper bone data?"
+            return context.window_manager.invoke_confirm(self, event)
+        return self.execute(context)
 
     def execute(self, context):
         ssp: SubSceneProperties = context.scene.sub_scene_properties
@@ -238,8 +274,8 @@ def import_model(operator: bpy.types.Operator, context: bpy.types.Context):
         operator.report({'ERROR'}, f'NUMATB file not found: {numatb_name}')
         return {'CANCELLED'}
     if nuhlpb_name and not nuhlpb_name.exists():
-        operator.report({'ERROR'}, f'NUHLPB file not found: {nuhlpb_name}')
-        return {'CANCELLED'}
+        operator.report({'WARNING'}, f'NUHLPB file not found: {nuhlpb_name}. Continuing without helper bones.')
+        nuhlpb_name = ''
 
     start = time.time()
     ssbh_model = ssbh_data_py.modl_data.read_modl(str(numdlb_name)) if numdlb_name != '' else None
