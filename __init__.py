@@ -68,6 +68,10 @@ def register():
     from .source.anim.anim_data import init_sap_auto_sync
     init_sap_auto_sync()
 
+    # Register retargeting module (expy_kit integration)
+    from .source import retargeting
+    retargeting.register()
+
     print('Loaded Smash Ultimate Blender Tools!')
 
 def unregister():
@@ -79,6 +83,10 @@ def unregister():
     from .source import new_classes_to_register
     from .source.model.material import texture
     from .source import swing
+
+    # Unregister retargeting module first (expy_kit integration)
+    from .source import retargeting
+    retargeting.unregister()
 
     nodeitems_utils.unregister_node_categories('CUSTOM_ULTIMATE_NODES')
     
