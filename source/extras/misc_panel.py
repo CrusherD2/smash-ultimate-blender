@@ -110,7 +110,9 @@ class SUB_PT_animation_tools(Panel):
                 col.operator("sub.create_ik_bones", text="Create IK Bones (Arms + Legs)")
                 col.operator("sub.create_arm_ik", text="Create Arm IK Bones")
                 col.operator("sub.create_foot_ik", text="Create Foot IK Bones")
-                col.operator("sub.quick_switch_ik_fk", text="Switch IK/FK")
+                # Only show buttons for operators that are registered
+                if hasattr(bpy.types, 'SUB_OP_quick_switch_ik_fk') or hasattr(bpy.ops, 'sub.quick_switch_ik_fk'):
+                    col.operator("sub.quick_switch_ik_fk", text="Switch IK/FK")
                 col.separator()
                 
                 # Animation Tools section
@@ -120,7 +122,8 @@ class SUB_PT_animation_tools(Panel):
                 
                 # IK/FK Control section (moved to bottom)
                 col.label(text="IK/FK Control:")
-                col.operator("sub.advanced_ik_fk_control", text="Advanced IK/FK Control")
+                if hasattr(bpy.types, 'SUB_OP_advanced_ik_fk_control') or hasattr(bpy.ops, 'sub.advanced_ik_fk_control'):
+                    col.operator("sub.advanced_ik_fk_control", text="Advanced IK/FK Control")
                 col.operator("sub.toggle_ik_influence", text="Toggle IK Influence")
 
         layout.separator()

@@ -130,6 +130,48 @@ class SUB_OP_populate_override_from_armature(Operator):
         ssp.anim_override_armature_name = arma.name
         return {'FINISHED'}
 
+class SUB_OP_apply_override_preset_thrown(Operator):
+    bl_idname = 'sub.apply_override_preset_thrown'
+    bl_label = 'Apply Preset: Thrown'
+    bl_description = 'Preset: set Include List to bones containing trans/hip/throw/rot'
+
+    def execute(self, context):
+        ssp = context.scene.sub_scene_properties
+        arma = context.active_object if context.active_object and context.active_object.type == 'ARMATURE' else None
+        if arma is None:
+            # Try to restore the previous armature used for the list
+            prev_name = getattr(ssp, 'anim_override_armature_name', '')
+            arma = bpy.data.objects.get(prev_name) if prev_name else None
+        if arma is None:
+            self.report({'WARNING'}, 'Select an Armature first.')
+            return {'CANCELLED'}
+
+        # Use include list behavior for this preset
+        ssp.anim_override_use_exclude_list = False
+
+        # Keywords to match for the thrown preset
+        keywords = ("trans", "hip", "throw", "rot")
+
+        # Rebuild the list with all bones EXCEPT those that match the keywords
+        ssp.anim_override_bone_list.clear()
+        kept = []
+        removed = []
+        for bone in arma.data.bones:
+            name_lower = bone.name.lower()
+            if any(k in name_lower for k in keywords):
+                removed.append(bone.name)
+            else:
+                kept.append(bone.name)
+        for name in sorted(kept):
+            item = ssp.anim_override_bone_list.add()
+            item.name = name
+
+        ssp.anim_override_armature_name = arma.name
+        # Ensure translation override is on for next export
+        ssp.anim_preset_force_override_translation = True
+        self.report({'INFO'}, f"Applied 'Thrown' preset: removed {len(removed)}; kept {len(kept)} in Include List")
+        return {'FINISHED'}
+
 # Action item for the batch export list
 class SUB_PG_anim_action_item(bpy.types.PropertyGroup):
     name: StringProperty(name="Name")
@@ -341,17 +383,22 @@ class SUB_OP_batch_export_anim(Operator):
         # Set initial values
         self.first_blender_frame = context.scene.frame_start
         
-        # Set initial directory
-        if ssp.last_anim_export_dir:
-            self.directory = ssp.last_anim_export_dir
+        # Set initial directory, prefer the importer-discovered animation folder
+        if getattr(ssp, 'animation_import_folder_path', ''):
+            self.directory = ssp.animation_import_folder_path
         elif ssp.last_anim_import_dir:
             self.directory = ssp.last_anim_import_dir
+        elif ssp.last_anim_export_dir:
+            self.directory = ssp.last_anim_export_dir
         
         # Ensure bone list populated for the active armature
         try:
             ensure_override_bone_list_populated(context)
         except Exception:
             pass
+        # Apply preset-driven overrides
+        if getattr(ssp, 'anim_preset_force_override_translation', False):
+            self.transform_override_translation = True
 
         # Open file browser
         context.window_manager.fileselect_add(self)
@@ -364,6 +411,9 @@ class SUB_OP_batch_export_anim(Operator):
         layout.prop(self, "include_visibility_track")
         # Bone filter controls
         ssp = context.scene.sub_scene_properties
+        # Reflect preset-driven flags immediately in the UI
+        if getattr(ssp, 'anim_preset_force_override_translation', False) and not self.transform_override_translation:
+            self.transform_override_translation = True
         box = layout.box()
         row = box.row()
         row.label(text="Transform Override Bone Filter")
@@ -380,6 +430,10 @@ class SUB_OP_batch_export_anim(Operator):
             col.operator(SUB_OP_populate_override_from_armature.bl_idname, text="Populate")
             col.operator(SUB_OP_remove_active_bone_from_override.bl_idname, text="Remove")
             col.operator(SUB_OP_clear_bone_override_list.bl_idname, text="Clear")
+            # Presets
+            row = box.row(align=True)
+            row.label(text="Presets")
+            row.operator(SUB_OP_apply_override_preset_thrown.bl_idname, text="Thrown")
         else:
             row.label(text="(reload addon to enable list)")
         # Transform Flags
@@ -495,6 +549,9 @@ class SUB_OP_batch_export_anim(Operator):
             except Exception as e:
                 self.report({'ERROR'}, f"Failed to export {safe_name}: {str(e)}")
         
+        # Clear transient preset flags
+        ssp.anim_preset_force_override_translation = False
+
         # Restore original action and frame
         if current_action:
             obj.animation_data.action = current_action
@@ -613,18 +670,26 @@ class SUB_OP_anim_export(Operator):
         self.first_blender_frame = context.scene.frame_start
         self.last_blender_frame = context.scene.frame_end
 
-        # Set initial directory from previous exports/imports if available
+        # Set initial directory from importer when available
         ssp = context.scene.sub_scene_properties
-        if ssp.last_anim_export_dir:
-            self.filepath = os.path.join(ssp.last_anim_export_dir, safe_name)
+        base_dir = None
+        if getattr(ssp, 'animation_import_folder_path', ''):
+            base_dir = ssp.animation_import_folder_path
         elif ssp.last_anim_import_dir:
-            self.filepath = os.path.join(ssp.last_anim_import_dir, safe_name)
+            base_dir = ssp.last_anim_import_dir
+        elif ssp.last_anim_export_dir:
+            base_dir = ssp.last_anim_export_dir
+        if base_dir:
+            self.filepath = os.path.join(base_dir, safe_name)
         
         # Ensure bone list populated for the active armature
         try:
             ensure_override_bone_list_populated(context)
         except Exception:
             pass
+        # Apply preset-driven overrides
+        if getattr(ssp, 'anim_preset_force_override_translation', False):
+            self.transform_override_translation = True
 
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
@@ -636,6 +701,9 @@ class SUB_OP_anim_export(Operator):
         layout.prop(self, "include_visibility_track")
         # Bone filter controls
         ssp = context.scene.sub_scene_properties
+        # Reflect preset-driven flags immediately in the UI
+        if getattr(ssp, 'anim_preset_force_override_translation', False) and not self.transform_override_translation:
+            self.transform_override_translation = True
         box = layout.box()
         row = box.row()
         row.label(text="Transform Override Bone Filter")
@@ -652,6 +720,10 @@ class SUB_OP_anim_export(Operator):
             col.operator(SUB_OP_populate_override_from_armature.bl_idname, text="Populate")
             col.operator(SUB_OP_remove_active_bone_from_override.bl_idname, text="Remove")
             col.operator(SUB_OP_clear_bone_override_list.bl_idname, text="Clear")
+            # Presets
+            row = box.row(align=True)
+            row.label(text="Presets")
+            row.operator(SUB_OP_apply_override_preset_thrown.bl_idname, text="Thrown")
         else:
             row.label(text="(reload addon to enable list)")
         # Transform Flags
@@ -670,6 +742,8 @@ class SUB_OP_anim_export(Operator):
         # Save directory for future use
         ssp = context.scene.sub_scene_properties
         ssp.last_anim_export_dir = os.path.dirname(self.filepath)
+        # Clear transient preset flags
+        ssp.anim_preset_force_override_translation = False
         
         # Ensure filepath has .nuanmb extension
         filepath = self.filepath
@@ -748,7 +822,11 @@ def get_smash_transform(m) -> Matrix:
         [0, 0, 0, 1]
     ])
     # Perform the transformation m in Blender's basis and convert back to Ultimate.
-    return p @ m @ p.inverted()
+    try:
+        return p @ m @ p.inverted()
+    except ValueError:
+        # If inversion fails, the matrix is singular - this shouldn't happen for p but handle it gracefully
+        raise ValueError("Cannot compute Smash transform: input matrix is singular")
 
 def transform_group_fix_floating_point_inaccuracies(trans_group: ssbh_data_py.anim_data.GroupData):
     from math import isclose
@@ -917,18 +995,22 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
                     operator.report(type={'ERROR'}, message=f"Negative Scale Detected! Negative scale is not supported, and so the export was cancelled! The first instance was on bone {bone_name} on blender frame {frame} in the {negative_axis} axis.")
                     return
                 zero_axis: set[str] = set()
-                if math.isclose(scale.x, 0.0, abs_tol= 0.0001):
+                # Use a larger clamping value to avoid numerical instability in matrix inversion
+                clamp_value = 0.001
+                # Use a tighter tolerance for detection to catch actual zeros
+                zero_tolerance = 0.00001
+                if scale.x <= zero_tolerance:
                     zero_axis.add('X')
-                    scale.x = 0.0001
-                if math.isclose(scale.y, 0.0, abs_tol= 0.0001):
+                    scale.x = clamp_value
+                if scale.y <= zero_tolerance:
                     zero_axis.add('Y')
-                    scale.y = 0.0001
-                if math.isclose(scale.z, 0.0, abs_tol= 0.0001):
+                    scale.y = clamp_value
+                if scale.z <= zero_tolerance:
                     zero_axis.add('Z')
-                    scale.z = 0.0001
+                    scale.z = clamp_value
                 if zero_axis:
                     if not zero_scale_reported:
-                        operator.report(type={'INFO'}, message=f"Clamped scale values of `0` to `0.0001` for export. The first instance was on bone {bone_name} on blender frame {frame} in the {zero_axis} axis.")
+                        operator.report(type={'INFO'}, message=f"Clamped scale values of `0` to `{clamp_value}` for export. The first instance was on bone {bone_name} on blender frame {frame} in the {zero_axis} axis.")
                         zero_scale_reported = True
                         
         # Create SSBH Transform Group
@@ -989,24 +1071,31 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
                 node = node_name_to_node.get(bone.name)
                 if node is not None:
                     # Have to get the relative matrix from the stored matrixes, then transform that to smash orientation.
-                    if bone.parent is None:
-                        raw_rel_matrix = bone_to_world_matrix[bone]
-                    else:
-                        raw_rel_matrix = bone_to_world_matrix[bone.parent].inverted() @ bone_to_world_matrix[bone]
-                    smash_rel_matrix = get_smash_transform(raw_rel_matrix)
-                    t,q,s = smash_rel_matrix.decompose()
-                    transform = ssbh_data_py.anim_data.Transform(
-                        [s.x, s.y, s.z],
-                        [q.x, q.y, q.z, q.w],
-                        [t.x, t.y, t.z]
-                    )
-                    node.tracks[0].values.append(transform)
-                    # Check for quaternion interpolation issues
-                    if index > 0:
-                        pq = mathutils.Quaternion(node.tracks[0].values[index-1].rotation)
-                        cq = mathutils.Quaternion(node.tracks[0].values[index].rotation)
-                        if pq.dot(cq) < 0:
-                            node.tracks[0].values[index].rotation = [-c for c in node.tracks[0].values[index].rotation]
+                    try:
+                        if bone.parent is None:
+                            raw_rel_matrix = bone_to_world_matrix[bone]
+                        else:
+                            raw_rel_matrix = bone_to_world_matrix[bone.parent].inverted() @ bone_to_world_matrix[bone]
+                        smash_rel_matrix = get_smash_transform(raw_rel_matrix)
+                        t,q,s = smash_rel_matrix.decompose()
+                        transform = ssbh_data_py.anim_data.Transform(
+                            [s.x, s.y, s.z],
+                            [q.x, q.y, q.z, q.w],
+                            [t.x, t.y, t.z]
+                        )
+                        node.tracks[0].values.append(transform)
+                        # Check for quaternion interpolation issues
+                        if index > 0:
+                            pq = mathutils.Quaternion(node.tracks[0].values[index-1].rotation)
+                            cq = mathutils.Quaternion(node.tracks[0].values[index].rotation)
+                            if pq.dot(cq) < 0:
+                                node.tracks[0].values[index].rotation = [-c for c in node.tracks[0].values[index].rotation]
+                    except ValueError as e:
+                        # Matrix is not invertible - this can happen with zero/very small scales
+                        frame_number = frame if 'frame' in locals() else first_blender_frame + index
+                        parent_info = f" (parent: {bone.parent.name})" if bone.parent else ""
+                        operator.report(type={'ERROR'}, message=f"Failed to export {bone.name}{parent_info}: Matrix is not invertible at frame {frame_number}. This usually happens when a bone or its parent has zero scale on all axes. Please fix the animation data.")
+                        return
         # Pre-Saving Optimizations
         transform_group_fix_floating_point_inaccuracies(trans_group)
         # Vanilla anims sort the nodes alphabetically. 

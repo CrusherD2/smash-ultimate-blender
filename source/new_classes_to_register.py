@@ -57,6 +57,7 @@ classes = [
     source.anim.export_anim.SUB_OP_populate_override_from_armature,
     source.anim.export_anim.SUB_OP_remove_active_bone_from_override,
     source.anim.export_anim.SUB_OP_clear_bone_override_list,
+    source.anim.export_anim.SUB_OP_apply_override_preset_thrown,
     source.anim.export_anim.SUB_OP_batch_export_anim,
     source.extras.misc_panel.SUB_PT_animation_tools,
     source.extras.misc_panel.SUB_PT_misc_utilities,

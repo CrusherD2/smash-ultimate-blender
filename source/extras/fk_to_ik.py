@@ -31,6 +31,17 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
         default=False
     )
 
+    # When removing knee frames, allow the user to choose the reference frame
+    reference_frame: bpy.props.EnumProperty(
+        name="Reference Frame",
+        description="Which frame to keep as the reference when cleaning knee/leg keyframes",
+        items=(
+            ('FIRST', "Keep First Frame", "Keep only the first frame's keys"),
+            ('LAST', "Keep Last Frame", "Keep only the last frame's keys"),
+        ),
+        default='FIRST'
+    )
+
     reset_foot_bones: bpy.props.BoolProperty(
         name="Reset Foot FK Bones",
         description="Reset transforms and remove keyframes from Foot FK bones after IK transfer",
@@ -472,9 +483,10 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
                 # Return to the original frame
                 context.scene.frame_set(original_frame)
                 
-                # Remove keyframes from knee bones if requested
+                # Remove keyframes from knee (and leg) bones if requested
                 if self.remove_knee_frames:
-                    self.remove_knee_keyframes(context, start_frame)
+                    keep_frame = start_frame if self.reference_frame == 'FIRST' else end_frame
+                    self.remove_knee_and_leg_keyframes(context, keep_frame)
                 
                 # Reset foot FK bones if requested
                 if self.reset_foot_bones:
@@ -502,21 +514,23 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
                 
             return {'FINISHED'}
     
-    def remove_knee_keyframes(self, context, start_frame):
-        """Remove all keyframes from knee bones except frame 1"""
+    def remove_knee_and_leg_keyframes(self, context, frame_to_keep):
+        """Remove all keyframes from Knee and Leg bones except the chosen reference frame"""
         armature_object = context.object
         
-        # Knee bones to process
+        # Bones to process: knees and legs
         knee_bones = [
             armature_object.pose.bones.get("KneeL"),
             armature_object.pose.bones.get("KneeR")
         ]
+        leg_bones = [
+            armature_object.pose.bones.get("LegL"),
+            armature_object.pose.bones.get("LegR")
+        ]
+        bones_to_process = [b for b in knee_bones + leg_bones if b]
         
-        # Filter out None values (in case a bone doesn't exist)
-        knee_bones = [bone for bone in knee_bones if bone]
-        
-        if not knee_bones:
-            self.report({'WARNING'}, "No Knee bones found to remove keyframes from")
+        if not bones_to_process:
+            self.report({'WARNING'}, "No Knee/Leg bones found to remove keyframes from")
             return
         
         # Ensure action exists
@@ -525,7 +539,7 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
             return
         
         action = armature_object.animation_data.action
-        bone_names = [bone.name for bone in knee_bones]
+        bone_names = [bone.name for bone in bones_to_process]
         
         # Track the number of keyframes removed
         removed_count = 0
@@ -537,7 +551,7 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
             if fcurve.data_path.startswith('pose.bones["') and any(bone_name in fcurve.data_path for bone_name in bone_names):
                 fcurves_to_process.append(fcurve)
         
-        # For each FCurve, remove all keyframes except for the first one
+        # For each FCurve, remove all keyframes except for the chosen frame
         for fcurve in fcurves_to_process:
             # Sort keyframes by frame
             keyframes = sorted(fcurve.keyframe_points, key=lambda kf: kf.co.x)
@@ -546,26 +560,28 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
             if len(keyframes) <= 1:
                 continue
             
-            # Keep only the first keyframe (lowest frame number)
-            first_keyframe_frame = keyframes[0].co.x
-            
-            # Remove all other keyframes, starting from the last to avoid index issues
-            for i in range(len(keyframes) - 1, 0, -1):
+            # Decide which keyframe to keep (first or last) and move it to frame_to_keep
+            keep_index = 0 if self.reference_frame == 'FIRST' else len(keyframes) - 1
+            keep_kf = keyframes[keep_index]
+            # Remove all other keyframes, starting from the end to avoid reindex issues
+            for i in range(len(keyframes) - 1, -1, -1):
+                if i == keep_index:
+                    continue
                 fcurve.keyframe_points.remove(keyframes[i])
                 removed_count += 1
             
-            # If the first keyframe isn't at frame 1, move it there
-            if first_keyframe_frame != start_frame:
-                keyframes[0].co.x = start_frame
-                keyframes[0].handle_left.x = start_frame - 0.5
-                keyframes[0].handle_right.x = start_frame + 0.5
-                fcurve.update()
+            # Move the kept keyframe to the exact reference frame
+            if keep_kf.co.x != frame_to_keep:
+                keep_kf.co.x = frame_to_keep
+                keep_kf.handle_left.x = frame_to_keep - 0.5
+                keep_kf.handle_right.x = frame_to_keep + 0.5
+            fcurve.update()
         
         # Report the number of keyframes removed
         if removed_count > 0:
-            self.report({'INFO'}, f"Removed {removed_count} keyframes from knee bones, leaving only frame {start_frame} intact")
+            self.report({'INFO'}, f"Removed {removed_count} keyframes from knee/leg bones, keeping only frame {int(frame_to_keep)}")
         else:
-            self.report({'INFO'}, "No knee bone keyframes found to remove")
+            self.report({'INFO'}, "No knee/leg bone keyframes found to remove")
     
     def reset_foot_bone_transforms(self, context):
         """Reset transforms and remove keyframes from Foot FK bones after IK transfer"""
@@ -645,6 +661,8 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
         if self.entire_animation:
             layout.prop(self, "auto_keyframe")
             layout.prop(self, "remove_knee_frames")
+            if self.remove_knee_frames:
+                layout.prop(self, "reference_frame")
             layout.prop(self, "reset_foot_bones")
 
 def register():

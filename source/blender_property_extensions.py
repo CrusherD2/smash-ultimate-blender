@@ -367,6 +367,13 @@ class SubSceneProperties(PropertyGroup):
         default=""
     )
 
+    # Transient flag: set by presets to force-enable translation overrides for the next export
+    anim_preset_force_override_translation: BoolProperty(
+        name="Preset: Force Override Translation",
+        description="Internal flag toggled by presets to enable translation override for next export",
+        default=False
+    )
+
     # User Pose Library Properties
     user_pose_list: CollectionProperty(
         name="User Pose List",

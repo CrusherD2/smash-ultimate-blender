@@ -77,6 +77,7 @@ class SUB_OP_align_exo_bones(Operator):
             if "H_Exo_" in constraint.target_bone_name:
                 exo_bone_mapping[constraint.target_bone_name] = constraint.source_bone_name
         
+        
         # Store original bone rolls if maintaining roll
         original_rolls = {}
         if self.maintain_roll:
@@ -95,7 +96,10 @@ class SUB_OP_align_exo_bones(Operator):
         finger_chains = {}  # Format: {(side, num): [bone_names_in_chain]}
         
         for bone in armature.data.edit_bones:
-            # Check for finger naming pattern (like FingerR41, FingerL12, etc.)
+            # Check for finger naming patterns
+            bone_name_lower = bone.name.lower()
+            
+            # Pattern 1: FingerR41, FingerL12, etc. (uppercase Finger)
             if "Finger" in bone.name and len(bone.name) >= 9:
                 try:
                     # Extract the finger number and position from the name
@@ -115,6 +119,28 @@ class SUB_OP_align_exo_bones(Operator):
                         finger_chains[chain_key].append(bone.name)
                 except (IndexError, ValueError):
                     pass  # Not a standard finger bone name format
+            
+            # Pattern 2: fingerl51, fingerr51, etc. (lowercase finger)
+            elif "finger" in bone_name_lower and len(bone.name) >= 8:
+                try:
+                    # Extract the finger number and position from the name
+                    # Format is "fingerXYZ" where X is side (l/r), Y is finger number (1-5), Z is position (1-3)
+                    side = bone.name[6].upper()  # Convert to uppercase
+                    if side in ["R", "L"]:
+                        finger_num = int(bone.name[7])
+                        position = int(bone.name[8])
+                        
+                        # Store bone in finger_bones dictionary
+                        finger_bones[bone.name] = (side, finger_num, position)
+                        
+                        # Add to finger chains
+                        chain_key = (side, finger_num)
+                        if chain_key not in finger_chains:
+                            finger_chains[chain_key] = []
+                        finger_chains[chain_key].append(bone.name)
+                except (IndexError, ValueError):
+                    pass  # Not a standard finger bone name format
+        
         
         # Store original child positions relative to their parents
         child_offsets = {}
@@ -147,6 +173,7 @@ class SUB_OP_align_exo_bones(Operator):
             # Check if this is a finger bone and move the whole chain if enabled
             is_finger_bone = smash_bone_name in finger_bones
             
+            
             if is_finger_bone and self.finger_chains_as_units:
                 # Get finger chain information
                 side, finger_num, position = finger_bones[smash_bone_name]
@@ -170,9 +197,41 @@ class SUB_OP_align_exo_bones(Operator):
                     # Skip other finger bones - they'll be moved as part of their chain
                     continue
             
+            elif is_finger_bone and not self.finger_chains_as_units:
+                # Handle finger bones when finger_chains_as_units is disabled
+                side, finger_num, position = finger_bones[smash_bone_name]
+                is_main_finger = finger_num in [1, 2, 3, 4, 5]  # 1=10, 2=20, 3=30, 4=40, 5=50
+                
+                if is_main_finger and position == 0:
+                    # Main finger bones (pos=0) should be handled with hand bones
+                    # Skip them here - they'll be processed when hand bones are processed
+                    continue
+                else:
+                    # For finger bones in exo mapping (pos=1,2,3), use the proper alignment logic
+                    # Find the children of the Exo bone
+                    exo_children = [b for b in armature.data.edit_bones if b.parent == exo_bone]
+                    
+                    if exo_children:
+                        # Has children - Set the head to match the Exo bone's head
+                        smash_bone.head = exo_bone.head.copy()
+                        # Use the first child's head as the tail target
+                        smash_bone.tail = exo_children[0].head.copy()
+                    else:
+                        # No children - move as a unit (like in TRANSLATE mode)
+                        # Calculate the offset vector
+                        offset = exo_bone.head - smash_bone.head
+                        
+                        # Move head and tail by the same offset
+                        smash_bone.head += offset
+                        smash_bone.tail += offset
+                    
+                    processed_bones.add(smash_bone_name)
+                    aligned_bones += 1
+            
             else:
                 # Hand bones move as a unit
-                if "Hand" in exo_bone_name:
+                if ("Hand" in exo_bone_name or "hand" in exo_bone_name.lower() or 
+                    "Hand" in smash_bone_name or "hand" in smash_bone_name.lower()):
                     # Move the whole bone as a unit
                     offset = exo_bone.head - smash_bone.head
                     smash_bone.head += offset
@@ -180,12 +239,37 @@ class SUB_OP_align_exo_bones(Operator):
                     processed_bones.add(smash_bone_name)
                     
                     # If there's a "Have" bone that should follow this Hand bone, move it too
-                    have_bone_name = smash_bone_name.replace("Hand", "Have")
+                    # Handle both uppercase and lowercase variations
+                    have_bone_name = smash_bone_name.replace("Hand", "Have").replace("hand", "have")
                     if have_bone_name in armature.data.edit_bones:
                         have_bone = armature.data.edit_bones[have_bone_name]
                         have_bone.head += offset
                         have_bone.tail += offset
                         processed_bones.add(have_bone_name)
+                    
+                    # Always move main finger bones (10, 20, 30, 40, 50) with hand bones
+                    # This happens regardless of the finger_chains_as_units setting
+                    hand_side = "R" if "r" in smash_bone_name.lower() else "L"
+                    for finger_num in [1, 2, 3, 4, 5]:  # 1=10, 2=20, 3=30, 4=40, 5=50
+                        chain_key = (hand_side, finger_num)
+                        if chain_key in finger_chains:
+                            for bone_name in finger_chains[chain_key]:
+                                if bone_name in armature.data.edit_bones and bone_name not in processed_bones:
+                                    # Only add main finger bones (pos=0) to processed_bones
+                                    # Secondary finger bones (pos=1,2,3) should be processed individually
+                                    if bone_name in finger_bones:
+                                        side, finger_num_check, position = finger_bones[bone_name]
+                                        if position == 0:  # Only main finger bones
+                                            bone = armature.data.edit_bones[bone_name]
+                                            bone.head += offset
+                                            bone.tail += offset
+                                            processed_bones.add(bone_name)
+                                    else:
+                                        # Fallback for bones not in finger_bones dictionary
+                                        bone = armature.data.edit_bones[bone_name]
+                                        bone.head += offset
+                                        bone.tail += offset
+                                        processed_bones.add(bone_name)
                 
                 # Wrist bones should move as a unit
                 elif "Wrist" in exo_bone_name:
@@ -252,6 +336,15 @@ class SUB_OP_align_exo_bones(Operator):
                         
                         # Apply to all descendants
                         move_child_bones(child_bone, offset)
+                
+                # Hip bone should move as a unit
+                elif ("Hip" in exo_bone_name or "hip" in exo_bone_name.lower() or 
+                      "Hip" in smash_bone_name or "hip" in smash_bone_name.lower()):
+                    # Move the whole bone as a unit
+                    offset = exo_bone.head - smash_bone.head
+                    smash_bone.head += offset
+                    smash_bone.tail += offset
+                    processed_bones.add(smash_bone_name)
                 
                 # Regular processing for all other bones
                 else:

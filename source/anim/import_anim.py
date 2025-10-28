@@ -12,7 +12,7 @@ from pathlib import Path
 
 from ...dependencies import ssbh_data_py
 from bpy_extras.io_utils import ImportHelper
-from bpy.props import IntProperty, StringProperty, BoolProperty, FloatProperty
+from bpy.props import IntProperty, StringProperty, BoolProperty, FloatProperty, EnumProperty
 from bpy.types import Operator, Panel
 from mathutils import Matrix, Quaternion, Vector
 from ..model.import_model import get_blender_transform
@@ -36,6 +36,17 @@ class SUB_OP_import_all_animations(bpy.types.Operator):
     bl_idname = 'sub.import_all_animations'
     bl_label = 'Import All Animations'
     bl_options = {'REGISTER', 'UNDO'}
+
+    # Choice of range to import
+    import_mode: EnumProperty(
+        name="Import Range",
+        description="Choose whether to import all animations or start from the selected one",
+        items=(
+            ('ALL', "All Animations", "Import every animation in the list"),
+            ('FROM_SELECTED', "From Selected Onward", "Start importing at the selected animation and continue to the end"),
+        ),
+        default='ALL'
+    )
 
     @classmethod
     def poll(cls, context):
@@ -72,7 +83,11 @@ class SUB_OP_import_all_animations(bpy.types.Operator):
         
         if not self.is_importing:
             # Confirmation phase
-            layout.label(text=f"Are you sure you want to import all {anim_count} animations?")
+            layout.label(text=f"Choose what to import ({anim_count} found):")
+            layout.prop(self, "import_mode", expand=True)
+            if self.import_mode == 'FROM_SELECTED' and 0 <= ssp.animation_import_files_index < anim_count:
+                sel_name = ssp.animation_import_files[ssp.animation_import_files_index].name
+                layout.label(text=f"Starting from: {sel_name}")
         else:
             # Progress phase
             layout.label(text=self.progress_text)
@@ -99,7 +114,6 @@ class SUB_OP_import_all_animations(bpy.types.Operator):
         if not self.is_importing:
             # Start the import process
             self.is_importing = True
-            self.current_animation_index = 0
             self.imported_count = 0
             
             # Setup for modal operation
@@ -110,6 +124,13 @@ class SUB_OP_import_all_animations(bpy.types.Operator):
             self.include_material = ssp.anim_include_material  
             self.include_visibility = ssp.anim_include_visibility
             self.first_frame = 1
+            # Determine starting index
+            total_animations = len(ssp.animation_import_files)
+            if self.import_mode == 'FROM_SELECTED' and total_animations > 0:
+                start_index = max(0, min(ssp.animation_import_files_index, total_animations - 1))
+            else:
+                start_index = 0
+            self.current_animation_index = start_index
             
             # Save current auto-keyframe setting and disable it
             self.use_keyframe_insert_auto = context.scene.tool_settings.use_keyframe_insert_auto
