@@ -198,14 +198,14 @@ def apply_pose_with_options(context, pose_data_str, include_trans=True, mirrored
         print("=== KEYFRAMING ALL BONES ===")
         keyframed_count = 0
         for bone in armature.pose.bones:
-            bone.keyframe_insert(data_path="location", frame=current_frame)
+            bone.keyframe_insert(data_path="location", frame=current_frame, group=bone.name)
             
             if bone.rotation_mode == 'QUATERNION':
-                bone.keyframe_insert(data_path="rotation_quaternion", frame=current_frame)
+                bone.keyframe_insert(data_path="rotation_quaternion", frame=current_frame, group=bone.name)
             else:
-                bone.keyframe_insert(data_path="rotation_euler", frame=current_frame)
+                bone.keyframe_insert(data_path="rotation_euler", frame=current_frame, group=bone.name)
             
-            bone.keyframe_insert(data_path="scale", frame=current_frame)
+            bone.keyframe_insert(data_path="scale", frame=current_frame, group=bone.name)
             keyframed_count += 1
         
         print(f"Keyframed {keyframed_count} bones to ensure clean pose application")

@@ -103,7 +103,7 @@ class SUB_OP_transfer_hip_animation(Operator):
         
         # Set hip X to 0 and keyframe it on frame 1
         hip_bone.location[0] = 0
-        hip_bone.keyframe_insert(data_path="location", index=0, frame=1)
+        hip_bone.keyframe_insert(data_path="location", index=0, frame=1, group=hip_bone.name)
         
         # Update the view
         for area in context.screen.areas:

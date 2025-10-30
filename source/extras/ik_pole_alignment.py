@@ -299,7 +299,7 @@ class SUB_OP_align_ik_pole_angle(bpy.types.Operator):
                 if arm_bone:
                     for constraint in arm_bone.constraints:
                         if constraint.type == 'IK' and constraint.name == "IK_Constraint":
-                            constraint.keyframe_insert(data_path="pole_angle")
+                            constraint.keyframe_insert(data_path="pole_angle", group=arm_bone.name)
                             break
             
             if self.include_legs:
@@ -307,7 +307,7 @@ class SUB_OP_align_ik_pole_angle(bpy.types.Operator):
                 if knee_bone:
                     for constraint in knee_bone.constraints:
                         if constraint.type == 'IK' and constraint.name == "IK_Constraint":
-                            constraint.keyframe_insert(data_path="pole_angle")
+                            constraint.keyframe_insert(data_path="pole_angle", group=knee_bone.name)
                             break
 
 

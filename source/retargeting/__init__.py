@@ -351,16 +351,29 @@ class ULTIMATE_OT_retargeting_help(bpy.types.Operator):
         box = layout.box()
         box.label(text="3. Bind Armatures:", icon='LINKED')
         col = box.column(align=True)
-        col.label(text="   • Select your source armature")
+        col.label(text="   • Select your target armature")
         col.label(text="   • In 'Bind To' panel, choose the target armature")
+        col.label(text="   • A panel will appear with 'To Bind' and 'Bind To' options;")
+        col.label(text="     choose presets for each model as needed and click OK")
         col.label(text="   • Click 'Bind Armatures'")
         col.label(text="   • A panel will appear in the bottom-left viewport corner")
         col.label(text="   • Use it to: adjust time stretching, toggle constraints,")
-        col.label(text="     and preview the retargeted animation in real-time")
+        col.label(text="     pick the Root Animation bone (e.g., 'Trans') for the armature,")
+        col.label(text="     set offsets at the top (e.g., 'Bone Offset',")
+        col.label(text="     'Current Pose is Target Pose'), and preview in real-time")
         
-        # Step 4
+        # Step 4 - Tweaking
         box = layout.box()
-        box.label(text="4. Bake Animation:", icon='RENDER_ANIMATION')
+        box.label(text="4. Tweaking:", icon='OUTLINER_OB_ARMATURE')
+        col = box.column(align=True)
+        col.label(text="   • A new set of helper bones is created for the source armature")
+        col.label(text="   • Find them in the Bone Collections; use them to fix imperfections")
+        col.label(text="   • Every target bone has constraints you can adjust")
+        col.label(text="     if you don't want certain motions from the source")
+        
+        # Step 5
+        box = layout.box()
+        box.label(text="5. Bake Animation:", icon='RENDER_ANIMATION')
         col = box.column(align=True)
         col.label(text="   • Select your target armature in Pose Mode")
         col.label(text="   • Right-click in the viewport")

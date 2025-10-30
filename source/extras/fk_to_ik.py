@@ -336,10 +336,10 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
         if self.entire_animation and self.auto_keyframe:
             current_frame = context.scene.frame_current
             for bone in bones_to_keyframe:
-                bone.keyframe_insert(data_path="location", frame=current_frame)
-                bone.keyframe_insert(data_path="rotation_quaternion", frame=current_frame)
-                bone.keyframe_insert(data_path="rotation_euler", frame=current_frame)
-                bone.keyframe_insert(data_path="scale", frame=current_frame)
+                bone.keyframe_insert(data_path="location", frame=current_frame, group=bone.name)
+                bone.keyframe_insert(data_path="rotation_quaternion", frame=current_frame, group=bone.name)
+                bone.keyframe_insert(data_path="rotation_euler", frame=current_frame, group=bone.name)
+                bone.keyframe_insert(data_path="scale", frame=current_frame, group=bone.name)
         
         # Final update
         context.view_layer.update()

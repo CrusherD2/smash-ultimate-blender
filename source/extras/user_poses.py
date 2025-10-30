@@ -170,12 +170,12 @@ class SUB_OP_user_pose_apply_selected(Operator):
             pbone.scale[0], pbone.scale[1], pbone.scale[2] = s[0], s[1], s[2]
 
             # Insert keyframes for just these bones
-            pbone.keyframe_insert(data_path="location", frame=frame)
+            pbone.keyframe_insert(data_path="location", frame=frame, group=pbone.name)
             if pbone.rotation_mode == 'QUATERNION':
-                pbone.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+                pbone.keyframe_insert(data_path="rotation_quaternion", frame=frame, group=pbone.name)
             else:
-                pbone.keyframe_insert(data_path="rotation_euler", frame=frame)
-            pbone.keyframe_insert(data_path="scale", frame=frame)
+                pbone.keyframe_insert(data_path="rotation_euler", frame=frame, group=pbone.name)
+            pbone.keyframe_insert(data_path="scale", frame=frame, group=pbone.name)
 
             applied += 1
             # Select affected bone only when applying to all

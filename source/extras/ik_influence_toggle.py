@@ -99,7 +99,7 @@ class SUB_OP_toggle_ik_influence(Operator):
                         
                         # Insert keyframe if requested
                         if self.insert_keyframe:
-                            constraint.keyframe_insert(data_path="influence", frame=current_frame)
+                            constraint.keyframe_insert(data_path="influence", frame=current_frame, group=bone.name)
                         
                         constraints_modified += 1
                         

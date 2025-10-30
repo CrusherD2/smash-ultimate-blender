@@ -454,7 +454,7 @@ def rotate_hip_180(armature, axis, only_active_frame=False, current_frame=None):
             elif axis == 'Z':
                 rot_quat = mathutils.Quaternion((0, 0, 1), rotation_180)
             hip_bone.rotation_quaternion = rot_quat @ hip_bone.rotation_quaternion
-            hip_bone.keyframe_insert(data_path="rotation_quaternion", frame=current_frame)
+            hip_bone.keyframe_insert(data_path="rotation_quaternion", frame=current_frame, group=hip_bone.name)
         else:
             # Apply 180 degree rotation to euler
             if axis == 'X':
@@ -463,7 +463,7 @@ def rotate_hip_180(armature, axis, only_active_frame=False, current_frame=None):
                 hip_bone.rotation_euler[1] += rotation_180
             elif axis == 'Z':
                 hip_bone.rotation_euler[2] += rotation_180
-            hip_bone.keyframe_insert(data_path="rotation_euler", frame=current_frame)
+            hip_bone.keyframe_insert(data_path="rotation_euler", frame=current_frame, group=hip_bone.name)
     else:
         # Rotate for entire animation
         action = armature.animation_data.action if armature.animation_data else None
@@ -498,7 +498,7 @@ def rotate_hip_180(armature, axis, only_active_frame=False, current_frame=None):
                 elif axis == 'Z':
                     rot_quat = mathutils.Quaternion((0, 0, 1), rotation_180)
                 hip_bone.rotation_quaternion = rot_quat @ hip_bone.rotation_quaternion
-                hip_bone.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+                hip_bone.keyframe_insert(data_path="rotation_quaternion", frame=frame, group=hip_bone.name)
             else:
                 if axis == 'X':
                     hip_bone.rotation_euler[0] += rotation_180
@@ -506,7 +506,7 @@ def rotate_hip_180(armature, axis, only_active_frame=False, current_frame=None):
                     hip_bone.rotation_euler[1] += rotation_180
                 elif axis == 'Z':
                     hip_bone.rotation_euler[2] += rotation_180
-                hip_bone.keyframe_insert(data_path="rotation_euler", frame=frame)
+                hip_bone.keyframe_insert(data_path="rotation_euler", frame=frame, group=hip_bone.name)
         
         # Restore original frame
         bpy.context.scene.frame_set(original_frame)

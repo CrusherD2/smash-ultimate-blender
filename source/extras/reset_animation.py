@@ -116,8 +116,8 @@ class SUB_OT_reset_bone_locations(Operator):
             bones_affected.add(bone.name)
         for bone_name in bones_affected:
             bone = armature.pose.bones[bone_name]
-            bone.keyframe_insert(data_path="location", frame=1)
-            bone.keyframe_insert(data_path="scale", frame=1)
+            bone.keyframe_insert(data_path="location", frame=1, group=bone.name)
+            bone.keyframe_insert(data_path="scale", frame=1, group=bone.name)
         fcurves_to_clear = location_fcurves + scale_fcurves
         for fcurve in fcurves_to_clear:
             to_remove = []
@@ -203,16 +203,16 @@ class SUB_OT_reset_bone_locations(Operator):
             bone = armature.pose.bones.get(bone_name)
             if bone:
                 # Insert keyframes for all transform channels
-                bone.keyframe_insert(data_path="location", frame=frame)
+                bone.keyframe_insert(data_path="location", frame=frame, group=bone.name)
                 
                 if bone.rotation_mode == 'QUATERNION':
-                    bone.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+                    bone.keyframe_insert(data_path="rotation_quaternion", frame=frame, group=bone.name)
                 elif bone.rotation_mode == 'AXIS_ANGLE':
-                    bone.keyframe_insert(data_path="rotation_axis_angle", frame=frame)
+                    bone.keyframe_insert(data_path="rotation_axis_angle", frame=frame, group=bone.name)
                 else:
-                    bone.keyframe_insert(data_path="rotation_euler", frame=frame)
+                    bone.keyframe_insert(data_path="rotation_euler", frame=frame, group=bone.name)
                 
-                bone.keyframe_insert(data_path="scale", frame=frame)
+                bone.keyframe_insert(data_path="scale", frame=frame, group=bone.name)
                 
                 keyframes_inserted += 1
                 print(f"Inserted keyframes at frame {frame} for bone: {bone_name}")
@@ -294,7 +294,7 @@ class SUB_OT_invert_rotation_values(Operator):
                                           -bone.rotation_quaternion.z)
                 # Insert keyframe if auto-keyframing is enabled
                 if context.scene.tool_settings.use_keyframe_insert_auto:
-                    bone.keyframe_insert(data_path="rotation_quaternion", frame=current_frame)
+                    bone.keyframe_insert(data_path="rotation_quaternion", frame=current_frame, group=bone.name)
             else:
                 # Flip the sign of each euler component
                 bone.rotation_euler = (-bone.rotation_euler.x, 
@@ -302,7 +302,7 @@ class SUB_OT_invert_rotation_values(Operator):
                                      -bone.rotation_euler.z)
                 # Insert keyframe if auto-keyframing is enabled
                 if context.scene.tool_settings.use_keyframe_insert_auto:
-                    bone.keyframe_insert(data_path="rotation_euler", frame=current_frame)
+                    bone.keyframe_insert(data_path="rotation_euler", frame=current_frame, group=bone.name)
             
             bones_affected += 1
         
@@ -388,7 +388,7 @@ class SUB_OT_ground_character(Operator):
                 print(f"Hip bone Y changed from {old_y:.4f} to {hip_bone.location[1]:.4f}")
                 # Insert keyframe if auto-keyframing is enabled
                 if context.scene.tool_settings.use_keyframe_insert_auto:
-                    hip_bone.keyframe_insert(data_path="location", frame=context.scene.frame_current)
+                    hip_bone.keyframe_insert(data_path="location", frame=context.scene.frame_current, group=hip_bone.name)
             frames_processed = 1
         else:
             # Process all frames - apply current frame logic to each frame
@@ -413,7 +413,7 @@ class SUB_OT_ground_character(Operator):
                     hip_bone.location[1] += adjustment
                     print(f"Hip bone Y changed from {old_y:.4f} to {hip_bone.location[1]:.4f}")
                     # Always insert keyframe for all frames mode
-                    hip_bone.keyframe_insert(data_path="location", frame=frame)
+                    hip_bone.keyframe_insert(data_path="location", frame=frame, group=hip_bone.name)
                     frames_processed += 1
                 else:
                     print("No adjustment needed for this frame")
