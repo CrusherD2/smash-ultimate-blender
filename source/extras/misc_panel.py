@@ -1,6 +1,6 @@
 import bpy
 
-from bpy.types import Panel
+from bpy.types import Panel, Operator
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -240,6 +240,22 @@ class SUB_PT_misc_utilities(Panel):
             else:
                 row.enabled = False
                 row.operator("sub.mirror_vertex_groups", text="Mirror Vertex Groups (Object Mode Only)")
+            
+            # Add Shape Keys to Meshes conversion
+            row = box.row(align=True)
+            if context.mode == 'OBJECT':
+                row.label(text="Shape Keys Prefix:")
+                row.prop(ssp, "shape_keys_prefix", text="")
+            else:
+                row.enabled = False
+                row.label(text="Shape Keys Prefix (Object Mode Only)")
+            
+            row = box.row(align=True)
+            if context.mode == 'OBJECT':
+                row.operator("sub.convert_shape_keys_to_meshes", text="Convert Shape Keys to Meshes")
+            else:
+                row.enabled = False
+                row.operator("sub.convert_shape_keys_to_meshes", text="Convert Shape Keys to Meshes (Object Mode Only)")
         
     
         
@@ -299,13 +315,74 @@ class SUB_OP_mirror_vertex_groups(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class SUB_OP_convert_shape_keys_to_meshes(bpy.types.Operator):
+    bl_idname = "sub.convert_shape_keys_to_meshes"
+    bl_label = "Convert Shape Keys to Meshes"
+    bl_description = "Convert all shape keys to separate meshes with the specified prefix and VIS_O_OBJShape suffix"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return obj and obj.type == 'MESH' and context.mode == 'OBJECT' and obj.data.shape_keys
+
+    def execute(self, context):
+        obj = context.active_object
+        ssp = context.scene.sub_scene_properties
+        prefix = ssp.shape_keys_prefix
+        
+        if not prefix:
+            self.report({'ERROR'}, "Please enter a prefix for the shape keys.")
+            return {'CANCELLED'}
+        
+        if not obj.data.shape_keys or not obj.data.shape_keys.key_blocks:
+            self.report({'ERROR'}, "No shape keys found on this mesh.")
+            return {'CANCELLED'}
+        
+        # Create new meshes for each shape key
+        created_meshes = 0
+        for shape_key in obj.data.shape_keys.key_blocks:
+            # Skip Basis
+            if shape_key.name == "Basis":
+                continue
+            
+            # Create a copy of the mesh
+            new_mesh_obj = obj.copy()
+            new_mesh_obj.data = obj.data.copy()
+            
+            # Create the new name: Prefix_ShapeKeyName_VIS_O_OBJShape
+            new_name = f"{prefix}_{shape_key.name}_VIS_O_OBJShape"
+            new_mesh_obj.name = new_name
+            new_mesh_obj.data.name = new_name
+            
+            # Set the shape key as active and "show only shape key"
+            new_mesh_obj.show_only_shape_key = True
+            new_mesh_obj.active_shape_key_index = new_mesh_obj.data.shape_keys.key_blocks.find(shape_key.name)
+            
+            # Add a combined key from the mix
+            new_mesh_obj.shape_key_add(name="_temp_combined_key", from_mix=True)
+            
+            # Remove all shape keys
+            for sk in list(new_mesh_obj.data.shape_keys.key_blocks):
+                new_mesh_obj.shape_key_remove(sk)
+            
+            # Add to the scene
+            context.collection.objects.link(new_mesh_obj)
+            created_meshes += 1
+        
+        self.report({'INFO'}, f"Created {created_meshes} meshes from shape keys.")
+        return {'FINISHED'}
+
+
 def register():
     bpy.utils.register_class(SUB_PT_animation_tools)
     bpy.utils.register_class(SUB_PT_misc_utilities)
     bpy.utils.register_class(SUB_OP_mirror_vertex_groups)
+    bpy.utils.register_class(SUB_OP_convert_shape_keys_to_meshes)
 
 
 def unregister():
+    bpy.utils.unregister_class(SUB_OP_convert_shape_keys_to_meshes)
     bpy.utils.unregister_class(SUB_OP_mirror_vertex_groups)
     bpy.utils.unregister_class(SUB_PT_misc_utilities)
     bpy.utils.unregister_class(SUB_PT_animation_tools)

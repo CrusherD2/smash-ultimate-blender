@@ -16,7 +16,7 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
     entire_animation: bpy.props.BoolProperty(
         name="Entire Animation",
         description="Apply to the entire animation instead of just the current frame",
-        default=False
+        default=True
     )
     
     auto_keyframe: bpy.props.BoolProperty(
@@ -28,7 +28,7 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
     remove_knee_frames: bpy.props.BoolProperty(
         name="Remove Knee Frames",
         description="Remove all keyframes from the original Knee bones except frame 1 (helps with mocap cleanup)",
-        default=False
+        default=True
     )
 
     # When removing knee frames, allow the user to choose the reference frame
@@ -39,7 +39,7 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
             ('FIRST', "Keep First Frame", "Keep only the first frame's keys"),
             ('LAST', "Keep Last Frame", "Keep only the last frame's keys"),
         ),
-        default='FIRST'
+        default='LAST'
     )
 
     reset_foot_bones: bpy.props.BoolProperty(

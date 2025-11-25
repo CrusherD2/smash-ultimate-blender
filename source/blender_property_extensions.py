@@ -345,6 +345,11 @@ class SubSceneProperties(PropertyGroup):
         description="Include Visibility Track",
         default=True
     )
+    shape_keys_prefix: StringProperty(
+        name="Shape Keys Prefix",
+        description="Prefix to use when converting shape keys to meshes",
+        default=""
+    )
 
     # Transform override bone filtering (shared by exporters)
     anim_override_bone_list: CollectionProperty(
