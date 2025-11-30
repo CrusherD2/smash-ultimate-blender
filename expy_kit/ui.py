@@ -688,9 +688,11 @@ class RetargetBasePanel:
                 props.attr_name = attr_name
                 props.slot_name = k
 
+        bone_labels = {'shoulder': 'Clavicle', 'arm': 'Shoulder', 'forearm': 'Arm', 'upleg': 'Leg', 'leg': 'Knee'}
         for k in bone_names:
             row = labels.row()
-            row.label(text=(k + suffix).title())
+            label_text = bone_labels.get(k, k.title()) + suffix.title()
+            row.label(text=label_text)
 
 
 class VIEW3D_PT_expy_retarget(RetargetBasePanel, bpy.types.Panel):
@@ -872,7 +874,8 @@ class VIEW3D_PT_expy_retarget_spine(RetargetBasePanel, bpy.types.Panel):
 
         for slot in ('head', 'neck', 'spine2', 'spine1', 'spine', 'hips'):
             split = layout.split(factor=0.80)
-            split.prop_search(skeleton.spine, slot, ob.data, "bones", text="Chest" if slot == 'spine2' else slot.title())
+            slot_labels = {'spine2': 'Bust', 'spine1': 'Waist'}
+            split.prop_search(skeleton.spine, slot, ob.data, "bones", text=slot_labels.get(slot, slot.title()))
             props = split.operator(SetToActiveBone.bl_idname, text="", icon='EYEDROPPER')
             props.attr_name = 'spine'
             props.slot_name = slot
