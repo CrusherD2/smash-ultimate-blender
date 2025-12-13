@@ -135,6 +135,7 @@ classes = [
     source.model.material.operators.SUB_OP_convert_blender_material,
     source.model.material.operators.SUB_OP_convert_blender_material_no_textures,
     source.model.material.operators.SUB_OP_convert_smash_material,
+    source.model.material.operators.SUB_OP_revert_smash_material,
     source.model.material.operators.SUB_OP_set_texture_size,
     source.model.material.operators.SUB_OP_copy_from_ult_material,
     source.model.material.operators.SUB_OP_fix_solid_view_display,

@@ -65,10 +65,20 @@ class SUB_PT_matl_data_master(MaterialPanel):
         box.prop(sub_matl_data, "shader_label", emboss=False)
         box.menu(SUB_MT_material_specials.bl_idname)
         
-        # Add Convert Smash Material button
-        row = layout.row()
-        row.operator(operators.SUB_OP_convert_smash_material.bl_idname, text="Convert to Principled BSDF", icon='MATERIAL')
-        row.scale_y = 1.5
+        # Check if material has been converted to Principled BSDF
+        from .convert_smash_material import is_converted_to_principled
+        material = context.object.active_material
+        
+        if is_converted_to_principled(material):
+            # Show Revert button when converted
+            row = layout.row()
+            row.operator(operators.SUB_OP_revert_smash_material.bl_idname, text="Revert to Smash Material", icon='LOOP_BACK')
+            row.scale_y = 1.5
+        else:
+            # Add Convert Smash Material button
+            row = layout.row()
+            row.operator(operators.SUB_OP_convert_smash_material.bl_idname, text="Convert to Principled BSDF", icon='MATERIAL')
+            row.scale_y = 1.5
 
 class SUB_PT_matl_data_bools(MaterialPanel):
     bl_label = "Bools"

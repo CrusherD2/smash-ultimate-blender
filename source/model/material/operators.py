@@ -52,7 +52,7 @@ class SUB_OP_apply_material_preset(Operator):
         return {'FINISHED'} 
     
 from .convert_blender_material import convert_blender_material, rename_mesh_attributes_of_meshes_using_material
-from .convert_smash_material import convert_smash_material_to_principled, has_smash_material_data, has_prm_texture
+from .convert_smash_material import convert_smash_material_to_principled, has_smash_material_data, has_prm_texture, is_converted_to_principled, revert_to_smash_material
 class SUB_OP_convert_blender_material(Operator):
     bl_idname = 'sub.convert_blender_material'
     bl_label = 'Convert Blender Material (Creates PRM, uses existing normal)'
@@ -553,7 +553,8 @@ class SUB_OP_convert_smash_material(Operator):
     @classmethod
     def poll(cls, context):
         material = context.object.active_material if context.object else None
-        return material is not None and has_smash_material_data(material)
+        # Only show if material has Smash data AND has NOT been converted yet
+        return material is not None and has_smash_material_data(material) and not is_converted_to_principled(material)
     
     def execute(self, context):
         material = context.object.active_material
@@ -573,4 +574,37 @@ class SUB_OP_convert_smash_material(Operator):
             return {'FINISHED'}
         else:
             self.report({'ERROR'}, f"Failed to convert material '{material.name}'")
-            return {'CANCELLED'} 
+            return {'CANCELLED'}
+
+
+class SUB_OP_revert_smash_material(Operator):
+    bl_idname = 'sub.revert_smash_material'
+    bl_label = 'Revert to Smash Material'
+    bl_description = 'Revert a converted Principled BSDF material back to the original Smash Ultimate material'
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    @classmethod
+    def poll(cls, context):
+        material = context.object.active_material if context.object else None
+        # Only show if material has been converted to Principled BSDF
+        return material is not None and is_converted_to_principled(material)
+    
+    def execute(self, context):
+        material = context.object.active_material
+        if not material:
+            self.report({'ERROR'}, "No active material")
+            return {'CANCELLED'}
+        
+        if not is_converted_to_principled(material):
+            self.report({'ERROR'}, f"Material '{material.name}' is not a converted Smash material")
+            return {'CANCELLED'}
+        
+        # Perform the reversion
+        success = revert_to_smash_material(self, material)
+        
+        if success:
+            self.report({'INFO'}, f"Successfully reverted material '{material.name}' to Smash Ultimate material")
+            return {'FINISHED'}
+        else:
+            self.report({'ERROR'}, f"Failed to revert material '{material.name}'")
+            return {'CANCELLED'}

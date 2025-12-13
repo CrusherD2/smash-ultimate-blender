@@ -20,6 +20,7 @@ def get_predefined_poses():
         ("a05squatwait", "a05squatwait", "Squat wait animation"),
         ("a04fall", "a04fall", "Fall animation"),
         ("a04fallaerial", "a04fallaerial", "Aerial fall animation"),
+        ("a04fallspecial", "a04fallspecial", "Special fall animation"),
     ]
 
 def initialize_predefined_poses(context):

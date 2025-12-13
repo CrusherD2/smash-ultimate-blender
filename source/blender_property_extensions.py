@@ -330,6 +330,11 @@ class SubSceneProperties(PropertyGroup):
             ('GLOBAL', 'Global', "Mirror using world/global coordinate space"),
         )
     )
+    mirror_include_fingers: BoolProperty(
+        name="Include Fingers",
+        description="Include finger bones (FingerL11, FingerR23, etc.) in the mirroring process",
+        default=True
+    )
     anim_include_transform: BoolProperty(
         name="Include Transform",
         description="Include Transform Track",

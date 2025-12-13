@@ -162,8 +162,8 @@ def apply_global_mirror_transform(value, axis, object_matrix):
     
     return -value
 
-def should_exclude_bone_from_mirroring(bone_name, armature=None):
-    """Check if a bone should be excluded from mirroring (like facial, hair, finger bones)"""
+def should_exclude_bone_from_mirroring(bone_name, armature=None, include_fingers=True):
+    """Check if a bone should be excluded from mirroring (like facial, hair bones, and optionally finger bones)"""
     # Exclude facial/hair bones (S_ prefix)
     if bone_name.startswith('S_'):
         return True
@@ -174,9 +174,11 @@ def should_exclude_bone_from_mirroring(bone_name, armature=None):
     if any(keyword in bone_name_lower for keyword in facial_keywords):
         return True
     
-    # Exclude finger bones
-    if bone_name.startswith('Finger'):
-        return True
+    # Exclude finger bones only if include_fingers is False
+    if not include_fingers:
+        # Match patterns like FingerL11, FingerR23, Finger10, etc.
+        if bone_name.startswith('Finger'):
+            return True
     
     # Exclude Face bone and its children
     if armature and armature.type == 'ARMATURE':
@@ -190,7 +192,7 @@ def should_exclude_bone_from_mirroring(bone_name, armature=None):
     
     return False
 
-def mirror_action(act, axis='X', selected_bones_only=False, context=None, only_active_frame=False, mirror_space='LOCAL'):
+def mirror_action(act, axis='X', selected_bones_only=False, context=None, only_active_frame=False, mirror_space='LOCAL', include_fingers=True):
     
     if not (act and act.fcurves):
         print("No Keyframes")
@@ -204,7 +206,20 @@ def mirror_action(act, axis='X', selected_bones_only=False, context=None, only_a
     # Get selected bone names if filtering is enabled
     selected_bone_names = set()
     if selected_bones_only and context and context.active_object and context.active_object.type == 'ARMATURE':
-        selected_bone_names = {bone.name for bone in context.selected_pose_bones or []}
+        armature_obj = context.active_object
+        # Try multiple methods to get selected bones for reliability
+        # Method 1: context.selected_pose_bones (works in pose mode with proper context)
+        if context.selected_pose_bones:
+            selected_bone_names = {bone.name for bone in context.selected_pose_bones}
+        # Method 2: Check pose bones directly for selection state
+        elif armature_obj.mode == 'POSE':
+            selected_bone_names = {pbone.name for pbone in armature_obj.pose.bones if pbone.bone.select}
+        # Method 3: Check armature data bones for selection state
+        else:
+            selected_bone_names = {bone.name for bone in armature_obj.data.bones if bone.select}
+        
+        if not selected_bone_names:
+            print("Warning: No bones selected for 'Selected Bones Only' mode")
     
     # Get armature for bone exclusion checks
     armature = context.active_object if context and context.active_object and context.active_object.type == 'ARMATURE' else None
@@ -244,12 +259,22 @@ def mirror_action(act, axis='X', selected_bones_only=False, context=None, only_a
                 bone_name = path.split('"')[1] if '"' in path else path.split("'")[1] if "'" in path else ""
             
             # Check if this bone should be excluded from mirroring
-            if bone_name and should_exclude_bone_from_mirroring(bone_name, armature):
+            if bone_name and should_exclude_bone_from_mirroring(bone_name, armature, include_fingers):
                 continue
             
-            # Check if this bone should be processed (selected bones only filter)
-            if selected_bones_only and bone_name:
-                if bone_name and bone_name not in selected_bone_names:
+            # Determine target data path (mirrored bone)
+            target_data_path = data_path
+            target_bone_name = bone_name
+            if path and (path in mirror_map):
+                target_data_path = "".join((mirror_map[path], _dot, attribute))
+                # Extract target bone name
+                if 'pose.bones[' in mirror_map[path]:
+                    target_bone_name = mirror_map[path].split('"')[1] if '"' in mirror_map[path] else mirror_map[path].split("'")[1] if "'" in mirror_map[path] else bone_name
+            
+            # Check if TARGET bone should be affected (selected bones only filter)
+            # This ensures only selected bones receive mirrored data
+            if selected_bones_only and target_bone_name:
+                if target_bone_name not in selected_bone_names:
                     continue
             
             # Find the keyframe at current frame
@@ -266,11 +291,6 @@ def mirror_action(act, axis='X', selected_bones_only=False, context=None, only_a
             value = current_kf.co[1]
             left_handle = current_kf.handle_left[1]
             right_handle = current_kf.handle_right[1]
-            
-            # Determine target data path (mirrored bone)
-            target_data_path = data_path
-            if path and (path in mirror_map):
-                target_data_path = "".join((mirror_map[path], _dot, attribute))
             
             # Check if negation should be applied
             should_negate = (attribute, array_index) in negate_data_path_tuples
@@ -336,13 +356,8 @@ def mirror_action(act, axis='X', selected_bones_only=False, context=None, only_a
                 bone_name = path.split('"')[1] if '"' in path else path.split("'")[1] if "'" in path else ""
             
             # Check if this bone should be excluded from mirroring
-            if bone_name and should_exclude_bone_from_mirroring(bone_name, armature):
+            if bone_name and should_exclude_bone_from_mirroring(bone_name, armature, include_fingers):
                 continue
-            
-            # If selected bones only is enabled, check if this bone is selected
-            if selected_bones_only and bone_name:
-                if bone_name and bone_name not in selected_bone_names:
-                    continue
             
             # Determine target path (mirrored bone)
             target_data_path = data_path
@@ -353,6 +368,12 @@ def mirror_action(act, axis='X', selected_bones_only=False, context=None, only_a
                 # Extract target bone name for action group
                 if 'pose.bones[' in mirror_map[path]:
                     target_bone_name = mirror_map[path].split('"')[1] if '"' in mirror_map[path] else mirror_map[path].split("'")[1] if "'" in mirror_map[path] else bone_name
+            
+            # Check if TARGET bone should be affected (selected bones only filter)
+            # This ensures only selected bones receive mirrored data
+            if selected_bones_only and target_bone_name:
+                if target_bone_name not in selected_bone_names:
+                    continue
             
             # Check if values should be negated
             should_negate = (attribute, array_index) in negate_data_path_tuples
@@ -396,6 +417,12 @@ def mirror_action(act, axis='X', selected_bones_only=False, context=None, only_a
         
         # Step 3: Create new fcurves with mirrored data
         for target_path, array_index, keyframe_values, action_group_name in fcurve_data:
+            # Check if target fcurve already exists (can happen with selected_bones_only 
+            # when target bone wasn't selected but source was)
+            existing_fc = act.fcurves.find(target_path, index=array_index)
+            if existing_fc:
+                act.fcurves.remove(existing_fc)
+            
             # Create new fcurve
             new_fc = act.fcurves.new(target_path, index=array_index, action_group=action_group_name)
             
@@ -564,6 +591,12 @@ class SUB_OT_mirror_action(Operator):
         default=False
     )
 
+    include_fingers : BoolProperty(
+        name="Include Fingers",
+        description="Include finger bones (FingerL11, FingerR23, etc.) in the mirroring process",
+        default=True
+    )
+
 
     @classmethod
     def poll(cls, context):
@@ -584,41 +617,57 @@ class SUB_OT_mirror_action(Operator):
         # Get current frame for hip rotation
         current_frame = context.scene.frame_current if self.only_active_frame else None
         
-        # Get mirror space from scene properties
+        # Check if selected bones only is enabled but no bones are selected
+        if self.selected_bones_only and context.active_object.type == 'ARMATURE':
+            armature_obj = context.active_object
+            has_selected = False
+            if context.selected_pose_bones:
+                has_selected = True
+            elif armature_obj.mode == 'POSE':
+                has_selected = any(pbone.bone.select for pbone in armature_obj.pose.bones)
+            else:
+                has_selected = any(bone.select for bone in armature_obj.data.bones)
+            
+            if not has_selected:
+                self.report({"WARNING"}, "No bones selected. Select bones in Pose mode first.")
+                return {'CANCELLED'}
+        
+        # Get mirror space from scene properties, include_fingers from operator property
         ssp = context.scene.sub_scene_properties
         mirror_space = ssp.mirror_space
+        include_fingers = self.include_fingers
         
         # Apply mirroring
         if self.axis in ('X', 'Y', 'Z'): 
-            mirror_action(context.active_object.animation_data.action, axis=self.axis, selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space)
+            mirror_action(context.active_object.animation_data.action, axis=self.axis, selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space, include_fingers=include_fingers)
             # Apply 180 rotation to hip if enabled
             if self.rotate_180:
                 rotate_hip_180(context.active_object, self.axis, only_active_frame=self.only_active_frame, current_frame=current_frame)
         elif self.axis == 'XY':
-            mirror_action(context.active_object.animation_data.action, axis='X', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space)
-            mirror_action(context.active_object.animation_data.action, axis='Y', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space)
+            mirror_action(context.active_object.animation_data.action, axis='X', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space, include_fingers=include_fingers)
+            mirror_action(context.active_object.animation_data.action, axis='Y', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space, include_fingers=include_fingers)
             # Apply 180 rotation to hip if enabled (for each axis)
             if self.rotate_180:
                 rotate_hip_180(context.active_object, 'X', only_active_frame=self.only_active_frame, current_frame=current_frame)
                 rotate_hip_180(context.active_object, 'Y', only_active_frame=self.only_active_frame, current_frame=current_frame)
         elif self.axis == 'XZ':
-            mirror_action(context.active_object.animation_data.action, axis='X', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space)
-            mirror_action(context.active_object.animation_data.action, axis='Z', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space)
+            mirror_action(context.active_object.animation_data.action, axis='X', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space, include_fingers=include_fingers)
+            mirror_action(context.active_object.animation_data.action, axis='Z', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space, include_fingers=include_fingers)
             # Apply 180 rotation to hip if enabled (for each axis)
             if self.rotate_180:
                 rotate_hip_180(context.active_object, 'X', only_active_frame=self.only_active_frame, current_frame=current_frame)
                 rotate_hip_180(context.active_object, 'Z', only_active_frame=self.only_active_frame, current_frame=current_frame)
         elif self.axis == 'YZ':
-            mirror_action(context.active_object.animation_data.action, axis='Y', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space)
-            mirror_action(context.active_object.animation_data.action, axis='Z', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space)
+            mirror_action(context.active_object.animation_data.action, axis='Y', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space, include_fingers=include_fingers)
+            mirror_action(context.active_object.animation_data.action, axis='Z', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space, include_fingers=include_fingers)
             # Apply 180 rotation to hip if enabled (for each axis)
             if self.rotate_180:
                 rotate_hip_180(context.active_object, 'Y', only_active_frame=self.only_active_frame, current_frame=current_frame)
                 rotate_hip_180(context.active_object, 'Z', only_active_frame=self.only_active_frame, current_frame=current_frame)
         elif self.axis == 'XYZ':
-            mirror_action(context.active_object.animation_data.action, axis='X', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space)
-            mirror_action(context.active_object.animation_data.action, axis='Y', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space)
-            mirror_action(context.active_object.animation_data.action, axis='Z', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space)
+            mirror_action(context.active_object.animation_data.action, axis='X', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space, include_fingers=include_fingers)
+            mirror_action(context.active_object.animation_data.action, axis='Y', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space, include_fingers=include_fingers)
+            mirror_action(context.active_object.animation_data.action, axis='Z', selected_bones_only=self.selected_bones_only, context=context, only_active_frame=self.only_active_frame, mirror_space=mirror_space, include_fingers=include_fingers)
             # Apply 180 rotation to hip if enabled (for each axis)
             if self.rotate_180:
                 rotate_hip_180(context.active_object, 'X', only_active_frame=self.only_active_frame, current_frame=current_frame)

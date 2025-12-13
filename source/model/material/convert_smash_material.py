@@ -336,3 +336,42 @@ def has_prm_texture(material: Material) -> bool:
         if texture.param_id_name == ParamId.Texture6.name and texture.image:
             return True
     return False
+
+def is_converted_to_principled(material: Material) -> bool:
+    """Check if a Smash material has been converted to Principled BSDF (nodes cleared/replaced)"""
+    if not has_smash_material_data(material):
+        return False
+    
+    if not material.use_nodes or not material.node_tree:
+        return False
+    
+    # Check if the current node tree has the "Converted from" label on a Principled BSDF
+    for node in material.node_tree.nodes:
+        if node.type == 'BSDF_PRINCIPLED':
+            if 'Converted from' in node.label:
+                return True
+    
+    return False
+
+def revert_to_smash_material(operator: Operator, material: Material):
+    """
+    Revert a converted Principled BSDF material back to the original Smash Ultimate material.
+    Uses the preserved sub_matl_data to rebuild the Smash material node tree.
+    """
+    if not has_smash_material_data(material):
+        operator.report({'ERROR'}, f"Material '{material.name}' does not have Smash Ultimate material data")
+        return False
+    
+    # Import the function to rebuild the Smash material node tree
+    from .create_blender_materials_from_matl import setup_blender_material_node_tree, setup_blender_material_settings
+    
+    try:
+        # Rebuild the Smash material node tree from sub_matl_data
+        setup_blender_material_node_tree(material)
+        setup_blender_material_settings(material)
+        
+        operator.report({'INFO'}, f"Successfully reverted material '{material.name}' to Smash Ultimate material")
+        return True
+    except Exception as e:
+        operator.report({'ERROR'}, f"Failed to revert material '{material.name}': {str(e)}")
+        return False
