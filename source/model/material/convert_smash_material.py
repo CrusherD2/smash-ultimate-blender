@@ -1,7 +1,7 @@
 import bpy
 import tempfile
 import os
-from bpy.types import ShaderNode, ShaderNodeTexImage, ShaderNodeBsdfPrincipled, ShaderNodeOutputMaterial, ShaderNodeSeparateRGB, ShaderNodeNormalMap, Material, Operator
+from bpy.types import ShaderNode, ShaderNodeTexImage, ShaderNodeBsdfPrincipled, ShaderNodeOutputMaterial, ShaderNodeNormalMap, Material, Operator
 from ....dependencies import ssbh_data_py
 
 ParamId = ssbh_data_py.matl_data.ParamId

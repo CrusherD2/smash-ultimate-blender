@@ -1057,8 +1057,8 @@ def process_mesh(operator: Operator, context: Context, mesh_object_copy: Object,
             dest_bm.to_mesh(dest_obj.data)
         dest_bm.clear()
         dest_obj.data.update()
-        # Check if the mesh has material slots before trying to access them
-        if len(dest_obj.material_slots) > 0:
+        # Check if the mesh has a valid material slot for this index before trying to access it
+        if material_index < len(dest_obj.material_slots):
             mat = dest_obj.material_slots[material_index].material
             dest_obj.data.materials.clear()
             dest_obj.data.materials.append(mat)
