@@ -219,6 +219,7 @@ def create_master_shader():
     cv11_group_input.label = 'CV 11 (Fake SSS Color)'
 
     separate_prm_r: ShaderNodeSeparateColor = inner_nodes.new('ShaderNodeSeparateColor')
+    separate_prm_r.mode = 'RGB'
     separate_prm_r.name = 'separate_prm_r'
     separate_prm_r.label = 'Separate PRM R'
 
@@ -228,6 +229,7 @@ def create_master_shader():
     fake_sss_factor.operation = 'MULTIPLY'
 
     cv11_combine: ShaderNodeCombineColor = inner_nodes.new('ShaderNodeCombineColor')
+    cv11_combine.mode = 'RGB'
     cv11_combine.name = 'cv11_combine'
     cv11_combine.label = 'CV 11 RGB from X,Y,Z'
 
@@ -252,6 +254,7 @@ def create_master_shader():
     cv13_group_input.label = 'CV 13 (Diffuse Color Scale) Input'
 
     cv13_combine = inner_nodes.new('ShaderNodeCombineColor')
+    cv13_combine.mode = 'RGB'
     cv13_combine.name = 'cv13_combine'
     cv13_combine.label = 'CV 13 Combine'
 
@@ -306,6 +309,7 @@ def create_master_shader():
     prm_metal_minimum.operation = 'MINIMUM'
 
     prm_separate_prm_rgb = inner_nodes.new('ShaderNodeSeparateColor')
+    prm_separate_prm_rgb.mode = 'RGB'
     prm_separate_prm_rgb.name = 'prm_separate_prm_rgb'
     prm_separate_prm_rgb.label = 'Separate PRM RGB'
 
@@ -336,10 +340,12 @@ def create_master_shader():
     nor_group_input.label = 'NOR Group Input'
 
     nor_separate_rgb = inner_nodes.new('ShaderNodeSeparateColor')
+    nor_separate_rgb.mode = 'RGB'
     nor_separate_rgb.name = 'nor_separate_rgb'
     nor_separate_rgb.label = 'Separate NOR RGB'
 
     nor_combine_rgb = inner_nodes.new('ShaderNodeCombineColor')
+    nor_combine_rgb.mode = 'RGB'
     nor_combine_rgb.name = 'nor_combine_rgb'
     nor_combine_rgb.label = 'Combine R + G'
     nor_combine_rgb.inputs['Blue'].default_value = 1.0

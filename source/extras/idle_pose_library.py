@@ -51,8 +51,8 @@ def apply_pose_with_options(context, pose_data_str, include_trans=True, mirrored
     
     try:
         # Prepare bone hierarchy order to process parent bones before their children
-        from ..anim.import_anim import get_heirarchy_order
-        reordered_bones = get_heirarchy_order(list(armature.pose.bones))
+        from ..anim.import_anim import get_hierarchy_order
+        reordered_bones = get_hierarchy_order(list(armature.pose.bones))
         
         # Get the stored pose data
         pose_data = json.loads(pose_data_str)

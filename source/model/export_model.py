@@ -1000,7 +1000,7 @@ def process_mesh(operator: Operator, context: Context, mesh_object_copy: Object,
 
     # Pad to 4 components for fitting in the color attribute.
     loop_normals = loop_normals.reshape((-1, 3))
-    loop_normals = np.append(loop_normals, np.zeros((loop_normals.shape[0], 1), dtype=np.float32), axis=1)
+    loop_normals = np.append(loop_normals, np.zeros((loop_normals.shape[0],1)), axis=1)
     loop_normals = loop_normals.flatten()
 
     # Transfer the original normals to a custom attribute.
@@ -1057,8 +1057,8 @@ def process_mesh(operator: Operator, context: Context, mesh_object_copy: Object,
             dest_bm.to_mesh(dest_obj.data)
         dest_bm.clear()
         dest_obj.data.update()
-        # Check if the mesh has a valid material slot for this index before trying to access it
-        if material_index < len(dest_obj.material_slots):
+        # Check if the mesh has material slots before trying to access them
+        if len(dest_obj.material_slots) > 0:
             mat = dest_obj.material_slots[material_index].material
             dest_obj.data.materials.clear()
             dest_obj.data.materials.append(mat)
@@ -1183,7 +1183,7 @@ def make_mesh_object(operator, context, mesh: bpy.types.Object, group_name, i, m
     position0 = ssbh_data_py.mesh_data.AttributeData('Position0')
 
     # TODO: Is there a better way to account for the change of coordinates?
-    axis_correction = np.array(Matrix.Rotation(math.radians(90), 3, 'X'), dtype=np.float32)
+    axis_correction = np.array(Matrix.Rotation(math.radians(90), 3, 'X'))
 
     # For example, vertices is a bpy_prop_collection of MeshVertex, which has a "co" attribute for position.
     positions = np.zeros(len(mesh_data.vertices) * 3, dtype=np.float32)
@@ -1206,7 +1206,7 @@ def make_mesh_object(operator, context, mesh: bpy.types.Object, group_name, i, m
 
     # Pad normals to 4 components instead of 3 components.
     # This actually results in smaller file sizes since HalFloat4 is smaller than Float3.
-    normals = np.append(normals, np.zeros((normals.shape[0], 1), dtype=np.float32), axis=1)
+    normals = np.append(normals, np.zeros((normals.shape[0],1)), axis=1)
             
     normal0.data = normals
     ssbh_mesh_object.normals = [normal0]
@@ -1452,7 +1452,7 @@ def make_ssbh_modl_data(operator, context, group_name_to_unprocessed_meshes_to_e
     return ssbh_modl_data
 
 
-def get_smash_transform(m) -> np.ndarray:
+def get_smash_transform(m) -> Matrix:
     # This is the inverse of the get_blender_transform permutation matrix.
     # https://en.wikipedia.org/wiki/Matrix_similarity
     p = Matrix([
@@ -1462,16 +1462,16 @@ def get_smash_transform(m) -> np.ndarray:
         [0, 0, 0, 1]
     ])
     # Perform the transformation m in Blender's basis and convert back to Ultimate.
-    return np.array((p @ m @ p.inverted()).transposed(), dtype=np.float32)
+    return (p @ m @ p.inverted()).transposed()
 
 
-def get_smash_root_transform(bone: bpy.types.EditBone) -> np.ndarray:
+def get_smash_root_transform(bone: bpy.types.EditBone) -> Matrix:
     bone.transform(Matrix.Rotation(math.radians(-90), 4, 'X'))
     bone.transform(Matrix.Rotation(math.radians(90), 4, 'Z'))
     unreoriented_matrix = get_smash_transform(bone.matrix)
     bone.transform(Matrix.Rotation(math.radians(-90), 4, 'Z'))
     bone.transform(Matrix.Rotation(math.radians(90), 4, 'X'))
-    return np.array(unreoriented_matrix, dtype=np.float32)
+    return unreoriented_matrix
 
 def read_vanilla_nusktb(path, mode):
     if not path:
@@ -1489,10 +1489,12 @@ def read_vanilla_nusktb(path, mode):
 def get_ssbh_bone(blender_bone: bpy.types.EditBone, parent_index):
     if blender_bone.parent:
         unreoriented_matrix = get_smash_transform(blender_bone.parent.matrix.inverted() @ blender_bone.matrix)
-        return ssbh_data_py.skel_data.BoneData(blender_bone.name, unreoriented_matrix, parent_index)
+        m = list(list(r) for r in unreoriented_matrix)
+        #return ssbh_data_py.skel_data.BoneData(blender_bone.name, unreoriented_matrix, parent_index)
+        return ssbh_data_py.skel_data.BoneData(blender_bone.name, m, parent_index)
     else:
-        m = get_smash_root_transform(blender_bone)
-        print(m.shape)
+        m = list(list(r) for r in get_smash_root_transform(blender_bone))
+        #return ssbh_data_py.skel_data.BoneData(blender_bone.name, get_smash_root_transform(blender_bone), None)
         return ssbh_data_py.skel_data.BoneData(blender_bone.name, m, None)
     
 def get_parent_first_ordered_bones(arma: bpy.types.Object) -> list[bpy.types.EditBone]:

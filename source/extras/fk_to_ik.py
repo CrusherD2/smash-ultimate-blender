@@ -3,6 +3,8 @@ import mathutils
 from mathutils import Vector, Matrix
 import math
 
+from ..anim.fcurve_compat import get_fcurves, remove_fcurve
+
 # Function to invoke the position matching dialog that can be imported by other scripts
 def invoke_position_match_dialog():
     bpy.ops.sub.fk_to_ik_transfer('INVOKE_DEFAULT')
@@ -546,7 +548,7 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
         
         # Find all FCurves associated with the knee bones
         fcurves_to_process = []
-        for fcurve in action.fcurves:
+        for fcurve in get_fcurves(action):
             # Parse the data path to check if it belongs to a knee bone
             if fcurve.data_path.startswith('pose.bones["') and any(bone_name in fcurve.data_path for bone_name in bone_names):
                 fcurves_to_process.append(fcurve)
@@ -627,7 +629,7 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
             
             # Find all FCurves associated with the foot bones and remove them
             fcurves_to_remove = []
-            for fcurve in action.fcurves:
+            for fcurve in get_fcurves(action):
                 # Parse the data path to check if it belongs to a foot bone
                 if fcurve.data_path.startswith('pose.bones["') and any(bone_name in fcurve.data_path for bone_name in bone_names):
                     fcurves_to_remove.append(fcurve)
@@ -635,7 +637,7 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
             
             # Remove the FCurves entirely
             for fcurve in fcurves_to_remove:
-                action.fcurves.remove(fcurve)
+                remove_fcurve(action, fcurve)
             
             # Report the number of keyframes removed
             if removed_count > 0:

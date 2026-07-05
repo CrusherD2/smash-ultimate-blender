@@ -256,28 +256,8 @@ class SUB_PT_misc_utilities(Panel):
             else:
                 row.enabled = False
                 row.operator("sub.convert_shape_keys_to_meshes", text="Convert Shape Keys to Meshes (Object Mode Only)")
-
-        # Add renaming tools operators (only available in Object mode)
-        layout.separator()
-        box = layout.box()
-        box.label(text="Renaming Tools")
-
-        # Rename Materials to Mesh button
-        row = box.row(align=True)
-        if context.mode == 'OBJECT':
-            row.operator("sub.rename_materials_to_mesh", text="Rename Materials to Mesh")
-        else:
-            row.enabled = False
-            row.operator("sub.rename_materials_to_mesh", text="Rename Materials to Mesh (Object Mode Only)")
-
-        # Rename Textures to Material button
-        row = box.row(align=True)
-        if context.mode == 'OBJECT':
-            row.operator("sub.rename_textures_to_material", text="Rename Textures to Material")
-        else:
-            row.enabled = False
-            row.operator("sub.rename_textures_to_material", text="Rename Textures to Material (Object Mode Only)")
-
+        
+    
         
 class SUB_OP_mirror_vertex_groups(bpy.types.Operator):
     bl_idname = "sub.mirror_vertex_groups"
@@ -406,4 +386,6 @@ def unregister():
     bpy.utils.unregister_class(SUB_OP_mirror_vertex_groups)
     bpy.utils.unregister_class(SUB_PT_misc_utilities)
     bpy.utils.unregister_class(SUB_PT_animation_tools)
-
+        
+    
+        
