@@ -1208,7 +1208,7 @@ def make_mesh_object(operator, context, mesh: bpy.types.Object, group_name, i, m
     # This actually results in smaller file sizes since HalFloat4 is smaller than Float3.
     normals = np.append(normals, np.zeros((normals.shape[0],1)), axis=1)
             
-    normal0.data = normals
+    normal0.data = normals.astype(np.float32)
     ssbh_mesh_object.normals = [normal0]
 
     # Export Weights
@@ -1491,11 +1491,11 @@ def get_ssbh_bone(blender_bone: bpy.types.EditBone, parent_index):
         unreoriented_matrix = get_smash_transform(blender_bone.parent.matrix.inverted() @ blender_bone.matrix)
         m = list(list(r) for r in unreoriented_matrix)
         #return ssbh_data_py.skel_data.BoneData(blender_bone.name, unreoriented_matrix, parent_index)
-        return ssbh_data_py.skel_data.BoneData(blender_bone.name, m, parent_index)
+        return ssbh_data_py.skel_data.BoneData(blender_bone.name, np.array(m, dtype=np.float32), parent_index)
     else:
         m = list(list(r) for r in get_smash_root_transform(blender_bone))
         #return ssbh_data_py.skel_data.BoneData(blender_bone.name, get_smash_root_transform(blender_bone), None)
-        return ssbh_data_py.skel_data.BoneData(blender_bone.name, m, None)
+        return ssbh_data_py.skel_data.BoneData(blender_bone.name, np.array(m, dtype=np.float32), None)
     
 def get_parent_first_ordered_bones(arma: bpy.types.Object) -> list[bpy.types.EditBone]:
     ''' Edit Bones are not guaranteed to appear in such a way where the child appears after its parent

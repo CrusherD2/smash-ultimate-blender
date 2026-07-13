@@ -712,7 +712,9 @@ def attach_armature_create_vertex_groups(mesh_obj, skel, armature, ssbh_mesh_obj
             else:
                 vertex_group = mesh_obj.vertex_groups.new(name=parent_bone.name)
 
-            vertex_group.add(ssbh_mesh_object.vertex_indices, 1.0, 'REPLACE')
+            # VertexGroup.add() requires plain Python ints, but ssbh_data_py's
+            # use_numpy=True mode returns vertex_indices as a numpy uint32 array.
+            vertex_group.add([int(i) for i in ssbh_mesh_object.vertex_indices], 1.0, 'REPLACE')
         else:
             # Set the vertex skin weights for each bone.
             # TODO: Is there a faster way than setting weights per vertex?
@@ -725,7 +727,7 @@ def attach_armature_create_vertex_groups(mesh_obj, skel, armature, ssbh_mesh_obj
                     vertex_group = mesh_obj.vertex_groups.new(name=influence.bone_name)
 
                 for w in influence.vertex_weights:
-                    vertex_group.add([w.vertex_index], w.vertex_weight, 'REPLACE')
+                    vertex_group.add([int(w.vertex_index)], w.vertex_weight, 'REPLACE')
 
         # Convert from Y up to Z up.
         mesh_obj.data.transform(Matrix.Rotation(math.radians(90), 4, 'X'))
