@@ -188,7 +188,7 @@ class SelectConstrainedControls(bpy.types.Operator):
 
         if self.select_type == 'constr':
             for pb in bone_utils.get_constrained_controls(ob, unselect=True, use_deform=not self.skip_deform):
-                pb.bone.select = bool(pb.custom_shape) if self.has_shape else True
+                pb.select = bool(pb.custom_shape) if self.has_shape else True
 
         elif self.select_type == 'anim':
             if not ob.animation_data:
@@ -2393,7 +2393,7 @@ class BakeConstrainedActions(bpy.types.Operator):
             for pb in bone_utils.get_constrained_controls(ob, unselect=True, use_deform=not self.exclude_deform):
                 
                 if pb.name + "_RET" in trg_ob.data.bones:
-                    pb.bone.select = True
+                    pb.select = True
                     constr_bone_names.append(pb.name)
 
             for action in list(bpy.data.actions):  # convert to list beforehand to avoid picking new actions

@@ -16,6 +16,7 @@ from pathlib import Path
 
 from ...dependencies import ssbh_data_py
 from .import_anim import get_hierarchy_order
+from .fcurve_compat import get_fcurves
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -451,8 +452,9 @@ class SUB_OP_batch_export_anim(Operator):
     
     def find_last_keyframe(self, action):
         last_frame = 1
-        if action.fcurves:
-            for fcurve in action.fcurves:
+        fcurves = get_fcurves(action)
+        if fcurves:
+            for fcurve in fcurves:
                 for keyframe in fcurve.keyframe_points:
                     if keyframe.co[0] > last_frame:
                         last_frame = int(keyframe.co[0])
