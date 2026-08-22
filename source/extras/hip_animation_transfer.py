@@ -1,6 +1,8 @@
 import bpy
 from bpy.types import Operator
 
+from ..anim.fcurve_compat import get_fcurves, new_fcurve, remove_fcurve
+
 class SUB_OP_transfer_hip_animation(Operator):
     bl_idname = "sub.transfer_hip_animation"
     bl_label = "Transfer Hip Animation"
@@ -46,7 +48,7 @@ class SUB_OP_transfer_hip_animation(Operator):
         hip_x_fcurve = None
         hip_path = f'pose.bones["{hip_bone.name}"].location'
         
-        for fc in action.fcurves:
+        for fc in get_fcurves(action):
             if fc.data_path == hip_path and fc.array_index == 0:  # X location
                 hip_x_fcurve = fc
                 break
@@ -79,13 +81,13 @@ class SUB_OP_transfer_hip_animation(Operator):
         trans_z_fcurve = None
         trans_path = f'pose.bones["{trans_bone.name}"].location'
         
-        for fc in action.fcurves:
+        for fc in get_fcurves(action):
             if fc.data_path == trans_path and fc.array_index == 2:  # Z location
                 trans_z_fcurve = fc
                 break
         
         if not trans_z_fcurve:
-            trans_z_fcurve = action.fcurves.new(trans_path, index=2)
+            trans_z_fcurve = new_fcurve(action, trans_path, index=2)
         else:
             # Clear existing keyframes
             trans_z_fcurve.keyframe_points.clear()
@@ -99,7 +101,7 @@ class SUB_OP_transfer_hip_animation(Operator):
             kp.interpolation = interpolation
         
         # Remove hip X keyframes
-        action.fcurves.remove(hip_x_fcurve)
+        remove_fcurve(action, hip_x_fcurve)
         
         # Set hip X to 0 and keyframe it on frame 1
         hip_bone.location[0] = 0

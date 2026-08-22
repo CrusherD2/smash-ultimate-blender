@@ -1040,7 +1040,7 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
         
         # Select pose bones for baking
         for pb in dest_armature.pose.bones:
-            pb.bone.select = True
+            pb.select = True
         
         # Get list of actions to bake - those that belong to the SOURCE armature
         actions_to_bake = []
@@ -1169,7 +1169,7 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
             constr_bone_names = []
             for pb in bone_utils.get_constrained_controls(ob, unselect=True, use_deform=not self.exclude_deform):
                 if pb.name + "_RET" in trg_ob.data.bones:
-                    pb.bone.select = True
+                    pb.select = True
                     constr_bone_names.append(pb.name)
             
             for action in list(bpy.data.actions):

@@ -4,6 +4,8 @@ from bpy.props import EnumProperty, BoolProperty
 import logging
 import mathutils
 
+from ..anim.fcurve_compat import get_fcurves, new_fcurve, find_fcurve, remove_fcurve
+
 # Set up logging
 logger = logging.getLogger(__name__)
 
@@ -194,7 +196,7 @@ def should_exclude_bone_from_mirroring(bone_name, armature=None, include_fingers
 
 def mirror_action(act, axis='X', selected_bones_only=False, context=None, only_active_frame=False, mirror_space='LOCAL', include_fingers=True):
     
-    if not (act and act.fcurves):
+    if not (act and get_fcurves(act)):
         print("No Keyframes")
         return
     
@@ -231,7 +233,7 @@ def mirror_action(act, axis='X', selected_bones_only=False, context=None, only_a
     
     # create name map
     # strip attribute suffix eg. 'pose.bones["root"].location' -> 'pose.bones["root"]'
-    bone_names = {fc.data_path.rsplit('.', 1)[0] for fc in act.fcurves if '.' in fc.data_path}
+    bone_names = {fc.data_path.rsplit('.', 1)[0] for fc in get_fcurves(act) if '.' in fc.data_path}
     mirror_map = create_mirror_map(bone_names)
 
     if axis == 'X':
@@ -248,7 +250,7 @@ def mirror_action(act, axis='X', selected_bones_only=False, context=None, only_a
         # Step 1: Collect all source data first to prevent overwriting issues
         keyframe_data = []  # List of (source_path, target_path, array_index, value, left_handle, right_handle)
         
-        for fc in act.fcurves:
+        for fc in get_fcurves(act):
             data_path = fc.data_path
             array_index = fc.array_index
             path, _dot, attribute = data_path.rpartition('.')
@@ -318,13 +320,13 @@ def mirror_action(act, axis='X', selected_bones_only=False, context=None, only_a
         for source_path, target_path, array_index, value, left_handle, right_handle in keyframe_data:
             # Find or create target fcurve
             target_fc = None
-            for fc_check in act.fcurves:
+            for fc_check in get_fcurves(act):
                 if fc_check.data_path == target_path and fc_check.array_index == array_index:
                     target_fc = fc_check
                     break
             
             if target_fc is None:
-                target_fc = act.fcurves.new(target_path, index=array_index)
+                target_fc = new_fcurve(act, target_path, index=array_index)
             
             # Set keyframe at current frame
             target_fc.keyframe_points.insert(current_frame, value)
@@ -342,7 +344,7 @@ def mirror_action(act, axis='X', selected_bones_only=False, context=None, only_a
         fcurve_data = []  # List of (target_path, array_index, keyframe_values, action_group)
         fcurves_to_remove = []  # Track which fcurves to remove
         
-        for fc in act.fcurves:
+        for fc in get_fcurves(act):
             data_path = fc.data_path
             array_index = fc.array_index
 
@@ -413,18 +415,18 @@ def mirror_action(act, axis='X', selected_bones_only=False, context=None, only_a
         
         # Step 2: Remove all source fcurves
         for fc in fcurves_to_remove:
-            act.fcurves.remove(fc)
+            remove_fcurve(act, fc)
         
         # Step 3: Create new fcurves with mirrored data
         for target_path, array_index, keyframe_values, action_group_name in fcurve_data:
             # Check if target fcurve already exists (can happen with selected_bones_only 
             # when target bone wasn't selected but source was)
-            existing_fc = act.fcurves.find(target_path, index=array_index)
+            existing_fc = find_fcurve(act, target_path, index=array_index)
             if existing_fc:
-                act.fcurves.remove(existing_fc)
+                remove_fcurve(act, existing_fc)
             
             # Create new fcurve
-            new_fc = act.fcurves.new(target_path, index=array_index, action_group=action_group_name)
+            new_fc = new_fcurve(act, target_path, index=array_index, action_group=action_group_name)
             
             # Add all keyframes
             for frame, value, left_x, left_y, right_x, right_y, interpolation in keyframe_values:
@@ -500,7 +502,7 @@ def rotate_hip_180(armature, axis, only_active_frame=False, current_frame=None):
         
         # Find all frames with keyframes for the hip bone
         hip_frames = set()
-        for fcurve in action.fcurves:
+        for fcurve in get_fcurves(action):
             if f'pose.bones["{hip_bone.name}"]' in fcurve.data_path and 'rotation' in fcurve.data_path:
                 for keyframe in fcurve.keyframe_points:
                     hip_frames.add(int(keyframe.co[0]))
@@ -610,7 +612,7 @@ class SUB_OT_mirror_action(Operator):
         if not context.active_object.animation_data.action:
             self.report({"ERROR"}, "No Action assigned")
             return {'CANCELLED'}
-        if not context.active_object.animation_data.action.fcurves:
+        if not get_fcurves(context.active_object.animation_data.action):
             self.report({"ERROR"}, "No Keyframes")
             return {'CANCELLED'}
         

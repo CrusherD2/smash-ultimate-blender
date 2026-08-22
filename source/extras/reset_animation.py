@@ -3,6 +3,8 @@ from bpy.types import Operator
 from bpy.props import BoolProperty, EnumProperty
 import logging
 
+from ..anim.fcurve_compat import get_fcurves
+
 # Set up logging
 logger = logging.getLogger(__name__)
 
@@ -42,7 +44,7 @@ class SUB_OT_reset_bone_locations(Operator):
             bone_names = {bone.name for bone in armature.pose.bones}
             for action in bpy.data.actions:
                 # Check if any fcurve in the action is for a bone in this armature
-                for fcurve in action.fcurves:
+                for fcurve in get_fcurves(action):
                     if fcurve.data_path.startswith('pose.bones["'):
                         bone_name = fcurve.data_path.split('"')[1]
                         if bone_name in bone_names:
@@ -99,7 +101,7 @@ class SUB_OT_reset_bone_locations(Operator):
         location_fcurves = []
         scale_fcurves = []
         selected_bone_names = [bone.name for bone in selected_bones]
-        for fcurve in action.fcurves:
+        for fcurve in get_fcurves(action):
             if "pose.bones" not in fcurve.data_path:
                 continue
             bone_name = fcurve.data_path.split('"')[1]
@@ -226,7 +228,7 @@ class SUB_OT_reset_bone_locations(Operator):
         
         print(f"Looking for fcurves for bones: {bone_names}")
         
-        for fcurve in action.fcurves:
+        for fcurve in get_fcurves(action):
             # Check if this fcurve belongs to one of the specified bones
             if fcurve.data_path.startswith('pose.bones["'):
                 # Extract bone name from data path
