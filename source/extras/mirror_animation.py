@@ -8,8 +8,10 @@ from ..anim.fcurve_compat import get_fcurves, new_fcurve, find_fcurve, remove_fc
 from ..blender_compat import is_armature_bone_selected, is_pose_bone_selected
 from .anim_flip import (
     collect_excluded_bone_names,
+    collect_unchecked_custom_mirror_bones,
     create_mirror_map,
     extract_bone_name_from_path,
+    find_custom_mirror_bones,
     keyframe_pose_bones,
     load_smash_pose_cache,
     mirror_evaluated_pose,
@@ -168,6 +170,11 @@ def mirror_action_smash_y(act, selected_bones_only=False, context=None, only_act
 
     armature = context.active_object
     excluded_bones = collect_excluded_bone_names(armature, include_fingers=include_fingers)
+    ssp = getattr(context.scene, 'sub_scene_properties', None)
+    if ssp is not None:
+        excluded_bones |= collect_unchecked_custom_mirror_bones(
+            armature, getattr(ssp, 'mirror_custom_bones', [])
+        )
     target_bones = None
     if selected_bones_only:
         target_bones = _selected_pose_bone_names(context)
@@ -241,6 +248,13 @@ def mirror_action(act, axis='X', selected_bones_only=False, context=None, only_a
     
     # Get armature for bone exclusion checks
     armature = context.active_object if context and context.active_object and context.active_object.type == 'ARMATURE' else None
+    custom_skip = set()
+    if context and armature is not None:
+        ssp = getattr(context.scene, 'sub_scene_properties', None)
+        if ssp is not None:
+            custom_skip = collect_unchecked_custom_mirror_bones(
+                armature, getattr(ssp, 'mirror_custom_bones', [])
+            )
     
     # Get object transformation matrix for global mirroring
     object_matrix = None
@@ -274,7 +288,10 @@ def mirror_action(act, axis='X', selected_bones_only=False, context=None, only_a
             bone_name = extract_bone_name_from_path(path)
             
             # Check if this bone should be excluded from mirroring
-            if bone_name and should_exclude_bone_from_mirroring(bone_name, armature, include_fingers):
+            if bone_name and (
+                should_exclude_bone_from_mirroring(bone_name, armature, include_fingers)
+                or bone_name in custom_skip
+            ):
                 continue
             
             # Determine target data path (mirrored bone)
@@ -355,7 +372,10 @@ def mirror_action(act, axis='X', selected_bones_only=False, context=None, only_a
             bone_name = extract_bone_name_from_path(path)
             
             # Check if this bone should be excluded from mirroring
-            if bone_name and should_exclude_bone_from_mirroring(bone_name, armature, include_fingers):
+            if bone_name and (
+                should_exclude_bone_from_mirroring(bone_name, armature, include_fingers)
+                or bone_name in custom_skip
+            ):
                 continue
             
             # Determine target path (mirrored bone)
@@ -685,6 +705,60 @@ class SUB_OT_mirror_action(Operator):
         return {'FINISHED'}
 
 
+class SUB_UL_mirror_custom_bones(bpy.types.UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        row = layout.row(align=True)
+        row.prop(item, "include", text="")
+        row.label(text=item.name, translate=False)
+
+
+class SUB_OT_find_custom_mirror_bones(Operator):
+    """List bones that are not part of a normal Smash Ultimate armature"""
+    bl_idname = "sub.find_custom_mirror_bones"
+    bl_label = "Find Custom Bones"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        armature = context.active_object
+        if not armature or armature.type != 'ARMATURE':
+            self.report({'WARNING'}, "Select an armature first")
+            return {'CANCELLED'}
+
+        ssp = context.scene.sub_scene_properties
+        previous = {item.name: item.include for item in ssp.mirror_custom_bones}
+        custom_names = find_custom_mirror_bones(armature)
+        ssp.mirror_custom_bones.clear()
+        for name in custom_names:
+            item = ssp.mirror_custom_bones.add()
+            item.name = name
+            item.include = previous.get(name, False)
+        ssp.mirror_custom_bones_index = 0
+        ssp.mirror_custom_armature_name = armature.name
+        if custom_names:
+            self.report({'INFO'}, f"Found {len(custom_names)} custom bone(s). Check the ones to mirror.")
+        else:
+            self.report({'INFO'}, "No custom bones found on this armature")
+        return {'FINISHED'}
+
+
+class SUB_OT_mirror_custom_bones_set_all(Operator):
+    """Check or uncheck every custom bone in the list"""
+    bl_idname = "sub.mirror_custom_bones_set_all"
+    bl_label = "Set All Custom Bones"
+    bl_options = {'REGISTER'}
+
+    include: BoolProperty(default=True)
+
+    def execute(self, context):
+        ssp = context.scene.sub_scene_properties
+        if not ssp.mirror_custom_bones:
+            self.report({'WARNING'}, "Find custom bones first")
+            return {'CANCELLED'}
+        for item in ssp.mirror_custom_bones:
+            item.include = self.include
+        return {'FINISHED'}
+
+
 #########################################################################################
 # REGISTER/UNREGISTER
 #########################################################################################
@@ -692,6 +766,9 @@ class SUB_OT_mirror_action(Operator):
 
 classes = (
     SUB_OT_mirror_action,
+    SUB_UL_mirror_custom_bones,
+    SUB_OT_find_custom_mirror_bones,
+    SUB_OT_mirror_custom_bones_set_all,
 )
 
 def register():

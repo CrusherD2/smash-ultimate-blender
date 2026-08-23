@@ -154,6 +154,28 @@ class SUB_PT_animation_tools(Panel):
             # Mirror space option
             col.prop(ssp, "mirror_space", text="Space")
             
+            col.separator()
+            col.operator("sub.find_custom_mirror_bones", text="Find Custom Bones")
+            if ssp.mirror_custom_bones:
+                included = sum(1 for item in ssp.mirror_custom_bones if item.include)
+                col.label(text=f"Custom bones: {included}/{len(ssp.mirror_custom_bones)} set to mirror")
+                col.template_list(
+                    "SUB_UL_mirror_custom_bones",
+                    "",
+                    ssp,
+                    "mirror_custom_bones",
+                    ssp,
+                    "mirror_custom_bones_index",
+                    rows=6,
+                )
+                row = col.row(align=True)
+                op_all = row.operator("sub.mirror_custom_bones_set_all", text="Check All")
+                op_all.include = True
+                op_none = row.operator("sub.mirror_custom_bones_set_all", text="Uncheck All")
+                op_none.include = False
+            else:
+                col.label(text="Scan the armature to list extra bones")
+            
             # Add spacing between dropdown and button
             col.separator()
             

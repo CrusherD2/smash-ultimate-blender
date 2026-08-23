@@ -72,6 +72,19 @@ bpy.utils.register_class(ModelImportFile)
 bpy.utils.register_class(ModelImportItem)
 bpy.utils.register_class(AnimationImportFile)
 
+class MirrorCustomBoneItem(PropertyGroup):
+    name: StringProperty(
+        name="Bone Name",
+        description="Custom bone that is not part of a normal Smash Ultimate armature",
+        default=""
+    )
+    include: BoolProperty(
+        name="Mirror",
+        description="Mirror this custom bone",
+        default=False
+    )
+
+
 class UserPoseItem(PropertyGroup):
     name: StringProperty(
         name="Pose Name",
@@ -351,6 +364,20 @@ class SubSceneProperties(PropertyGroup):
             ('LOCAL', 'Local', "Mirror using local/bone coordinate space"),
             ('GLOBAL', 'Global', "Mirror using world/global coordinate space"),
         )
+    )
+    mirror_custom_bones: CollectionProperty(
+        name="Custom Mirror Bones",
+        description="Extra bones that are not part of a normal Smash armature",
+        type=MirrorCustomBoneItem
+    )
+    mirror_custom_bones_index: IntProperty(
+        name="Custom Mirror Bones Index",
+        default=0
+    )
+    mirror_custom_armature_name: StringProperty(
+        name="Custom Mirror List Source Armature",
+        description="Internal: armature the custom bone list was last scanned from",
+        default=""
     )
     mirror_include_fingers: BoolProperty(
         name="Include Fingers",

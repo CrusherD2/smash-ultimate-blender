@@ -307,6 +307,73 @@ def is_untouchable_mirror_bone(bone_name):
     )
 
 
+# Vanilla fighter body / system bones shared by a normal Smash Ultimate armature.
+_STANDARD_SMASH_BONES = frozenset({
+    'Trans', 'Rot', 'Throw', 'Have',
+    'Hip', 'HipN', 'Waist', 'Bust', 'Belly',
+    'Neck', 'Head', 'Face',
+    'ClavicleC', 'ClavicleL', 'ClavicleR',
+    'ShoulderL', 'ShoulderR',
+    'ArmL', 'ArmR', 'ElbowL', 'ElbowR',
+    'WristL', 'WristR', 'HandL', 'HandR',
+    'LegL', 'LegR', 'KneeL', 'KneeR',
+    'FootL', 'FootR', 'ToeL', 'ToeR', 'HeelL', 'HeelR',
+    'EyeL', 'EyeR',
+})
+_STANDARD_SMASH_PATTERN = re.compile(
+    r'^(Finger[LR]\d+|'
+    r'(Arm|Shoulder|Elbow|Wrist|Hand|Leg|Knee|Foot|Toe|Heel)[LR]\d*|'
+    r'Clavicle[CLR]\d*)$'
+)
+_STANDARD_SMASH_SUFFIXES = ('_null', '_eff', '_offset')
+_STANDARD_FACE_KEYWORDS = ('brow', 'lip', 'eye', 'nose', 'cheek', 'jaw', 'mouth', 'tooth', 'tongue')
+
+
+def is_standard_smash_bone(bone_name):
+    """True for a normal Smash fighter bone, including swing/helper/system extras."""
+    if not bone_name:
+        return False
+    if is_untouchable_mirror_bone(bone_name):
+        return True
+    base = bone_name
+    for suffix in _STANDARD_SMASH_SUFFIXES:
+        if base.endswith(suffix):
+            base = base[:-len(suffix)]
+            break
+    if base in _STANDARD_SMASH_BONES or _STANDARD_SMASH_PATTERN.match(base):
+        return True
+    if base == 'Face' or base.startswith('Face'):
+        return True
+    lower = base.lower()
+    return any(keyword in lower for keyword in _STANDARD_FACE_KEYWORDS)
+
+
+def find_custom_mirror_bones(armature):
+    """Bones on this armature that are not part of a normal Smash skeleton."""
+    if armature is None or getattr(armature, 'type', None) != 'ARMATURE':
+        return []
+    return sorted(
+        bone.name
+        for bone in armature.pose.bones
+        if not is_standard_smash_bone(bone.name)
+    )
+
+
+def collect_unchecked_custom_mirror_bones(armature, custom_items):
+    """
+    Custom bones to skip. Empty list means the user has not scanned yet,
+    so extra bones keep the previous default (they still get mirrored).
+    """
+    if not custom_items:
+        return set()
+    included = {item.name for item in custom_items if getattr(item, 'include', False)}
+    return {
+        name
+        for name in find_custom_mirror_bones(armature)
+        if name not in included
+    }
+
+
 def should_exclude_bone_from_mirroring(bone_name, armature=None, include_fingers=True):
     """Optional UX filters. Hip / Trans / root are never excluded."""
     if not bone_name:
