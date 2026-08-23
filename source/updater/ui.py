@@ -63,10 +63,9 @@ class SUB_PT_update_plugin(Panel):
         elif UPDATE_STATUS == "downloading":
             layout.row().label(text="Downloading update...", icon='IMPORT')
             # Progress bar
-            row = layout.row()
-            row.scale_y = 0.5
+            from ..blender_compat import draw_progress
             progress_text = f"Progress: {UPDATE_DOWNLOAD_PROGRESS:.1%}"
-            row.progress(factor=UPDATE_DOWNLOAD_PROGRESS, text=progress_text)
+            draw_progress(layout, UPDATE_DOWNLOAD_PROGRESS, text=progress_text)
             
         elif UPDATE_STATUS == "installing":
             layout.row().label(text="Installing update...", icon='FILE_REFRESH')

@@ -13,6 +13,11 @@ from .swing import sub_swing_data
 from .model.material import sub_matl_data
 from .model.skel import helper_bone_data
 
+
+def poll_armature_object(_self, obj):
+    return obj is not None and getattr(obj, 'type', None) == 'ARMATURE'
+
+
 def register():
     Armature.sub_anim_properties = PointerProperty(
         type=anim_data.SUB_PG_sub_anim_data
@@ -315,6 +320,23 @@ class SubSceneProperties(PropertyGroup):
         name="Model Tools Expanded",
         description="Whether the Model Tools section is expanded",
         default=False
+    )
+    roll_copy_source: PointerProperty(
+        name="Source",
+        description="Armature to copy roll values from",
+        type=Object,
+        poll=poll_armature_object,
+    )
+    roll_copy_target: PointerProperty(
+        name="Target",
+        description="Armature whose matching bone rolls will be changed",
+        type=Object,
+        poll=poll_armature_object,
+    )
+    roll_copy_selected_only: BoolProperty(
+        name="Selected Target Bones Only",
+        description="Only copy rolls for bones currently selected on the target armature",
+        default=False,
     )
     mirror_animation_expanded: BoolProperty(
         name="Mirror Animation Expanded",

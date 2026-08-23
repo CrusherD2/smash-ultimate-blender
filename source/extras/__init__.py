@@ -21,6 +21,7 @@ from . import user_poses
 # Import reset_animation module and ensure it's properly registered
 from . import reset_animation
 from . import mirror_animation
+from . import roll_copy
 
 # Import animation_scroll module
 from . import animation_scroll
@@ -32,6 +33,8 @@ def register():
     
     # Register mirror_animation
     mirror_animation.register()
+
+    roll_copy.register()
     
     # Register rename_utils
     rename_utils.register()
@@ -62,6 +65,8 @@ def unregister():
     # Unregister reset_animation
     reset_animation.unregister()
     
+    roll_copy.unregister()
+
     # Unregister mirror_animation
     mirror_animation.unregister()
     

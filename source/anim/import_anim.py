@@ -16,6 +16,8 @@ from bpy.props import IntProperty, StringProperty, BoolProperty, FloatProperty, 
 from bpy.types import Operator, Panel
 from mathutils import Matrix, Quaternion, Vector
 from ..model.import_model import get_blender_transform
+from ..blender_compat import assign_action, draw_progress
+from .fcurve_compat import new_fcurve
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -91,8 +93,7 @@ class SUB_OP_import_all_animations(bpy.types.Operator):
         else:
             # Progress phase
             layout.label(text=self.progress_text)
-            row = layout.row()
-            row.progress(factor=self.progress, type='BAR')
+            draw_progress(layout, self.progress)
             layout.label(text=f"Imported: {self.imported_count}/{anim_count}")
             
     def modal(self, context, event):
@@ -827,17 +828,9 @@ def import_model_anim(context: bpy.types.Context, filepath: str,
     if material_group:
         setup_material_drivers(arma)
 
-    # Assign actions at the end to ensure slots are assigned in Blender 4.4 or later.
-    arma.animation_data.action = bone_action
-    arma.data.animation_data.action = sap_action
-
-    # Assign the animation for Blender 5.0 or later.
-    # This requires the slots id type to match the target object type.
-    if len(bone_action.slots) > 0:
-        arma.animation_data.action_slot = bone_action.slots[0]
-
-    if len(sap_action.slots) > 0:
-        arma.data.animation_data.action_slot = sap_action.slots[0]
+    # Assign actions (and slots on Blender 4.4+ / 5.x).
+    assign_action(arma.animation_data, bone_action)
+    assign_action(arma.data.animation_data, sap_action)
 
 
 def get_raw_matrix(bone_to_node, bone, index, node) -> Matrix:
@@ -1236,21 +1229,4 @@ class SUB_OP_select_animation_folder(Operator):
 
 
 def create_fcurve(action, id_type: str, data_path: str, index: int = 0, action_group: str = '') -> bpy.types.FCurve:
-    # Blender 5.0 removes the legacy Action API.
-    if len(action.layers) == 0:
-        layer = action.layers.new("Layer")
-    else:
-        layer = action.layers[0]
-
-    if len(layer.strips) == 0:
-        strip = layer.strips.new(type="KEYFRAME")
-    else:
-        strip = layer.strips[0]
-
-    if len(action.slots) == 0:
-        slot = action.slots.new(id_type, name="Legacy Slot")
-    else:
-        slot = action.slots[0]
-
-    channelbag = strip.channelbag(slot, ensure=True)
-    return channelbag.fcurves.new(data_path, index=index, group_name=action_group)
+    return new_fcurve(action, data_path, index=index, action_group=action_group, id_type=id_type)

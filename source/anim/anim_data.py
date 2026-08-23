@@ -15,6 +15,8 @@ from bpy.props import (
     PointerProperty,
     FloatVectorProperty,)
 
+from .fcurve_compat import get_id_action_fcurves
+
 mat_sub_types = (
     ('VECTOR', 'Custom Vector', 'Custom Vector'),
     ('FLOAT', 'Custom Float', 'Custom Float'),
@@ -435,9 +437,8 @@ class SUB_OP_mat_track_remove(Operator):
         sap = context.object.data.sub_anim_properties
         amt = sap.mat_tracks[sap.active_mat_track_index]
         # Find matching Fcurve and Remove
-        try:
-            fcurves = context.object.data.animation_data.action.fcurves
-        except AttributeError:
+        fcurves = get_id_action_fcurves(context.object.data)
+        if fcurves is None:
             sap.mat_tracks.remove(sap.active_mat_track_index)
             i = sap.active_mat_track_index
             sap.active_mat_track_index = min(max(0,i-1),len(sap.mat_tracks))
@@ -448,7 +449,12 @@ class SUB_OP_mat_track_remove(Operator):
             if fc.data_path.startswith(f"sub_anim_properties.mat_tracks[{amti}]"):
                 fcurves.remove(fc)
         # The remaining materials with an index greater than this one must have all thier fcurves adjusted
-        fcurves = context.object.data.animation_data.action.fcurves
+        fcurves = get_id_action_fcurves(context.object.data)
+        if fcurves is None:
+            sap.mat_tracks.remove(sap.active_mat_track_index)
+            i = sap.active_mat_track_index
+            sap.active_mat_track_index = min(max(0,i-1),len(sap.mat_tracks))
+            return {'FINISHED'}
         for fc in fcurves:
             regex = r"sub_anim_properties\.mat_tracks\[(\d+)\](\.properties\[\d+\]\.\w+)"
             matches = re.match(regex, fc.data_path)
@@ -529,9 +535,8 @@ class SUB_OP_mat_property_remove(Operator):
     def execute(self, context):
         sap = context.object.data.sub_anim_properties
         amt = sap.mat_tracks[sap.active_mat_track_index]  
-        try:
-            fcurves = context.object.data.animation_data.action.fcurves
-        except AttributeError:
+        fcurves = get_id_action_fcurves(context.object.data)
+        if fcurves is None:
             amt.properties.remove(amt.active_property_index)
             i = amt.active_property_index
             amt.active_property_index = min(max(0,i-1), len(amt.properties)-1)
@@ -543,7 +548,12 @@ class SUB_OP_mat_property_remove(Operator):
             if fc.data_path.startswith(f"sub_anim_properties.mat_tracks[{amti}].properties[{api}]"):
                 fcurves.remove(fc)
         # The material's remaining properties' fcurves with indexes greater to this one must be decremented
-        fcurves = context.object.data.animation_data.action.fcurves
+        fcurves = get_id_action_fcurves(context.object.data)
+        if fcurves is None:
+            amt.properties.remove(amt.active_property_index)
+            i = amt.active_property_index
+            amt.active_property_index = min(max(0,i-1), len(amt.properties)-1)
+            return {'FINISHED'}
 
         for fc in fcurves:    
             regex = r"sub_anim_properties\.mat_tracks\[(\d+)\]\.properties\[(\d+)\](\.\w+)"
@@ -626,12 +636,8 @@ class SUB_OP_mat_property_shift(Operator):
         
         other_index = active_property_index-1 if self.shift_direction == 'UP' else active_property_index+1
             
-        # Getting fcurves without throwing an exception is hard, so rather than do 3 "is not None" checks do one "try"    
-        try:
-            fcurves = context.object.data.animation_data.action.fcurves
-        except AttributeError: # Theres no fcurves
-            pass
-        else: # Theres fcurves
+        fcurves = get_id_action_fcurves(context.object.data)
+        if fcurves is not None:
             swap_mat_property_fcurve_target_indices(fcurves, sap, active_property_index, other_index)
 
         active_mat.properties.move(active_property_index, other_index)
@@ -671,11 +677,8 @@ class SUB_OP_vis_entry_remove(Operator):
         sap = context.object.data.sub_anim_properties
         active_vis_track_index = sap.active_vis_track_index
         
-        try:
-            fcurves = context.object.data.animation_data.action.fcurves
-        except AttributeError:
-            pass
-        else:
+        fcurves = get_id_action_fcurves(context.object.data)
+        if fcurves is not None:
             fcurve_to_remove = fcurves.find(f'sub_anim_properties.vis_track_entries[{active_vis_track_index}].value')
             if fcurve_to_remove is not None:
                 fcurves.remove(fcurve_to_remove)
@@ -717,12 +720,8 @@ class SUB_OP_vis_entry_shift(Operator):
         
         other_index = active_vis_entry_index-1 if self.shift_direction == 'UP' else active_vis_entry_index+1
             
-        # Getting fcurves without throwing an exception is hard, so rather than do 3 "is not None" checks do one "try"    
-        try:
-            fcurves = context.object.data.animation_data.action.fcurves
-        except AttributeError: # Theres no fcurves
-            pass
-        else: # Theres fcurves
+        fcurves = get_id_action_fcurves(context.object.data)
+        if fcurves is not None:
             active_fcurve = fcurves.find(f"sub_anim_properties.vis_track_entries[{active_vis_entry_index}].value")
             other_fcurve = fcurves.find(f"sub_anim_properties.vis_track_entries[{other_index}].value")
             if active_fcurve is not None:

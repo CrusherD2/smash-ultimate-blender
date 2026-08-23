@@ -506,10 +506,8 @@ class SUB_OP_batch_export_anim(Operator):
             # --------------------------------------------------------------
             
             # Create export path with sanitized filename
-            safe_name = sanitize_filename(action_name)
+            safe_name = ensure_nuanmb_filename(sanitize_filename(action_name))
             filepath = os.path.join(self.directory, safe_name)
-            if not filepath.endswith('.nuanmb'):
-                filepath += '.nuanmb'
             
             # Determine last keyframe for this action if auto-range is enabled
             if self.use_auto_range:
@@ -577,6 +575,27 @@ def sanitize_filename(filename):
     for char in invalid_chars:
         filename = filename.replace(char, '_')
         
+    return filename
+
+
+def strip_nuanmb_suffix(name):
+    """Remove every trailing .nuanmb so imported action names do not stack the extension."""
+    stripped = name
+    while stripped.lower().endswith('.nuanmb'):
+        stripped = stripped[:-7]
+    return stripped
+
+
+def ensure_nuanmb_filename(filename):
+    """Return a filename with exactly one .nuanmb suffix."""
+    return strip_nuanmb_suffix(filename) + '.nuanmb'
+
+
+def ensure_nuanmb_filepath(filepath):
+    directory, filename = os.path.split(filepath)
+    filename = ensure_nuanmb_filename(filename)
+    if directory:
+        return os.path.join(directory, filename)
     return filename
 
 class SUB_OP_anim_export(Operator):
@@ -661,8 +680,8 @@ class SUB_OP_anim_export(Operator):
         return True
 
     def invoke(self, context: Context, _event):
-        # Use the action name plus the extension
-        action_name = f"{context.active_object.animation_data.action.name}.nuanmb"
+        # Imported actions are already named *.nuanmb; do not add the suffix twice.
+        action_name = ensure_nuanmb_filename(context.active_object.animation_data.action.name)
         safe_name = sanitize_filename(action_name)
         
         # Set filepath
@@ -747,10 +766,8 @@ class SUB_OP_anim_export(Operator):
         # Clear transient preset flags
         ssp.anim_preset_force_override_translation = False
         
-        # Ensure filepath has .nuanmb extension
-        filepath = self.filepath
-        if not filepath.endswith('.nuanmb'):
-            filepath += '.nuanmb'
+        # Ensure filepath has exactly one .nuanmb extension
+        filepath = ensure_nuanmb_filepath(self.filepath)
 
         # Get the filename part without path
         filename = os.path.basename(filepath)
@@ -1295,18 +1312,3 @@ def export_camera_anim(context, operator, camera: bpy.types.Object, filepath, fi
     ssbh_anim_data.groups.append(camera_group)
 
     ssbh_anim_data.save(filepath)
-
-def get_fcurves(action):
-    if len(action.layers) > 0:
-        layer = action.layers[0]
-
-        if len(layer.strips) > 0:
-            strip = layer.strips[0]
-
-        if len(action.slots) > 0:
-            slot = action.slots[0]
-            
-            channelbag = strip.channelbag(slot, ensure=True)
-            return channelbag.fcurves
-
-    return []

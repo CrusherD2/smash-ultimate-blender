@@ -186,6 +186,9 @@ class SUB_PT_animation_tools(Panel):
             else:
                 row.operator("sub.invert_rotation_values", text="Invert Positive and Negative (Select Bones)")
 
+        row = layout.row(align=True)
+        row.operator("sub.remove_swing_bone_animation", text="Remove Animation from Swing Bones")
+
 class SUB_PT_misc_utilities(Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -256,6 +259,27 @@ class SUB_PT_misc_utilities(Panel):
             else:
                 row.enabled = False
                 row.operator("sub.convert_shape_keys_to_meshes", text="Convert Shape Keys to Meshes (Object Mode Only)")
+
+            col = box.column(align=True)
+            col.separator()
+            col.label(text="Roll Value Copier", icon="BONE_DATA")
+            col.prop(ssp, "roll_copy_source")
+            col.prop(ssp, "roll_copy_target")
+            col.prop(ssp, "roll_copy_selected_only")
+            button_row = box.row()
+            source = ssp.roll_copy_source
+            target = ssp.roll_copy_target
+            button_row.enabled = (
+                source is not None
+                and target is not None
+                and source != target
+                and source.type == "ARMATURE"
+                and target.type == "ARMATURE"
+            )
+            button_row.operator("sub.copy_bone_rolls", icon="DUPLICATE")
+            help_box = box.box()
+            help_box.label(text="Matches bone names exactly (case-sensitive).", icon="INFO")
+            help_box.label(text="Only roll values are changed.")
         
     
         

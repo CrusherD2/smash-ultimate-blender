@@ -1,6 +1,7 @@
 import bpy
 
 from ..anim.fcurve_compat import get_fcurves, remove_fcurve
+from ..blender_compat import set_pose_bone_select
 
 class SUB_OP_apply_ik_animation_operator(bpy.types.Operator):
     """Bake IK Animation to Original Bones and Remove IK Bones"""
@@ -18,9 +19,12 @@ class SUB_OP_apply_ik_animation_operator(bpy.types.Operator):
         # First, bake animation for all bones
         bpy.ops.object.mode_set(mode='POSE')
         
-        # Select all bones before baking
-        for bone in armature_object.pose.bones:
-            bone.bone.select = True
+        # Select all bones before baking (Bone.select is gone in Blender 5)
+        try:
+            bpy.ops.pose.select_all(action='SELECT')
+        except Exception:
+            for bone in armature_object.pose.bones:
+                set_pose_bone_select(bone, True)
             
         # Bake the animation
         frame_start = bpy.context.scene.frame_start
