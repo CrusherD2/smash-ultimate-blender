@@ -7,6 +7,7 @@ import time
 import numpy as np
 import cProfile
 import pstats
+import json
 import os
 from pathlib import Path
 
@@ -672,6 +673,7 @@ def import_model_anim(context: bpy.types.Context, filepath: str,
 
         # Reset all bones to rest pose before importing this animation
         reset_bones_to_rest_pose(arma)
+        smash_pose_cache = {}
 
         for index, frame in enumerate(range(scene.frame_start, scene.frame_end + 1)): # +1 because range() excludes the final value
             for bone in reordered:
@@ -683,6 +685,13 @@ def import_model_anim(context: bpy.types.Context, filepath: str,
                 # Bones either have a value on the first frame or every frame.
                 if index >= len(node.tracks[0].values): 
                     continue 
+
+                smash_value = node.tracks[0].values[index]
+                smash_pose_cache.setdefault(str(int(frame)), {})[bone.name] = {
+                    "translation": list(smash_value.translation),
+                    "rotation": list(smash_value.rotation),
+                    "scale": list(smash_value.scale),
+                }
 
                 raw_matrix = get_raw_matrix(bone_to_node, bone, index, node)
 
@@ -706,6 +715,7 @@ def import_model_anim(context: bpy.types.Context, filepath: str,
 
         for bone, bone_fcurves in bone_to_fcurves.items():
             bone_fcurves.set_keyframe_values_from_stash()
+        bone_action["sub_smash_pose_cache"] = json.dumps(smash_pose_cache)
 
     # Visibility group import stuff
     visibility_group = name_to_group_dict.get('Visibility') if include_visibility_track else None

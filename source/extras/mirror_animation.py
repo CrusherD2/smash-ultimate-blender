@@ -11,8 +11,10 @@ from .anim_flip import (
     create_mirror_map,
     extract_bone_name_from_path,
     keyframe_pose_bones,
+    load_smash_pose_cache,
     mirror_evaluated_pose,
     should_exclude_bone_from_mirroring,
+    smash_pose_data_from_cache,
 )
 
 # Set up logging
@@ -124,10 +126,41 @@ def _selected_pose_bone_names(context):
     return {bone.name for bone in armature_obj.data.bones if is_armature_bone_selected(armature_obj, bone)}
 
 
-def mirror_action_smash_y(act, selected_bones_only=False, context=None, only_active_frame=False, include_fingers=True):
+def _action_bone_names(act):
+    names = set()
+    for fcurve in get_fcurves(act):
+        bone_name = extract_bone_name_from_path(fcurve.data_path)
+        if bone_name:
+            names.add(bone_name)
+    return names
+
+
+def _idle_library_pose_data(context, act):
+    """Reuse stored Idle Pose nuanmb data when the action has no import cache."""
+    import json
+    action_name = act.name if act else ""
+    candidates = []
+    ssp = getattr(context.scene, "sub_scene_properties", None)
+    if ssp is not None:
+        for pose in getattr(ssp, "idle_pose_list", []):
+            if pose.data and pose.name and pose.name in action_name:
+                candidates.append(pose.data)
+    if "idle_pose_data" in context.scene:
+        candidates.append(context.scene["idle_pose_data"])
+    for data in candidates:
+        try:
+            parsed = json.loads(data)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(parsed, dict) and parsed:
+            return parsed
+    return None
+
+
+def mirror_action_smash_y(act, selected_bones_only=False, context=None, only_active_frame=False, include_fingers=False):
     """
-    Y-axis Smash Ultimate mirror: convert the evaluated pose to Smash space,
-    apply Studio SB anim_flip, then write it back with the idle-pose importer.
+    Y-axis Smash Ultimate mirror: same Studio SB flip + importer as Idle Pose
+    Library Mirrored. Prefers the Smash TRS cache written on nuanmb import.
     """
     if not context or not context.active_object or context.active_object.type != 'ARMATURE':
         print("Smash Y mirror requires an active armature")
@@ -143,6 +176,8 @@ def mirror_action_smash_y(act, selected_bones_only=False, context=None, only_act
             return
 
     scene = context.scene
+    smash_cache = load_smash_pose_cache(act)
+    animated_bones = _action_bone_names(act)
     if only_active_frame:
         frames = [scene.frame_current]
     else:
@@ -159,10 +194,15 @@ def mirror_action_smash_y(act, selected_bones_only=False, context=None, only_act
         if scene.frame_current != frame:
             scene.frame_set(frame)
         context.view_layer.update()
+        pose_data = smash_pose_data_from_cache(smash_cache, frame) if smash_cache else None
+        if pose_data is None:
+            pose_data = _idle_library_pose_data(context, act)
         applied = mirror_evaluated_pose(
             armature,
             excluded_bones=excluded_bones,
             target_bones=target_bones,
+            pose_data=pose_data,
+            bone_filter=animated_bones or None,
         )
         keyframe_pose_bones(applied, frame)
 
@@ -539,8 +579,8 @@ class SUB_OT_mirror_action(Operator):
 
     include_fingers : BoolProperty(
         name="Include Fingers",
-        description="Include finger bones (FingerL11, FingerR23, etc.) in the mirroring process",
-        default=True
+        description="Include finger bones (FingerL11, FingerR23, etc.) in the mirroring process. Off matches Idle Pose Library Mirrored.",
+        default=False
     )
 
 

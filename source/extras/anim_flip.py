@@ -7,11 +7,15 @@ The reference Maya .anim script does all of the following in Smash / Maya space:
   3. Leave translateX/Y, rotateZ, and scale unchanged
   4. Swap L/R bone-name suffixes, including numbered ones (FingerL11)
 
-This must be applied to Smash-space TRS, then converted with the same
-import path as idle poses (root Y-up, child get_blender_transform).
-Negating Blender fcurve location/quaternion channels is not equivalent.
+Idle Pose Library Mirrored is the reference result: flip real nuanmb TRS,
+then apply with the Smash→Blender importer (apply_smash_node_to_bone).
+
+Mirror Animation uses that same apply path. Imported actions keep a Smash
+TRS cache so the values match Idle Pose. Without a cache it recovers only
+animated bones via the inverse of that importer, never helper/IK bones.
 """
 
+import json
 import math
 import os
 import re
@@ -24,6 +28,8 @@ from ..model.import_model import get_blender_transform
 _LR_SUFFIX = re.compile(r'^(.*)([LR])(\d*)$')
 _POSE_BONE_PATH_DOUBLE = re.compile(r'^(pose\.bones\[")([^"]+)("\].*)$')
 _POSE_BONE_PATH_SINGLE = re.compile(r"^(pose\.bones\[')([^']+)('\].*)$")
+_IK_HELPER = re.compile(r'(HandIK|FootIK|ArmIK|KneeIK)[LR]?$', re.IGNORECASE)
+SMASH_POSE_CACHE_KEY = "sub_smash_pose_cache"
 
 
 def flip_smash_translation(translation):
@@ -47,28 +53,38 @@ def _root_basis_matrices():
     return y_up_to_z_up, x_major_to_y_major
 
 
-def _smash_from_blender_rel(blender_rel):
-    """Inverse of get_blender_transform for a child-bone relative matrix."""
-    p = Matrix((
-        (0, 1, 0, 0),
-        (-1, 0, 0, 0),
-        (0, 0, 1, 0),
-        (0, 0, 0, 1),
+def _smash_matrix_from_trs(translation, rotation_xyzw, scale):
+    tm = Matrix.Translation(Vector(translation))
+    rotation = Quaternion((
+        rotation_xyzw[3],
+        rotation_xyzw[0],
+        rotation_xyzw[1],
+        rotation_xyzw[2],
     ))
-    return p @ blender_rel @ p.inverted()
+    rm = rotation.to_matrix().to_4x4()
+    sm = Matrix.Diagonal((scale[0], scale[1], scale[2], 1.0))
+    return tm @ rm @ sm
+
+
+def _import_smash_from_blender_rel(blender_rel):
+    """Inverse of get_blender_transform(raw).transposed() used by import / idle."""
+    p = Matrix((
+        (0.0, -1.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 1.0, 0.0),
+        (0.0, 0.0, 0.0, 1.0),
+    ))
+    return p.inverted() @ blender_rel @ p
 
 
 def smash_trs_from_pose_bone(bone):
-    """
-    Recover Smash-space translation / quaternion(x,y,z,w) / scale from a posed bone.
-    Inverse of apply_smash_node_to_bone / animation import.
-    """
+    """Inverse of apply_smash_node_to_bone. Fallback when no import cache exists."""
     if bone.parent is None:
         y_up_to_z_up, x_major_to_y_major = _root_basis_matrices()
         raw = y_up_to_z_up.inverted() @ bone.matrix @ x_major_to_y_major.inverted()
     else:
         blender_rel = bone.parent.matrix.inverted() @ bone.matrix
-        raw = _smash_from_blender_rel(blender_rel)
+        raw = _import_smash_from_blender_rel(blender_rel)
     translation, quat, scale = raw.decompose()
     return (
         [translation.x, translation.y, translation.z],
@@ -77,9 +93,45 @@ def smash_trs_from_pose_bone(bone):
     )
 
 
+def store_smash_pose_cache(action, cache):
+    if action is None:
+        return
+    action[SMASH_POSE_CACHE_KEY] = json.dumps(cache)
+
+
+def load_smash_pose_cache(action):
+    if action is None or SMASH_POSE_CACHE_KEY not in action:
+        return None
+    try:
+        cache = json.loads(action[SMASH_POSE_CACHE_KEY])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return cache if isinstance(cache, dict) else None
+
+
+def smash_pose_data_from_cache(cache, frame):
+    """Hold-last-value lookup so one-frame Smash tracks still apply later."""
+    if not cache:
+        return None
+    pose_data = {}
+    frame = int(round(frame))
+    for frame_key in sorted(cache, key=lambda key: int(key)):
+        pose_data.update(cache[frame_key])
+        if int(frame_key) >= frame:
+            break
+    pose_data = {
+        name: data
+        for name, data in pose_data.items()
+        if not is_untouchable_mirror_bone(name)
+    }
+    return pose_data or None
+
+
 def smash_pose_data_from_armature(armature, bone_filter=None):
     pose_data = {}
     for bone in armature.pose.bones:
+        if is_untouchable_mirror_bone(bone.name):
+            continue
         if bone_filter is not None and bone.name not in bone_filter:
             continue
         translation, rotation, scale = smash_trs_from_pose_bone(bone)
@@ -98,18 +150,11 @@ def smash_pose_data_from_armature(armature, bone_filter=None):
 
 def apply_smash_node_to_bone(bone, node_data):
     """Apply Smash-space TRS the same way animation import / idle poses do."""
-    translation = Vector(node_data["translation"])
-    tm = Matrix.Translation(translation)
-    rotation = Quaternion((
-        node_data["rotation"][3],
-        node_data["rotation"][0],
-        node_data["rotation"][1],
-        node_data["rotation"][2],
-    ))
-    rm = Matrix.Rotation(rotation.angle, 4, rotation.axis)
-    scale = Vector(node_data["scale"])
-    sm = Matrix.Diagonal((scale[0], scale[1], scale[2], 1.0))
-    raw_matrix = tm @ rm @ sm
+    raw_matrix = _smash_matrix_from_trs(
+        node_data["translation"],
+        node_data["rotation"],
+        node_data.get("scale", (1.0, 1.0, 1.0)),
+    )
 
     if bone.parent is None:
         y_up_to_z_up, x_major_to_y_major = _root_basis_matrices()
@@ -131,6 +176,8 @@ def apply_smash_pose_data(armature, pose_data, target_bones=None, skip_bones=Non
     skip_bones = skip_bones or set()
     applied = []
     for bone in _hierarchy_order(armature):
+        if is_untouchable_mirror_bone(bone.name):
+            continue
         if bone.name not in pose_data or bone.name in skip_bones:
             continue
         if target_bones is not None and bone.name not in target_bones:
@@ -249,17 +296,28 @@ def extract_bone_name_from_path(path):
     return ""
 
 
+def is_untouchable_mirror_bone(bone_name):
+    """Swing, helper, and addon IK bones are never mirrored."""
+    if not bone_name:
+        return False
+    return (
+        bone_name.startswith('S_')
+        or bone_name.startswith('H_')
+        or bool(_IK_HELPER.search(bone_name))
+    )
+
+
 def should_exclude_bone_from_mirroring(bone_name, armature=None, include_fingers=True):
     """Optional UX filters. Hip / Trans / root are never excluded."""
     if not bone_name:
         return False
 
+    if is_untouchable_mirror_bone(bone_name):
+        return True
+
     bone_name_lower = bone_name.lower()
     if bone_name_lower in ('hip', 'hipn', 'trans', 'root', 'pelvis'):
         return False
-
-    if bone_name.startswith('S_'):
-        return True
 
     facial_keywords = ('brow', 'lip', 'eye', 'nose', 'cheek', 'jaw', 'mouth')
     if any(keyword in bone_name_lower for keyword in facial_keywords):
@@ -301,8 +359,9 @@ def mirror_smash_pose_data(pose_data, excluded_bones=None):
     excluded_bones = excluded_bones or set()
     mirrored = {}
     for bone_name, data in pose_data.items():
+        if is_untouchable_mirror_bone(bone_name):
+            continue
         if bone_name in excluded_bones:
-            mirrored[bone_name] = data
             continue
         target_name = swap_lr_bone_name(bone_name)
         flipped = dict(data)
@@ -314,13 +373,14 @@ def mirror_smash_pose_data(pose_data, excluded_bones=None):
     return mirrored
 
 
-def mirror_evaluated_pose(armature, excluded_bones=None, target_bones=None):
+def mirror_evaluated_pose(armature, excluded_bones=None, target_bones=None, pose_data=None, bone_filter=None):
     """
-    Mirror the current evaluated pose in Smash space, then write it back
-    with the same conversion idle poses use.
+    Flip Smash TRS (cached nuanmb or recovered importer inverse), then apply
+    with the same function Idle Pose Library Mirrored uses.
     """
     excluded_bones = excluded_bones or set()
-    pose_data = smash_pose_data_from_armature(armature)
+    if pose_data is None:
+        pose_data = smash_pose_data_from_armature(armature, bone_filter=bone_filter)
     pose_data = mirror_smash_pose_data(pose_data, excluded_bones=excluded_bones)
     return apply_smash_pose_data(
         armature,
