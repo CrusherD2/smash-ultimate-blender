@@ -330,7 +330,7 @@ def weights_to_parent_bones(ssbh_mesh_data: ssbh_data_py.mesh_data.MeshData, ssb
         bone_name = mesh_object.bone_influences[0].bone_name
         bone_data = bones.get(bone_name)
         bone_matrix = ssbh_skel_data.calculate_world_transform(bone_data)
-        inverted_bone_matrix = np.linalg.inv(bone_matrix)
+        inverted_bone_matrix = np.linalg.inv(bone_matrix).astype(np.float32, copy=False)
         for position in mesh_object.positions:
             position.data = ssbh_data_py.mesh_data.transform_points(position.data, inverted_bone_matrix)
         
@@ -1183,13 +1183,14 @@ def make_mesh_object(operator, context, mesh: bpy.types.Object, group_name, i, m
     position0 = ssbh_data_py.mesh_data.AttributeData('Position0')
 
     # TODO: Is there a better way to account for the change of coordinates?
-    axis_correction = np.array(Matrix.Rotation(math.radians(90), 3, 'X'))
+    # ssbh_data_py requires float32; a float64 matrix would promote the vertex buffers.
+    axis_correction = np.array(Matrix.Rotation(math.radians(90), 3, 'X'), dtype=np.float32)
 
     # For example, vertices is a bpy_prop_collection of MeshVertex, which has a "co" attribute for position.
     positions = np.zeros(len(mesh_data.vertices) * 3, dtype=np.float32)
     mesh_data.vertices.foreach_get('co', positions)
     # The output data is flattened, so we need to reshape it into the appropriate number of rows and columns.
-    position0.data = positions.reshape((-1, 3)) @ axis_correction
+    position0.data = np.ascontiguousarray(positions.reshape((-1, 3)) @ axis_correction, dtype=np.float32)
     ssbh_mesh_object.positions = [position0]
 
     # Store vertex indices as a numpy array for faster indexing later.
@@ -1206,9 +1207,9 @@ def make_mesh_object(operator, context, mesh: bpy.types.Object, group_name, i, m
 
     # Pad normals to 4 components instead of 3 components.
     # This actually results in smaller file sizes since HalFloat4 is smaller than Float3.
-    normals = np.append(normals, np.zeros((normals.shape[0],1)), axis=1)
-            
-    normal0.data = normals.astype(np.float32)
+    normals = np.append(normals, np.zeros((normals.shape[0], 1), dtype=np.float32), axis=1)
+
+    normal0.data = np.ascontiguousarray(normals, dtype=np.float32)
     ssbh_mesh_object.normals = [normal0]
 
     # Export Weights
@@ -1287,7 +1288,7 @@ def make_mesh_object(operator, context, mesh: bpy.types.Object, group_name, i, m
         uvs = per_loop_to_per_vertex(loop_uvs, vertex_indices, (len(mesh.data.vertices), 2))
         # Flip vertical.
         uvs[:,1] = 1.0 - uvs[:,1]
-        ssbh_uv_layer.data = uvs
+        ssbh_uv_layer.data = np.ascontiguousarray(uvs, dtype=np.float32)
 
         ssbh_mesh_object.texture_coordinates.append(ssbh_uv_layer)
 
@@ -1332,7 +1333,7 @@ def make_mesh_object(operator, context, mesh: bpy.types.Object, group_name, i, m
             colors = per_loop_to_per_vertex(colors, vertex_indices, (len(mesh.data.vertices), 4))
         
         colors = colors.reshape((len(mesh.data.vertices), 4))
-        ssbh_color_layer.data = colors
+        ssbh_color_layer.data = np.ascontiguousarray(colors, dtype=np.float32)
 
         ssbh_mesh_object.color_sets.append(ssbh_color_layer)
 
@@ -1354,7 +1355,10 @@ def make_mesh_object(operator, context, mesh: bpy.types.Object, group_name, i, m
 
     tangents = per_loop_to_per_vertex(loop_tangents, vertex_indices, (len(mesh.data.vertices), 3))
     bitangent_signs = per_loop_to_per_vertex(loop_bitangent_signs, vertex_indices, (len(mesh.data.vertices), 1))
-    tangent0.data = np.append(tangents @ axis_correction, bitangent_signs * -1.0, axis=1)
+    tangent0.data = np.ascontiguousarray(
+        np.append(tangents @ axis_correction, bitangent_signs * np.float32(-1.0), axis=1),
+        dtype=np.float32,
+    )
 
     ssbh_mesh_object.tangents = [tangent0]
             
