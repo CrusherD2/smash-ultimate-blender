@@ -321,6 +321,13 @@ def import_model(operator: bpy.types.Operator, context: bpy.types.Context):
 
     # Store the model path for animation importing
     ssp.last_imported_model_path = str(dir)
+
+    if armature is not None:
+        try:
+            from ..extras.face_picker import on_model_imported
+            on_model_imported(armature, str(dir))
+        except Exception:
+            print(f'Face picker auto-load skipped:\n{traceback.format_exc()}')
     
     # Get related animation path
     model_path = str(dir)

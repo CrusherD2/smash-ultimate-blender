@@ -318,6 +318,16 @@ def draw_animation_scroll_button(self, context):
         icon = 'PLAY' if not is_running else 'PAUSE'
         label = 'Start Animation Scroll' if not is_running else 'Stop Animation Scroll'
         self.layout.operator('sub.toggle_animation_scroll_modal', text=label, icon=icon, depress=is_running)
+        try:
+            from .face_picker import armature_has_face_picker_menu
+            if armature_has_face_picker_menu(context):
+                self.layout.operator(
+                    'sub.face_picker_popup',
+                    text='Easy Facial Animation',
+                    icon='IMAGE_DATA',
+                )
+        except Exception:
+            pass
 
 # --- TOGGLE OPERATOR ---
 class SUB_OP_toggle_animation_scroll_modal(Operator):

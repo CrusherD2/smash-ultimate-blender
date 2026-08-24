@@ -694,6 +694,7 @@ class SUB_PT_retargeting_main(Panel):
     bl_category = 'Ultimate'
     bl_label = 'Retargeting'
     bl_options = {'DEFAULT_CLOSED'}
+    bl_order = 80
 
     @classmethod
     def poll(cls, context):

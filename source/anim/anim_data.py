@@ -275,6 +275,7 @@ class SUB_PT_sub_smush_anim_data_main(Panel):
             
         # Manual sync button
         row.operator(SUB_OP_sync_sap_action.bl_idname, icon='FILE_REFRESH', text="Manual Sync")
+        layout.operator("sub.face_picker_popup", text="Easy Facial Animation", icon="IMAGE_DATA")
 
 class SUB_PT_sub_smush_anim_data_vis_tracks(Panel):
     bl_label = "Ultimate Visibility Track Entries"
