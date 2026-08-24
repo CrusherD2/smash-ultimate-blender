@@ -269,6 +269,13 @@ class SUB_PT_model_tools(Panel):
             row.enabled = False
             row.operator("sub.convert_shape_keys_to_meshes", text="Convert Shape Keys to Meshes (Object Mode Only)")
 
+        row = layout.row(align=True)
+        if context.mode == 'EDIT_ARMATURE':
+            row.operator("sub.remove_selected_bones")
+        else:
+            row.enabled = False
+            row.operator("sub.remove_selected_bones", text="Remove Bones (Edit Mode Only)")
+
         col = layout.column(align=True)
         col.separator()
         col.label(text="Roll Value Copier", icon="BONE_DATA")
@@ -309,14 +316,6 @@ class SUB_PT_misc_utilities(Panel):
         # Eye Material Custom Vector 31 Modal Operator
         row = layout.row(align=True)
         row.operator("sub.eye_material_custom_vector_31_modal")
-        
-        # Show bone removal button only in edit mode or grayed out
-        row = layout.row(align=True)
-        if context.mode == 'EDIT_ARMATURE':
-            row.operator("sub.remove_selected_bones")
-        else:
-            row.enabled = False
-            row.operator("sub.remove_selected_bones", text="Remove Bones (Edit Mode Only)")
 
         layout.separator()
         box = layout.box()
