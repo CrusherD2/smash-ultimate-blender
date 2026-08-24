@@ -226,7 +226,7 @@ class SUB_PT_model_tools(Panel):
 
     @classmethod
     def poll(cls, context):
-        modes = ['POSE', 'OBJECT', 'EDIT_ARMATURE']
+        modes = ['POSE', 'OBJECT', 'EDIT_ARMATURE', 'EDIT_MESH']
         return context.mode in modes
 
     def draw(self, context):
@@ -243,6 +243,16 @@ class SUB_PT_model_tools(Panel):
         else:
             row.enabled = False
             row.operator("sub.mirror_vertex_groups", text="Mirror Vertex Groups (Object Mode Only)")
+
+        row = layout.row(align=True)
+        if context.mode == 'OBJECT':
+            row.operator("sub.mirror_mesh_as_separate_object", text="Mirror Mesh as Separate Object")
+        else:
+            row.enabled = False
+            row.operator("sub.mirror_mesh_as_separate_object", text="Mirror Mesh as Separate Object (Object Mode Only)")
+
+        row = layout.row(align=True)
+        row.operator("sub.unstack_uv_islands", text="Unstack UV Islands")
 
         row = layout.row(align=True)
         if context.mode == 'OBJECT':
@@ -390,6 +400,77 @@ class SUB_OP_mirror_vertex_groups(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def _mirror_mesh_geometry_x(mesh):
+    from mathutils import Matrix
+
+    matrix = Matrix.Diagonal((-1.0, 1.0, 1.0, 1.0))
+    try:
+        mesh.transform(matrix, shape_keys=True)
+    except TypeError:
+        mesh.transform(matrix)
+        if mesh.shape_keys:
+            for key_block in mesh.shape_keys.key_blocks:
+                for point in key_block.data:
+                    point.co.x *= -1
+    mesh.flip_normals()
+    mesh.update()
+
+
+def _flipped_mesh_name(name):
+    vis_suffix = "_VIS_O_OBJShape"
+    vis_index = name.find(vis_suffix)
+    if vis_index != -1:
+        return f"{name[:vis_index]}FLIP{name[vis_index:]}"
+    return f"{name}FLIP"
+
+
+class SUB_OP_mirror_mesh_as_separate_object(bpy.types.Operator):
+    bl_idname = "sub.mirror_mesh_as_separate_object"
+    bl_label = "Mirror Mesh as Separate Object"
+    bl_description = "Duplicate the selected mesh as a new object that contains only the mirrored geometry"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'OBJECT' and any(obj.type == 'MESH' for obj in context.selected_objects)
+
+    def execute(self, context):
+        sources = [obj for obj in context.selected_objects if obj.type == 'MESH']
+        if not sources:
+            self.report({'ERROR'}, "Select a mesh object.")
+            return {'CANCELLED'}
+
+        created = []
+
+        for obj in sources:
+            new_mesh = obj.data.copy()
+            new_obj = obj.copy()
+            new_obj.data = new_mesh
+
+            collections = list(obj.users_collection)
+            if collections:
+                for col in collections:
+                    col.objects.link(new_obj)
+            else:
+                context.collection.objects.link(new_obj)
+
+            flipped_name = _flipped_mesh_name(obj.name)
+            new_obj.name = flipped_name
+            new_obj.data.name = flipped_name
+
+            _mirror_mesh_geometry_x(new_mesh)
+            created.append(new_obj)
+
+        for selected in list(context.selected_objects):
+            selected.select_set(False)
+        for new_obj in created:
+            new_obj.select_set(True)
+        context.view_layer.objects.active = created[-1]
+
+        self.report({'INFO'}, f"Created {len(created)} mirrored mesh object(s).")
+        return {'FINISHED'}
+
+
 class SUB_OP_convert_shape_keys_to_meshes(bpy.types.Operator):
     bl_idname = "sub.convert_shape_keys_to_meshes"
     bl_label = "Convert Shape Keys to Meshes"
@@ -454,11 +535,13 @@ def register():
     bpy.utils.register_class(SUB_PT_model_tools)
     bpy.utils.register_class(SUB_PT_misc_utilities)
     bpy.utils.register_class(SUB_OP_mirror_vertex_groups)
+    bpy.utils.register_class(SUB_OP_mirror_mesh_as_separate_object)
     bpy.utils.register_class(SUB_OP_convert_shape_keys_to_meshes)
 
 
 def unregister():
     bpy.utils.unregister_class(SUB_OP_convert_shape_keys_to_meshes)
+    bpy.utils.unregister_class(SUB_OP_mirror_mesh_as_separate_object)
     bpy.utils.unregister_class(SUB_OP_mirror_vertex_groups)
     bpy.utils.unregister_class(SUB_PT_misc_utilities)
     bpy.utils.unregister_class(SUB_PT_model_tools)
