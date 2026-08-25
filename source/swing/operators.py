@@ -12,67 +12,17 @@ from mathutils import Vector
 from ...dependencies import pyprc
 # Local Project Imports
 from ..extras import create_meshes
+from ..param_labels import add_hash_label, load_param_labels
 from .sub_swing_data import *
 import os
 import importlib.util
-import csv
 
 # Global variable to store the active mismatch operator instance
 _active_mismatch_operator = None
 
 def add_hash_to_param_labels(hash_value: str, label: str):
-    """Add a new hash-label pair to ParamLabels.csv if it doesn't already exist"""
-    try:
-        from ...dependencies import pyprc
-        from ...dependencies.pyprc import hash as pyprc_hash  # Import with alias to avoid collision
-        
-        # Get the path to ParamLabels.csv
-        labels_path = (Path(__file__).parent.parent.parent / 'dependencies' / 'pyprc' / 'ParamLabels.csv').resolve()
-        
-        # Generate the hash using pyprc_hash explicitly
-        hash_obj = pyprc_hash(label)
-        # Convert to int using the hash object's value directly
-        if hasattr(hash_obj, 'value'):
-            hash_int = hash_obj.value
-        elif hasattr(hash_obj, '__int__'):
-            hash_int = hash_obj.__int__()
-        else:
-            # Fallback: try to get the integer representation
-            hash_int = int(str(hash_obj), 16) if str(hash_obj).startswith('0x') else int(str(hash_obj))
-        
-        hash_hex = f"0x{hash_int:010x}"
-        
-        # Check if the hash already exists in the file
-        existing_hashes = set()
-        if os.path.exists(labels_path):
-            try:
-                with open(labels_path, 'r', encoding='utf-8') as f:
-                    reader = csv.reader(f)
-                    for row in reader:
-                        if len(row) >= 1:
-                            existing_hashes.add(row[0])
-            except Exception as e:
-                print(f"Warning: Could not read ParamLabels.csv: {e}")
-                return False
-        
-        # Add the hash if it doesn't exist
-        if hash_hex not in existing_hashes:
-            try:
-                with open(labels_path, 'a', encoding='utf-8', newline='') as f:
-                    writer = csv.writer(f)
-                    writer.writerow([hash_hex, label])
-                print(f"Added hash to ParamLabels.csv: {hash_hex},{label}")
-                return True
-            except Exception as e:
-                print(f"Warning: Could not write to ParamLabels.csv: {e}")
-                return False
-        else:
-            print(f"Hash already exists in ParamLabels.csv: {hash_hex},{label}")
-            return True
-            
-    except Exception as e:
-        print(f"Error adding hash to ParamLabels.csv: {e}")
-        return False
+    """Add a new hash-label pair to the user ParamLabels.csv if it doesn't already exist."""
+    return add_hash_label(label)
 
 def save_swing_bone_chain_hashes(chain_name: str, start_bone_name: str, end_bone_name: str, bone_names: list):
     """Save all relevant hashes for a swing bone chain to ParamLabels.csv"""
@@ -1578,8 +1528,7 @@ def swing_prc_import(operator: Operator, context: Context, filepath: str):
         bone.sub_swing_blender_bone_data.swing_bone_index = -1
     
     prc_root = pyprc.param(filepath)
-    labels_path = (Path(__file__).parent.parent.parent / 'dependencies' / 'pyprc' / 'ParamLabels.csv').resolve()
-    pyprc.hash.load_labels(str(labels_path))
+    load_param_labels()
 
     raw_hash_to_blender_bone = {pyprc.hash(bone.name.lower()) : bone for bone in arma_data.bones}
     
@@ -2180,6 +2129,7 @@ pyprc.param.struct([
 
 '''
 def new_prc_list(list_name):
+    add_hash_label(list_name)
     return pyprc.param.struct([
         (pyprc.hash(list_name),pyprc.param.list([]))
     ])
@@ -2189,13 +2139,17 @@ def new_prc_struct():
 
 def new_prc_hash(hash_name: str|int, hash_value: str|int):
     regex = r"^0x[\da-f]{10}$"
-    matches = re.match(regex, hash_name)
-    if matches is not None:
-        hash_name = int(hash_name, base=16)
-    
-    matches = re.match(regex, hash_value)
-    if matches is not None:
-        hash_value = int(hash_value, base=16)
+    if isinstance(hash_name, str):
+        add_hash_label(hash_name)
+        matches = re.match(regex, hash_name)
+        if matches is not None:
+            hash_name = int(hash_name, base=16)
+
+    if isinstance(hash_value, str):
+        add_hash_label(hash_value)
+        matches = re.match(regex, hash_value)
+        if matches is not None:
+            hash_value = int(hash_value, base=16)
 
     return pyprc.param.struct([
         (pyprc.hash(hash_name), pyprc.param.hash(pyprc.hash(hash_value)))
@@ -2240,6 +2194,7 @@ class PrcStruct():
 
 class PrcList(PrcStruct):
     def __init__(self, list_name: str):
+        add_hash_label(list_name)
         self._prc_struct = pyprc.param.struct([
             (pyprc.hash(list_name), pyprc.param.list([]))
         ])
@@ -2257,10 +2212,12 @@ class PrcList(PrcStruct):
 class PrcHash40():
     _prc_param = None
     def __init__(self, hash_value):
-        regex = r"0x[\da-f]{10}"
-        matches = re.match(regex, hash_value)
-        if matches is not None:
-            hash_value = int(hash_value, base=16)
+        if isinstance(hash_value, str):
+            add_hash_label(hash_value)
+            regex = r"0x[\da-f]{10}"
+            matches = re.match(regex, hash_value)
+            if matches is not None:
+                hash_value = int(hash_value, base=16)
 
         self._prc_param = pyprc.param.hash(pyprc.hash(hash_value))
     def get_param(self):

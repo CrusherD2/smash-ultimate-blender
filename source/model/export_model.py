@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 from ...dependencies import ssbh_data_py
 from ...dependencies import pyprc
+from ..param_labels import add_hash_label
 from .material import material_inputs
 
 
@@ -1536,8 +1537,10 @@ def make_update_prc(operator: Operator, context, bones_not_in_vanilla: list[Edit
     for bone in bones_not_in_vanilla:
         if bone.name.startswith('H_') or bone.name.startswith('S_'):
             continue
+        bone_label = bone.name.lower()
+        add_hash_label(bone_label)
         new_prc_struct = prc_root.struct([
-                            (pyprc.hash('name'), prc_root.hash(pyprc.hash(bone.name.lower())))
+                            (pyprc.hash('name'), prc_root.hash(pyprc.hash(bone_label)))
                         ])
         bones_real_list.append(new_prc_struct)
     bones_fake_list.set_list(bones_real_list)
