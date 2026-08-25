@@ -36,6 +36,84 @@ FACIAL_TRACK_HINTS = (
     "lip", "tooth", "tongue", "openblink",
 )
 
+# Shared words in vis-track names that mean the same face part.
+# VoiceAMouth and HeavyhitMouth both contain "Mouth", so applying VoiceA
+# only replaces mouth tracks and leaves eyes/brows from Heavyhit on.
+_TRACK_TOKEN_SPLIT = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+")
+_TRACK_PART_ALIASES = {
+    "mouth": "mouth",
+    "lip": "lip",
+    "lips": "lip",
+    "jaw": "jaw",
+    "tooth": "tooth",
+    "teeth": "tooth",
+    "tongue": "tongue",
+    "eye": "eye",
+    "eyes": "eye",
+    "blink": "blink",
+    "openblink": "blink",
+    "brow": "brow",
+    "brows": "brow",
+    "eyebrow": "brow",
+    "eyebrows": "brow",
+    "face": "face",
+    "cheek": "cheek",
+    "cheeks": "cheek",
+    "nose": "nose",
+    "lid": "lid",
+    "lids": "lid",
+}
+_TRACK_PART_ALIASES_BY_LENGTH = tuple(
+    sorted(_TRACK_PART_ALIASES, key=len, reverse=True)
+)
+
+
+def tokenize_track_name(name):
+    tokens = []
+    for piece in re.split(r"[^A-Za-z0-9]+", name or ""):
+        if not piece:
+            continue
+        tokens.extend(token.lower() for token in _TRACK_TOKEN_SPLIT.findall(piece))
+    return tokens
+
+
+def track_part_keys(name):
+    keys = set()
+    for token in tokenize_track_name(name):
+        canonical = _TRACK_PART_ALIASES.get(token)
+        if canonical:
+            keys.add(canonical)
+    if keys:
+        return keys
+    lowered = (name or "").lower()
+    matched = []
+    for alias in _TRACK_PART_ALIASES_BY_LENGTH:
+        if alias not in lowered:
+            continue
+        if any(alias in other for other in matched):
+            continue
+        matched.append(alias)
+        keys.add(_TRACK_PART_ALIASES[alias])
+    return keys
+
+
+def expression_part_keys(expression):
+    keys = set()
+    for track in getattr(expression, "tracks", []) or []:
+        keys |= track_part_keys(getattr(track, "name", ""))
+    return keys
+
+
+def vis_track_names_for_parts(sap, part_keys):
+    names = set()
+    if sap is None or not part_keys:
+        return names
+    for entry in sap.vis_track_entries:
+        if track_part_keys(entry.name) & part_keys:
+            names.add(entry.name)
+    return names
+
+
 
 def get_armature(context):
     obj = getattr(context, "object", None)
@@ -393,7 +471,13 @@ def apply_expression(context, arma, expression, insert_keyframes=False):
         return 0, []
     enable = [track.name for track in expression.tracks if track.name]
     missing = [name for name in enable if vis_entry_by_name(sap, name) is None]
-    managed = managed_track_names(picker, enable)
+    part_keys = expression_part_keys(expression)
+    if part_keys:
+        # Partial expressions only swap the face parts they name, e.g. Mouth.
+        managed = vis_track_names_for_parts(sap, part_keys)
+        managed.update(enable)
+    else:
+        managed = managed_track_names(picker, enable)
     should_key = insert_keyframes or context.scene.tool_settings.use_keyframe_insert_auto
     changed = set_visibility_tracks(arma, set(enable), managed, insert_keyframes=should_key)
     picker.active_expression_id = expression.expression_id
@@ -1402,7 +1486,10 @@ class SUB_UL_face_picker_expressions(UIList):
 class SUB_OP_face_picker_apply(Operator):
     bl_idname = "sub.face_picker_apply"
     bl_label = "Apply Expression"
-    bl_description = "Enable this expression's visibility tracks and disable the other picker expressions"
+    bl_description = (
+        "Enable this expression's vis tracks. Tracks that share a face-part "
+        "word like Mouth or Eye are swapped; other parts stay as they are"
+    )
     bl_options = {"REGISTER", "UNDO"}
 
     expression_id: StringProperty()
@@ -2121,7 +2208,7 @@ class SUB_PT_face_picker(Panel):
 
     @classmethod
     def poll(cls, context):
-        return context.mode in {"OBJECT", "POSE", "EDIT_ARMATURE"}
+        return False
 
     def draw(self, context):
         draw_face_picker_layout(self.layout, context, show_grid=True)

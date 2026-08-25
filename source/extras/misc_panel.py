@@ -252,7 +252,15 @@ class SUB_PT_model_tools(Panel):
             row.operator("sub.mirror_mesh_as_separate_object", text="Mirror Mesh as Separate Object (Object Mode Only)")
 
         row = layout.row(align=True)
-        row.operator("sub.unstack_uv_islands", text="Unstack UV Islands")
+        selected_objects = context.selected_objects or []
+        if context.mode not in {'POSE', 'EDIT_ARMATURE'} and (
+            (context.active_object and context.active_object.type == 'MESH')
+            or any(obj.type == 'MESH' for obj in selected_objects)
+        ):
+            row.operator("sub.unstack_uv_islands", text="Unstack UV Islands")
+        else:
+            row.enabled = False
+            row.operator("sub.unstack_uv_islands", text="Unstack UV Islands (Select a Mesh)")
 
         row = layout.row(align=True)
         if context.mode == 'OBJECT':
@@ -275,6 +283,31 @@ class SUB_PT_model_tools(Panel):
         else:
             row.enabled = False
             row.operator("sub.remove_selected_bones", text="Remove Bones (Edit Mode Only)")
+
+        row = layout.row(align=True)
+        selected_bones = context.selected_bones if context.mode == 'EDIT_ARMATURE' else None
+        selected_pose_bones = context.selected_pose_bones if context.mode == 'POSE' else None
+        if (context.mode == 'EDIT_ARMATURE' and selected_bones) or (
+            context.mode == 'POSE' and selected_pose_bones
+        ):
+            row.operator("sub.connect_bone_chain", text="Connect Bone Chain")
+        else:
+            row.enabled = False
+            row.operator("sub.connect_bone_chain", text="Connect Bone Chain (Select Bones)")
+
+        row = layout.row(align=True)
+        selected_objects = context.selected_objects or []
+        active = context.active_object
+        has_armature = bool(
+            (active and active.type == 'ARMATURE')
+            or any(obj.type == 'ARMATURE' for obj in selected_objects)
+            or (active and active.type == 'MESH' and active.find_armature())
+        )
+        if has_armature:
+            row.operator("sub.delete_unweighted_bones", text="Delete Unweighted Bones")
+        else:
+            row.enabled = False
+            row.operator("sub.delete_unweighted_bones", text="Delete Unweighted Bones (Select Armature)")
 
         col = layout.column(align=True)
         col.separator()

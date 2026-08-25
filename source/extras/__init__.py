@@ -8,6 +8,7 @@ from . import create_ik_arms
 from . import create_ik_armsandlegs
 from . import create_ik_legs
 from . import bone_removal
+from . import bone_chain
 from . import apply_ik_animation
 from . import hip_animation_transfer
 from . import idle_pose_library

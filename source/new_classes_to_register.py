@@ -291,6 +291,8 @@ classes = [
     source.updater.version_check.SUB_OP_check_for_updates,
     source.extras.eye_material_custom_vector_31_modal.SUB_OP_eye_material_custom_vector_31_modal,
     source.extras.bone_removal.SUB_OT_remove_selected_bones,
+    source.extras.bone_removal.SUB_OT_delete_unweighted_bones,
+    source.extras.bone_chain.SUB_OT_connect_bone_chain,
     source.extras.create_ik_arms.SUB_OP_create_arm_ik_operator,
     source.extras.create_ik_armsandlegs.SUB_OP_create_ik_bones_operator,
     source.extras.create_ik_legs.SUB_OP_create_foot_ik_operator,
