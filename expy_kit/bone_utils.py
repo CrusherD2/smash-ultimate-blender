@@ -4,6 +4,8 @@ from mathutils import Matrix
 from mathutils import Quaternion
 from math import pi
 
+from ..source.blender_compat import set_pose_bone_select
+
 
 def is_pose_bone_all_locked(pose_bone) -> bool:
     """Return True if all pose_bone's transform channels are locked"""
@@ -240,12 +242,12 @@ def get_constrained_controls(armature_object: bpy.types.Object, unselect=False, 
     for pb in armature_object.pose.bones:
         if pb.bone.use_deform and not use_deform:  # FIXME: ik controls might have use_deform just to be exported for games
             if unselect:
-                pb.select = False
+                set_pose_bone_select(pb, False)
             continue
 
         if len(pb.constraints) == 0:
             if unselect:
-                pb.select = False
+                set_pose_bone_select(pb, False)
             continue
     
         yield pb

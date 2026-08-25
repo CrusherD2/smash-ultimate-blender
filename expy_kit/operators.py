@@ -21,6 +21,7 @@ from . import preset_handler
 from . import bone_utils
 from . import fbx_helper
 from ..source.anim.fcurve_compat import get_fcurves, remove_fcurve
+from ..source.blender_compat import set_pose_bone_select
 
 from mathutils import Vector
 from mathutils import Matrix
@@ -188,7 +189,7 @@ class SelectConstrainedControls(bpy.types.Operator):
 
         if self.select_type == 'constr':
             for pb in bone_utils.get_constrained_controls(ob, unselect=True, use_deform=not self.skip_deform):
-                pb.select = bool(pb.custom_shape) if self.has_shape else True
+                set_pose_bone_select(pb, bool(pb.custom_shape) if self.has_shape else True)
 
         elif self.select_type == 'anim':
             if not ob.animation_data:
@@ -2393,7 +2394,7 @@ class BakeConstrainedActions(bpy.types.Operator):
             for pb in bone_utils.get_constrained_controls(ob, unselect=True, use_deform=not self.exclude_deform):
                 
                 if pb.name + "_RET" in trg_ob.data.bones:
-                    pb.select = True
+                    set_pose_bone_select(pb, True)
                     constr_bone_names.append(pb.name)
 
             for action in list(bpy.data.actions):  # convert to list beforehand to avoid picking new actions

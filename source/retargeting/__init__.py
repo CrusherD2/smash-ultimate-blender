@@ -12,6 +12,7 @@ from bpy.app.handlers import persistent
 # Import expy_kit modules using relative imports
 # expy_kit is at the plugin root level, so we go up two levels from source/retargeting/
 from ...expy_kit import operators, properties, preferences, ui, preset_handler
+from ..blender_compat import set_pose_bone_select
 
 
 # Auto-detection for Smash armatures
@@ -1041,7 +1042,7 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
         
         # Select pose bones for baking
         for pb in dest_armature.pose.bones:
-            pb.select = True
+            set_pose_bone_select(pb, True)
         
         # Get list of actions to bake - those that belong to the SOURCE armature
         actions_to_bake = []
@@ -1170,7 +1171,7 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
             constr_bone_names = []
             for pb in bone_utils.get_constrained_controls(ob, unselect=True, use_deform=not self.exclude_deform):
                 if pb.name + "_RET" in trg_ob.data.bones:
-                    pb.select = True
+                    set_pose_bone_select(pb, True)
                     constr_bone_names.append(pb.name)
             
             for action in list(bpy.data.actions):
