@@ -115,6 +115,36 @@ def _parse_commit_entry(commit_data):
     }
 
 
+def _changelog_lines_from_commits(commits):
+    """Flatten commit descriptions into clean lines for the update popup."""
+    lines = []
+
+    for commit in commits:
+        full_message = (commit.get("full_message") or commit.get("message") or "").strip()
+        if not full_message:
+            continue
+
+        raw_lines = []
+        for raw_line in full_message.splitlines():
+            line = raw_line.strip()
+            if not line or line.lower().startswith("co-authored-by:"):
+                continue
+            raw_lines.append(line)
+
+        if not raw_lines:
+            continue
+
+        # Prefer the commit body; fall back to the subject when there is no body.
+        description_lines = raw_lines[1:] if len(raw_lines) > 1 else raw_lines
+        for line in description_lines:
+            if line.startswith(("- ", "* ", "• ")):
+                line = line[2:].strip()
+            if line:
+                lines.append(line)
+
+    return lines or ["No description available."]
+
+
 def get_commits_between(base_sha, head_sha):
     """Return commits on animation-workflow from base_sha (exclusive) to head_sha (inclusive)."""
     if not head_sha:
@@ -720,46 +750,23 @@ class SUB_OP_view_update_changelog(Operator):
                 "author": "",
             }]
 
-        return context.window_manager.invoke_popup(self, width=520)
+        return context.window_manager.invoke_popup(self, width=420)
 
     def draw(self, context):
         layout = self.layout
         col = layout.column(align=True)
-        col.label(text="Changes in this update", icon='INFO')
-
-        if CURRENT_COMMIT_SHA and LATEST_COMMIT_SHA:
-            col.label(text=f"{CURRENT_COMMIT_SHA[:8]}  ->  {LATEST_COMMIT_SHA[:8]}")
-        if LATEST_COMMIT_DATE:
-            col.label(text=f"Latest commit date: {LATEST_COMMIT_DATE[:10]}")
-
+        col.label(text="What's New", icon='INFO')
         col.separator()
 
         if not PENDING_UPDATE_COMMITS:
-            col.label(text="No commit details available.")
+            col.label(text="No changes listed.")
             return
 
+        lines = _changelog_lines_from_commits(PENDING_UPDATE_COMMITS)
         box = col.box()
         inner = box.column(align=True)
-        for index, commit in enumerate(PENDING_UPDATE_COMMITS, start=1):
-            row = inner.row(align=True)
-            row.label(text=f"{index}.", icon='BLANK1')
-            message_col = row.column(align=True)
-            header = commit.get("message", "No message")
-            sha = commit.get("sha", "")
-            date = commit.get("date", "")
-            author = commit.get("author", "")
-            meta_parts = [part for part in (sha, date, author) if part]
-            message_col.label(text=header)
-            if meta_parts:
-                message_col.label(text=" | ".join(meta_parts))
-            full_message = commit.get("full_message", "")
-            if full_message and "\n" in full_message:
-                for extra_line in full_message.splitlines()[1:]:
-                    extra_line = extra_line.strip()
-                    if extra_line:
-                        message_col.label(text=f"    {extra_line}")
-            if index != len(PENDING_UPDATE_COMMITS):
-                inner.separator()
+        for index, line in enumerate(lines, start=1):
+            inner.label(text=f"{index}. {line}")
 
 
 class SUB_OP_check_for_updates(Operator):

@@ -24,6 +24,162 @@ if TYPE_CHECKING:
     #from .material.sub_matl_data import SUB_PG_sub_matl_data
     from bpy.types import PoseBone, EditBone, CopyRotationConstraint, DampedTrackConstraint
 
+MODEL_FILE_SUFFIXES = ('.numdlb', '.nusktb', '.numshb', '.numatb', '.nuhlpb')
+REQUIRED_MODEL_SUFFIXES = ('.numdlb', '.nusktb', '.numshb', '.numatb')
+
+
+def _is_model_file(filename: str) -> bool:
+    return filename.endswith(MODEL_FILE_SUFFIXES)
+
+
+def _is_importable_model_folder(folder: str) -> bool:
+    """True when a folder contains the core SSBU model files needed for import."""
+    if not folder or not os.path.isdir(folder):
+        return False
+    try:
+        files = os.listdir(folder)
+    except OSError:
+        return False
+    return all(any(file_name.endswith(suffix) for file_name in files) for suffix in REQUIRED_MODEL_SUFFIXES)
+
+
+def find_model_folders(root_directory: str) -> list[str]:
+    """Recursively find folders that contain importable SSBU model files."""
+    root = os.path.normpath(root_directory)
+    if not os.path.isdir(root):
+        return []
+
+    if _is_importable_model_folder(root):
+        return [root]
+
+    found = []
+    for dirpath, dirnames, _filenames in os.walk(root):
+        if _is_importable_model_folder(dirpath):
+            found.append(dirpath)
+            dirnames.clear()
+    found.sort()
+    return found
+
+
+def _model_display_name(model_path: str, search_root: str) -> str:
+    model_path = os.path.normpath(model_path)
+    search_root = os.path.normpath(search_root)
+
+    if model_path == search_root or os.path.dirname(model_path) == search_root:
+        return os.path.basename(model_path)
+
+    try:
+        return os.path.relpath(model_path, search_root).replace('\\', '/')
+    except ValueError:
+        return os.path.basename(model_path)
+
+
+def _add_model_folder_to_list(ssp, model_folder_path: str, display_name: str) -> bool:
+    try:
+        files = [file_name for file_name in os.listdir(model_folder_path) if _is_model_file(file_name)]
+    except OSError:
+        return False
+    if not files:
+        return False
+
+    model_item = ssp.model_import_models.add()
+    model_item.name = display_name
+    model_item.path = model_folder_path
+    model_item.files.clear()
+    for file_name in files:
+        file_item = model_item.files.add()
+        file_item.name = file_name
+    return True
+
+
+def _assign_model_file_names(ssp, model_files: list[str]) -> None:
+    for file in model_files:
+        if file.endswith('.numdlb'):
+            ssp.model_import_numdlb_file_name = file
+        elif file.endswith('.nusktb'):
+            ssp.model_import_nusktb_file_name = file
+        elif file.endswith('.numshb'):
+            ssp.model_import_numshb_file_name = file
+        elif file.endswith('.numatb'):
+            ssp.model_import_numatb_file_name = file
+        elif file.endswith('.nuhlpb'):
+            ssp.model_import_nuhlpb_file_name = file
+
+
+def _folder_has_model_files(folder: str) -> bool:
+    if not folder or not os.path.isdir(folder):
+        return False
+    return _is_importable_model_folder(folder)
+
+
+def populate_mods_directory_models(ssp, directory: str) -> int:
+    ssp.model_import_models.clear()
+    count = 0
+    for root, dirs, files in os.walk(directory):
+        for dir_name in dirs:
+            body_folder_path = os.path.join(root, dir_name, "body")
+            if os.path.exists(body_folder_path):
+                for sub_dir_name in os.listdir(body_folder_path):
+                    model_folder_path = os.path.join(body_folder_path, sub_dir_name)
+                    if os.path.isdir(model_folder_path):
+                        model_files = [file for file in os.listdir(model_folder_path) if _is_model_file(file)]
+                        if model_files:
+                            character_name = os.path.basename(
+                                os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(model_folder_path)))))
+                            )
+                            model_item = ssp.model_import_models.add()
+                            model_item.name = character_name
+                            model_item.path = model_folder_path
+                            _assign_model_file_names(ssp, model_files)
+                            count += 1
+                            break
+                break
+    return count
+
+
+def populate_individual_model(ssp, directory: str) -> int:
+    ssp.model_import_models.clear()
+    model_folders = find_model_folders(directory)
+    if not model_folders:
+        return 0
+
+    count = 0
+    for model_folder in model_folders:
+        display_name = _model_display_name(model_folder, directory)
+        if _add_model_folder_to_list(ssp, model_folder, display_name):
+            count += 1
+
+    if count:
+        first_files = [file_name for file_name in os.listdir(model_folders[0]) if _is_model_file(file_name)]
+        _assign_model_file_names(ssp, first_files)
+    return count
+
+
+def refresh_model_import_list(ssp, directory: str) -> int:
+    previous_path = ""
+    if 0 <= ssp.model_import_models_index < len(ssp.model_import_models):
+        previous_path = ssp.model_import_models[ssp.model_import_models_index].path
+
+    if _folder_has_model_files(directory):
+        count = populate_individual_model(ssp, directory)
+    else:
+        count = populate_mods_directory_models(ssp, directory)
+        if count == 0:
+            count = populate_individual_model(ssp, directory)
+
+    if previous_path:
+        for index, item in enumerate(ssp.model_import_models):
+            if item.path == previous_path:
+                ssp.model_import_models_index = index
+                break
+        else:
+            ssp.model_import_models_index = min(ssp.model_import_models_index, max(len(ssp.model_import_models) - 1, 0))
+    else:
+        ssp.model_import_models_index = min(ssp.model_import_models_index, max(len(ssp.model_import_models) - 1, 0))
+
+    return count
+
+
 class SUB_PT_import_model(Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -56,7 +212,8 @@ class SUB_PT_import_model(Panel):
             return
         
         row = layout.row(align=True)
-        row.label(text='Selected Folder: "' + ssp.model_import_folder_path +'"')
+        row.label(text='Selected Folder: "' + ssp.model_import_folder_path + '"')
+        row.operator(SUB_OP_refresh_model_import_list.bl_idname, text="", icon='FILE_REFRESH')
         row = layout.row(align=True)
         row.operator(SUB_OP_select_model_import_folder.bl_idname, icon='ZOOM_ALL', text='Browse for a different mods directory')
         row = layout.row(align=True)
@@ -86,36 +243,41 @@ class SUB_OP_select_model_import_folder(Operator):
     def execute(self, context):
         ssp: SubSceneProperties = context.scene.sub_scene_properties
         ssp.model_import_folder_path = self.directory
-        ssp.last_model_folder = self.directory  # Save the last used directory
-        ssp.model_import_models.clear()
+        ssp.last_model_folder = self.directory
+        count = populate_mods_directory_models(ssp, self.directory)
+        if count == 0:
+            count = populate_individual_model(ssp, self.directory)
+        if count == 0:
+            self.report({'WARNING'}, "No models found in the selected directory.")
+        else:
+            self.report({'INFO'}, f"Found {count} model(s).")
+        return {'FINISHED'}
 
-        for root, dirs, files in os.walk(ssp.model_import_folder_path):
-            for dir_name in dirs:
-                body_folder_path = os.path.join(root, dir_name, "body")
-                if os.path.exists(body_folder_path):
-                    for sub_dir_name in os.listdir(body_folder_path):
-                        model_folder_path = os.path.join(body_folder_path, sub_dir_name)
-                        if os.path.isdir(model_folder_path):
-                            model_files = [file for file in os.listdir(model_folder_path) if file.endswith(('.numdlb', '.nusktb', '.numshb', '.numatb', '.nuhlpb'))]
-                            if model_files:
-                                character_name = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(model_folder_path))))))
-                                model_item = ssp.model_import_models.add()
-                                model_item.name = character_name  # Use the character's folder name
-                                model_item.path = model_folder_path
-                                for file in model_files:
-                                    if file.endswith('.numdlb'):
-                                        ssp.model_import_numdlb_file_name = file
-                                    elif file.endswith('.nusktb'):
-                                        ssp.model_import_nusktb_file_name = file
-                                    elif file.endswith('.numshb'):
-                                        ssp.model_import_numshb_file_name = file
-                                    elif file.endswith('.numatb'):
-                                        ssp.model_import_numatb_file_name = file
-                                    elif file.endswith('.nuhlpb'):
-                                        ssp.model_import_nuhlpb_file_name = file
-                                break  # Only add the first model folder found in each character's directory
-                    break  # Move to the next character's directory
 
+class SUB_OP_refresh_model_import_list(Operator):
+    bl_idname = 'sub.refresh_model_import_list'
+    bl_label = 'Refresh Model List'
+    bl_description = "Rescan the selected folder for model changes"
+    bl_options = {'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        ssp: SubSceneProperties = context.scene.sub_scene_properties
+        folder = ssp.model_import_folder_path or ssp.last_model_folder
+        return bool(folder and os.path.isdir(folder))
+
+    def execute(self, context):
+        ssp: SubSceneProperties = context.scene.sub_scene_properties
+        folder = ssp.model_import_folder_path or ssp.last_model_folder
+        if not folder or not os.path.isdir(folder):
+            self.report({'WARNING'}, "No valid folder to refresh.")
+            return {'CANCELLED'}
+
+        count = refresh_model_import_list(ssp, folder)
+        if count == 0:
+            self.report({'WARNING'}, "No models found in the selected folder.")
+        else:
+            self.report({'INFO'}, f"Refreshed {count} model(s).")
         return {'FINISHED'}
 
 class SUB_OP_import_model(bpy.types.Operator):
@@ -196,6 +358,8 @@ class SUB_OP_import_selected_model(bpy.types.Operator):
         ssp: SubSceneProperties = context.scene.sub_scene_properties
         selected_model = ssp.model_import_models[ssp.model_import_models_index]
         ssp.model_import_folder_path = selected_model.path
+        model_files = [file_name for file_name in os.listdir(selected_model.path) if _is_model_file(file_name)]
+        _assign_model_file_names(ssp, model_files)
         start = time.time()
 
         import_model(self, context)
@@ -222,28 +386,12 @@ class SUB_OP_select_individual_model(Operator):
     def execute(self, context):
         ssp: SubSceneProperties = context.scene.sub_scene_properties
         ssp.model_import_folder_path = self.directory
-        ssp.last_model_folder = self.directory  # Save the last used directory
-        ssp.model_import_models.clear()
-
-        # Direct folder search for model files
-        files = [f for f in os.listdir(self.directory) if f.endswith(('.numdlb', '.nusktb', '.numshb', '.numatb', '.nuhlpb'))]
-        if files:
-            model_item = ssp.model_import_models.add()
-            # Use just the immediate folder name instead of the full path
-            model_item.name = os.path.basename(os.path.normpath(self.directory))
-            model_item.path = self.directory
-            for file in files:
-                if file.endswith('.numdlb'):
-                    ssp.model_import_numdlb_file_name = file
-                elif file.endswith('.nusktb'):
-                    ssp.model_import_nusktb_file_name = file
-                elif file.endswith('.numshb'):
-                    ssp.model_import_numshb_file_name = file
-                elif file.endswith('.numatb'):
-                    ssp.model_import_numatb_file_name = file
-                elif file.endswith('.nuhlpb'):
-                    ssp.model_import_nuhlpb_file_name = file
-
+        ssp.last_model_folder = self.directory
+        count = populate_individual_model(ssp, self.directory)
+        if count == 0:
+            self.report({'WARNING'}, "No model files found in the selected folder or its subfolders.")
+        else:
+            self.report({'INFO'}, f"Found {count} model(s).")
         return {'FINISHED'}
 
 def import_model(operator: bpy.types.Operator, context: bpy.types.Context):
@@ -1253,3 +1401,34 @@ def remove_helper_bone_constraints(arma: bpy.types.Object):
 def refresh_helper_bone_constraints(arma: bpy.types.Object):
     remove_helper_bone_constraints(arma)
     setup_helper_bone_constraints(arma)
+
+
+def auto_refresh_loaded_model_folders():
+    """Rescan saved model import folders on startup or file load."""
+    try:
+        for scene in bpy.data.scenes:
+            ssp = getattr(scene, 'sub_scene_properties', None)
+            if not ssp:
+                continue
+            folder = ssp.model_import_folder_path or getattr(ssp, 'last_model_folder', '')
+            if folder and os.path.isdir(folder):
+                refresh_model_import_list(ssp, folder)
+    except Exception as exc:
+        print(f"Model import auto-refresh failed: {exc}")
+    return None
+
+
+@bpy.app.handlers.persistent
+def on_load_post_auto_refresh_model_import(_dummy):
+    bpy.app.timers.register(auto_refresh_loaded_model_folders, first_interval=0.2)
+
+
+def register_handlers():
+    if on_load_post_auto_refresh_model_import not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(on_load_post_auto_refresh_model_import)
+    bpy.app.timers.register(auto_refresh_loaded_model_folders, first_interval=0.5)
+
+
+def unregister_handlers():
+    if on_load_post_auto_refresh_model_import in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(on_load_post_auto_refresh_model_import)

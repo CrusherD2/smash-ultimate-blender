@@ -12,11 +12,55 @@ from bpy.app.handlers import persistent
 # Import expy_kit modules using relative imports
 # expy_kit is at the plugin root level, so we go up two levels from source/retargeting/
 from ...expy_kit import operators, properties, preferences, ui, preset_handler
-from ..blender_compat import set_pose_bone_select
+from ..blender_compat import assign_action, set_pose_bone_select
 
 
 # Auto-detection for Smash armatures
 _last_detected_armature = None
+_last_active_armature = None
+
+
+def ensure_armature_preset_tracked(armature_obj):
+    """Backfill active_preset for armatures that already have settings loaded."""
+    if not armature_obj or armature_obj.type != 'ARMATURE':
+        return
+
+    settings = armature_obj.data.expykit_retarget
+    if settings.active_preset or not settings.has_settings():
+        return
+
+    if "smush_blender_import" in armature_obj.name.lower():
+        settings.active_preset = 'Smash.py'
+
+
+def get_preset_display_label(armature_obj):
+    """Return the preset dropdown label for a specific armature."""
+    if not armature_obj or armature_obj.type != 'ARMATURE':
+        return "Retarget Presets"
+
+    ensure_armature_preset_tracked(armature_obj)
+    settings = armature_obj.data.expykit_retarget
+
+    if settings.active_preset:
+        from os.path import splitext, basename
+        return bpy.path.display_name(splitext(basename(settings.active_preset))[0], title_case=False)
+    if settings.has_settings():
+        return "-- Current Settings --"
+    return "Retarget Presets"
+
+
+def sync_preset_menu_label(context):
+    """Keep the preset menu class label aligned with the active armature."""
+    label = get_preset_display_label(context.object)
+    ULTIMATE_MT_retarget_presets.bl_label = label
+
+
+def set_armature_active_preset(armature_obj, preset_filepath):
+    """Store which preset file is active for an armature."""
+    if not armature_obj or armature_obj.type != 'ARMATURE':
+        return
+    from os.path import basename
+    armature_obj.data.expykit_retarget.active_preset = basename(preset_filepath)
 
 def load_custom_bones_from_preset(preset_path):
     """Parse a preset file and extract custom bone definitions"""
@@ -82,6 +126,7 @@ def load_preset_with_custom_bones(preset_name, armature_obj=None):
         
         # Now load the preset normally
         preset_handler.set_preset_skel(preset_name, validate=True)
+        set_armature_active_preset(armature_obj, preset_name)
         
         # Force UI refresh
         for area in bpy.context.screen.areas:
@@ -105,6 +150,7 @@ def check_and_load_smash_preset(armature_obj):
     
     # Check if settings are already loaded
     if armature_obj.data.expykit_retarget.has_settings():
+        ensure_armature_preset_tracked(armature_obj)
         return False  # Already has settings
     
     # Load Smash preset with proper custom bone handling
@@ -114,6 +160,7 @@ def check_and_load_smash_preset(armature_obj):
         bpy.context.view_layer.objects.active = armature_obj
         
         if load_preset_with_custom_bones('Smash.py', armature_obj):
+            set_armature_active_preset(armature_obj, 'Smash.py')
             print(f"Auto-loaded Smash preset for armature: {armature_name}")
             
             # Restore original active object
@@ -129,16 +176,25 @@ def check_and_load_smash_preset(armature_obj):
 @persistent
 def auto_detect_smash_armature(scene):
     """Auto-load Smash preset when a smush_blender_import armature is selected"""
-    global _last_detected_armature
+    global _last_detected_armature, _last_active_armature
     
     try:
+        ob = bpy.context.object
+        current_name = ob.name if ob and ob.type == 'ARMATURE' else None
+
+        if current_name != _last_active_armature:
+            _last_active_armature = current_name
+            if ob and ob.type == 'ARMATURE':
+                ensure_armature_preset_tracked(ob)
+            sync_preset_menu_label(bpy.context)
+
         # Check active object
-        if bpy.context.object and bpy.context.object.type == 'ARMATURE':
-            armature_name = bpy.context.object.name
+        if ob and ob.type == 'ARMATURE':
+            armature_name = ob.name
             
             # Only process if we haven't already processed this armature
             if _last_detected_armature != armature_name:
-                if check_and_load_smash_preset(bpy.context.object):
+                if check_and_load_smash_preset(ob):
                     _last_detected_armature = armature_name
         
         # Also check the "Bind To" target if set
@@ -211,6 +267,8 @@ class ULTIMATE_OT_execute_preset_retarget(bpy.types.Operator):
 
         settings = context.object.data.expykit_retarget
         preset_handler.reset_preset_names(settings)
+
+        set_armature_active_preset(context.object, filepath)
         
         # Force UI refresh to show custom bones
         for area in context.screen.areas:
@@ -239,6 +297,12 @@ class ULTIMATE_OT_add_preset_retarget(AddPresetBase, bpy.types.Operator):
     # Point to OUR custom menu class (this fixes the bl_label error on delete)
     preset_menu = "ULTIMATE_MT_retarget_presets"
     
+    overwrite: bpy.props.BoolProperty(
+        name="Overwrite Existing",
+        description="Replace the preset file if it already exists",
+        default=True,
+    )
+    
     # Same preset_defines and preset_values as original
     preset_defines = [
         "skeleton = bpy.context.object.data.expykit_retarget"
@@ -265,6 +329,165 @@ class ULTIMATE_OT_add_preset_retarget(AddPresetBase, bpy.types.Operator):
     
     # Same preset directory as original expy_kit (armature/retarget)
     preset_subdir = os.path.join("armature", "retarget")
+
+    def pre_cb(self, context):
+        if context.object and context.object.type == 'ARMATURE':
+            context.object.data.expykit_retarget.custom.sync_all_dynamic_props()
+
+    def invoke(self, context, event):
+        if self.remove_active or self.remove_name:
+            preset_label = get_preset_display_label(context.object)
+            if preset_label in ("Retarget Presets", "-- Current Settings --"):
+                self.report({'WARNING'}, "No preset file selected to remove")
+                return {'CANCELLED'}
+            return context.window_manager.invoke_confirm(
+                self,
+                event,
+                title=f'Delete preset "{preset_label}"?',
+                confirm_text="Delete",
+                icon='ERROR',
+            )
+
+        if context.object and context.object.type == 'ARMATURE':
+            preset = context.object.data.expykit_retarget.active_preset
+            if preset:
+                from os.path import splitext, basename
+                self.name = bpy.path.display_name(splitext(basename(preset))[0], title_case=False)
+            elif ULTIMATE_MT_retarget_presets.bl_label not in ("Retarget Presets", "-- Current Settings --"):
+                self.name = ULTIMATE_MT_retarget_presets.bl_label
+
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        self.layout.prop(self, "name")
+        self.layout.prop(self, "overwrite")
+
+    def execute(self, context):
+        import os
+        from bl_operators.presets import AddPresetBase, _is_path_readonly
+
+        if hasattr(self, "pre_cb"):
+            self.pre_cb(context)
+
+        preset_menu_class = getattr(bpy.types, self.preset_menu)
+        is_preset_add = not (self.remove_name or self.remove_active)
+
+        if is_preset_add:
+            name = self.name.strip()
+            if not name:
+                return {'FINISHED'}
+
+            filename = AddPresetBase.as_filename(name)
+            target_path = os.path.join("presets", self.preset_subdir)
+            target_path = bpy.utils.user_resource('SCRIPTS', path=target_path, create=True)
+
+            if not target_path:
+                self.report({'WARNING'}, "Failed to create presets path")
+                return {'CANCELLED'}
+
+            preset_filepath = bpy.utils.preset_find(filename, self.preset_subdir, ext=".py")
+
+            if _is_path_readonly(target_path) or (preset_filepath and not self.overwrite):
+                self.report({'WARNING'}, f"Cannot create preset \"{name}\", as the name already exists")
+                return {'CANCELLED'}
+
+            filepath = preset_filepath or os.path.join(target_path, filename) + ".py"
+
+            try:
+                self._write_preset_file(filepath)
+            except Exception as ex:
+                self.report({'ERROR'}, f"Failed to write preset: {ex!r}")
+                return {'CANCELLED'}
+
+            preset_menu_class.bl_label = bpy.path.display_name(filename)
+            set_armature_active_preset(context.object, os.path.basename(filepath))
+            self.report({'INFO'}, f"Saved preset: {filename}")
+            return {'FINISHED'}
+
+        return AddPresetBase.execute(self, context)
+
+    def _write_preset_file(self, filepath):
+        import os
+        from bl_operators.presets import AddPresetBase
+
+        preset_menu_class = getattr(bpy.types, self.preset_menu)
+
+        def rna_recursive_attr_expand(value, rna_path_step, level):
+            if isinstance(value, bpy.types.PropertyGroup):
+                properties_skip = {"rna_type"}
+                for sub_value_attr in value.bl_rna.properties.keys():
+                    if sub_value_attr in properties_skip:
+                        continue
+                    properties_skip.add(sub_value_attr)
+                    sub_value = getattr(value, sub_value_attr)
+                    rna_recursive_attr_expand(
+                        sub_value,
+                        f"{rna_path_step}.{sub_value_attr}",
+                        level,
+                    )
+            elif type(value).__name__ == "bpy_prop_collection_idprop":
+                file_preset.write(f"{rna_path_step}.clear()\n")
+                for sub_value in value:
+                    file_preset.write(f"item_sub_{level} = {rna_path_step}.add()\n")
+                    rna_recursive_attr_expand(sub_value, f"item_sub_{level}", level + 1)
+            else:
+                try:
+                    value = value[:]
+                except Exception:
+                    pass
+                file_preset.write(f"{rna_path_step} = {value!r}\n")
+
+        with open(filepath, "w", encoding="utf-8") as file_preset:
+            file_preset.write("import bpy\n")
+
+            namespace_globals = {"bpy": bpy}
+            namespace_locals = {}
+
+            for rna_path in self.preset_defines:
+                exec(rna_path, namespace_globals, namespace_locals)
+                file_preset.write(f"{rna_path}\n")
+            file_preset.write("\n")
+
+            for rna_path in self.preset_values:
+                value = eval(rna_path, namespace_globals, namespace_locals)
+                rna_recursive_attr_expand(value, rna_path, 1)
+
+        preset_menu_class.bl_label = bpy.path.display_name(os.path.splitext(os.path.basename(filepath))[0])
+
+
+class ULTIMATE_OT_map_bones_by_proximity(bpy.types.Operator):
+    """Map bones by nearest world-space position to a reference armature's preset"""
+    bl_idname = "object.ultimate_map_bones_by_proximity"
+    bl_label = "Map Bones by Proximity"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        if not context.object or context.object.type != 'ARMATURE':
+            return False
+        ref = getattr(context.scene, 'expykit_nearest_bone_ref', None)
+        return ref and ref.type == 'ARMATURE' and ref != context.object
+
+    def execute(self, context):
+        from .nearest_bone_mapper import map_bones_by_proximity
+
+        target = context.object
+        reference = context.scene.expykit_nearest_bone_ref
+
+        if not reference.data.expykit_retarget.has_settings():
+            self.report({'ERROR'}, f"Reference armature '{reference.name}' has no preset mapping")
+            return {'CANCELLED'}
+
+        mapped_count, custom_count = map_bones_by_proximity(reference, target)
+        if mapped_count == 0 and custom_count == 0:
+            self.report({'WARNING'}, "No bones could be mapped by proximity")
+            return {'CANCELLED'}
+
+        self.report(
+            {'INFO'},
+            f"Mapped {mapped_count} bones and {custom_count} custom bones from '{reference.name}'",
+        )
+        return {'FINISHED'}
 
 
 # We'll create a REPLACEMENT operator instead of patching
@@ -750,12 +973,24 @@ class ULTIMATE_PT_expy_retarget(ui.VIEW3D_PT_expy_retarget):
         row.operator(ui.SetToActiveBoneHelpText.bl_idname, text="How to Set Active Bone", icon='HELP')
         layout.separator()
 
+        sync_preset_menu_label(context)
+
+        preset_label = get_preset_display_label(context.object)
+
         # Use our custom preset menu that handles custom bones
         split = layout.split(factor=0.75)
-        split.menu(ULTIMATE_MT_retarget_presets.__name__, text=ULTIMATE_MT_retarget_presets.bl_label)
+        split.menu(ULTIMATE_MT_retarget_presets.__name__, text=preset_label)
         row = split.row(align=True)
         row.operator(ULTIMATE_OT_add_preset_retarget.bl_idname, text="+")
         row.operator(ULTIMATE_OT_add_preset_retarget.bl_idname, text="-").remove_active = True
+
+        layout.separator()
+        box = layout.box()
+        box.label(text="Map from Reference Armature", icon='AUTO')
+        row = box.row(align=True)
+        row.prop(context.scene, 'expykit_nearest_bone_ref', text="Reference")
+        row.operator(ULTIMATE_OT_map_bones_by_proximity.bl_idname, text="Map by Proximity")
+        box.label(text="Uses nearest bone positions from the reference rig", icon='INFO')
 
 
 class ULTIMATE_PT_BindPanel(ui.VIEW3D_PT_BindPanel):
@@ -949,6 +1184,8 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
             if len(context.selected_objects) > 1:
                 column.label(text="No need to select two Armatures anymore", icon='ERROR')
             
+            column.label(text="Mouse cursor fills as a clock while baking")
+            
             row = column.split(factor=0.30, align=True)
             row.label(text="")
             row.prop(self, "clear_users_old")
@@ -967,7 +1204,7 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
         
         else:  # VISIBLE mode
             column.label(text="Bake Visible Mode:", icon='INFO')
-            column.label(text="Bulk bakes all actions with visual keying")
+            column.label(text="Parallel visual bake of all actions")
             column.label(text="Renames originals to _old, baked get original names")
             
             row = column.split(factor=0.30, align=True)
@@ -1014,7 +1251,6 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
     def _execute_bake_visible(self, context):
         """Bake using visual keying - bulk bakes all actions like the constrained mode"""
         from ...expy_kit.operators import validate_actions
-        from ...expy_kit import bone_utils
         
         ob = context.object
         
@@ -1040,10 +1276,6 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
             self.report({'ERROR'}, f"No animation data on source armature ({source_armature.name})")
             return {'CANCELLED'}
         
-        # Select pose bones for baking
-        for pb in dest_armature.pose.bones:
-            set_pose_bone_select(pb, True)
-        
         # Get list of actions to bake - those that belong to the SOURCE armature
         actions_to_bake = []
         for action in bpy.data.actions:
@@ -1060,9 +1292,6 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
             return {'CANCELLED'}
         
         total_actions = len(actions_to_bake)
-        current_action = 0
-        
-        context.window.cursor_modal_set('WAIT')
         
         # Store which bones have constraints (to clear after all baking)
         bones_with_constraints = []
@@ -1072,53 +1301,15 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
                     bones_with_constraints.append(pb.name)
         
         try:
-            for action in list(actions_to_bake):  # Use list() to allow modification during iteration
-                current_action += 1
-                progress = current_action / total_actions if total_actions > 0 else 0
-                context.window_manager.progress_update(progress)
-                bpy.context.view_layer.update()
-                
-                # Set the action on the SOURCE armature (the one constraints point to)
-                source_armature.animation_data.action = action
-                fr_start, fr_end = action.frame_range
-                
-                # Bake with visual keying on the DESTINATION armature (don't clear constraints yet)
-                bpy.ops.nla.bake(
-                    frame_start=int(fr_start),
-                    frame_end=int(fr_end),
-                    bake_types={'POSE'},
-                    only_selected=True,
-                    visual_keying=True,
-                    clear_constraints=False
-                )
-                
-                if not dest_armature.animation_data or not dest_armature.animation_data.action:
-                    self.report({'WARNING'}, f"Failed to bake {action.name}")
-                    continue
-                
-                # Get the baked action
-                baked_action = dest_armature.animation_data.action
-                baked_action.use_fake_user = self.fake_user_new
-                
-                # Store original action name
-                original_name = action.name
-                
-                # Clean the name - remove armature prefixes
-                if "|" in original_name:
-                    clean_action_name = original_name.split("|")[-1]
-                else:
-                    clean_action_name = original_name
-                
-                # Rename original to _old
-                action.name = f"{original_name}_old"
-                
-                # Name the baked action like the original
-                baked_action.name = clean_action_name
-                
-                if self.clear_users_old and action.users > 0:
-                    action.user_clear()
-                
-                print(f"Baked '{original_name}' -> '{clean_action_name}' (original renamed to '{action.name}')")
+            from .fast_bake import bake_visible_actions
+            baked_count = bake_visible_actions(
+                context,
+                source_armature,
+                dest_armature,
+                actions_to_bake,
+                fake_user_new=self.fake_user_new,
+                clear_users_old=self.clear_users_old,
+            )
             
             # Clear constraints after all baking is done
             if self.clear_constraints_after:
@@ -1130,7 +1321,7 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
                     except KeyError:
                         continue
             
-            self.report({'INFO'}, f"Bake Visible completed - {total_actions} actions baked")
+            self.report({'INFO'}, f"Bake Visible completed - {baked_count}/{total_actions} actions baked")
             
         except Exception as e:
             self.report({'ERROR'}, f"Bake failed: {str(e)}")
@@ -1142,135 +1333,22 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
         return {'FINISHED'}
     
     def _execute_bake_constrained(self, context):
-        """Original constrained baking behavior"""
-        import re
-        from ...expy_kit import bone_utils
-        from ...expy_kit.operators import validate_actions, clean_baked_action, sync_vis_and_mat_tracks
-        
-        sel_obs = list(context.selected_objects)
-        
-        # Calculate total actions to bake for progress tracking
-        total_actions = 0
-        for ob in sel_obs:
-            trg_ob = self._get_trg_ob(ob)
-            if trg_ob:
-                for action in bpy.data.actions:
-                    if validate_actions(action, trg_ob.path_resolve) and "SAP Data" not in action.name:
-                        total_actions += 1
-        
-        current_action = 0
-        context.window.cursor_modal_set('WAIT')
-        
-        for ob in sel_obs:
-            ob.select_set(False)
-            
-            trg_ob = self._get_trg_ob(ob)
-            if not trg_ob:
-                continue
-            
-            constr_bone_names = []
-            for pb in bone_utils.get_constrained_controls(ob, unselect=True, use_deform=not self.exclude_deform):
-                if pb.name + "_RET" in trg_ob.data.bones:
-                    set_pose_bone_select(pb, True)
-                    constr_bone_names.append(pb.name)
-            
-            for action in list(bpy.data.actions):
-                if not validate_actions(action, trg_ob.path_resolve):
-                    continue
-                
-                if "SAP Data" in action.name:
-                    continue
-                
-                current_action += 1
-                progress = current_action / total_actions if total_actions > 0 else 0
-                context.window_manager.progress_update(progress)
-                bpy.context.view_layer.update()
-                
-                trg_ob.animation_data.action = action
-                fr_start, fr_end = action.frame_range
-                bpy.ops.nla.bake(frame_start=int(fr_start), frame_end=int(fr_end),
-                                 bake_types={'POSE'}, only_selected=True,
-                                 visual_keying=True, clear_constraints=False)
-                
-                if not ob.animation_data:
-                    self.report({'WARNING'}, f"failed to bake {action.name}")
-                    continue
-                
-                baked_action = ob.animation_data.action
-                baked_action.use_fake_user = self.fake_user_new
-                
-                clean_baked_action(action, baked_action, ob)
-                
-                original_name = action.name
-                
-                if "|" in original_name:
-                    clean_action_name = original_name.split("|")[-1]
-                else:
-                    clean_action_name = original_name
-                
-                action.name = f"{original_name}_old"
-                baked_action.name = clean_action_name
-                
-                if self.clear_users_old and action.users > 0:
-                    action.user_clear()
-                
-                if self.copy_visibility_fcurves:
-                    if hasattr(trg_ob.data, 'sub_anim_properties') and hasattr(ob.data, 'sub_anim_properties'):
-                        sync_vis_and_mat_tracks(trg_ob.data, ob.data)
-                    
-                    target_armature_name = ob.name
-                    source_armature_name = trg_ob.name
-                    
-                    for sap_action in bpy.data.actions:
-                        if "SAP Data" not in sap_action.name:
-                            continue
-                        source_prefix_with_space = f"{source_armature_name} "
-                        if not sap_action.name.startswith(source_prefix_with_space):
-                            continue
-                        
-                        suffix = sap_action.name[len(source_prefix_with_space):]
-                        new_sap_data_name = f"{target_armature_name} {suffix}"
-                        sap_action.name = new_sap_data_name
-                    
-                    try:
-                        dup_pattern = re.compile(rf"^{re.escape(target_armature_name)}(?:\s+\.\d+)+\s+(?P<rest>.+)$")
-                    except Exception:
-                        dup_pattern = None
-                    
-                    if dup_pattern is not None:
-                        for sap_action in bpy.data.actions:
-                            if "SAP Data" not in sap_action.name:
-                                continue
-                            match = dup_pattern.match(sap_action.name)
-                            if not match:
-                                continue
-                            cleaned = f"{target_armature_name} {match.group('rest')}"
-                            sap_action.name = cleaned
-                    
-                    if hasattr(ob.data, 'animation_data'):
-                        sap_data_action_name = f"{target_armature_name} {clean_action_name} SAP Data"
-                        sap_data_action = bpy.data.actions.get(sap_data_action_name)
-                        if sap_data_action:
-                            if not ob.data.animation_data:
-                                ob.data.animation_data_create()
-                            ob.data.animation_data.action = sap_data_action
-            
-            # Delete constraints
-            for bone_name in constr_bone_names:
-                try:
-                    pbone = ob.pose.bones[bone_name]
-                except KeyError:
-                    continue
-                for constr in reversed(pbone.constraints):
-                    pbone.constraints.remove(constr)
-        
-        context.window.cursor_modal_restore()
-        
+        """Use the original expy_kit nla.bake constrained baker."""
+        result = bpy.ops.armature.expykit_bake_constrained_actions(
+            'EXEC_DEFAULT',
+            clear_users_old=self.clear_users_old,
+            fake_user_new=self.fake_user_new,
+            exclude_deform=self.exclude_deform,
+            copy_visibility_fcurves=self.copy_visibility_fcurves,
+            do_bake=True,
+        )
+        if 'CANCELLED' in result:
+            return {'CANCELLED'}
         return {'FINISHED'}
 
 
 class ULTIMATE_PT_retarget_spine(ui.VIEW3D_PT_expy_retarget_spine):
-    """Spine panel in Ultimate tab"""
+    """Core panel in Ultimate tab"""
     bl_category = 'Ultimate'
     bl_parent_id = "ULTIMATE_PT_expy_retarget"
     
@@ -1437,6 +1515,7 @@ def register():
     try:
         bpy.utils.register_class(ULTIMATE_OT_execute_preset_retarget)
         bpy.utils.register_class(ULTIMATE_OT_add_preset_retarget)
+        bpy.utils.register_class(ULTIMATE_OT_map_bones_by_proximity)
         bpy.utils.register_class(ULTIMATE_MT_retarget_presets)
         bpy.utils.register_class(ULTIMATE_OT_bind_armatures)
         bpy.utils.register_class(ULTIMATE_OT_retargeting_help)
@@ -1702,6 +1781,14 @@ def register():
             poll=ui.poll_armature_bind_to,
             update=on_bind_to_update
         )
+
+    if not hasattr(bpy.types.Scene, 'expykit_nearest_bone_ref'):
+        bpy.types.Scene.expykit_nearest_bone_ref = bpy.props.PointerProperty(
+            type=bpy.types.Object,
+            name="Reference Armature",
+            description="Armature with a configured preset to use as a spatial reference for bone mapping",
+            poll=ui.poll_armature_bind_to,
+        )
     
     # Register auto-detection handler for Smash armatures
     if auto_detect_smash_armature not in bpy.app.handlers.depsgraph_update_post:
@@ -1743,6 +1830,7 @@ def unregister():
         bpy.utils.unregister_class(ULTIMATE_OT_retargeting_help)
         bpy.utils.unregister_class(ULTIMATE_OT_bind_armatures)
         bpy.utils.unregister_class(ULTIMATE_MT_retarget_presets)
+        bpy.utils.unregister_class(ULTIMATE_OT_map_bones_by_proximity)
         bpy.utils.unregister_class(ULTIMATE_OT_add_preset_retarget)
         bpy.utils.unregister_class(ULTIMATE_OT_execute_preset_retarget)
     except:
@@ -1810,12 +1898,15 @@ def unregister():
         pass
     
     # Remove scene properties
+    if hasattr(bpy.types.Scene, 'expykit_nearest_bone_ref'):
+        del bpy.types.Scene.expykit_nearest_bone_ref
     if hasattr(bpy.types.Scene, 'expykit_bind_to'):
         del bpy.types.Scene.expykit_bind_to
     
     # Reset global state
-    global _last_detected_armature
+    global _last_detected_armature, _last_active_armature
     _last_detected_armature = None
+    _last_active_armature = None
     
     print("  Retargeting module unregistered successfully!")
 
