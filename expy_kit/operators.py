@@ -2428,6 +2428,12 @@ class BakeConstrainedActions(bpy.types.Operator):
                                         description="Link SAP Data animations to the new retargeted animation instead of the _old one", 
                                         default=False)
 
+    keep_ik_bones: BoolProperty(
+        name="Keep IK Bones",
+        description="Include IK control bones in the bake and preserve their keyframes (FootIK, KneeIK, HandIK, etc.)",
+        default=True,
+    )
+
     def draw(self, context):
         layout = self.layout
         column = layout.column()
@@ -2457,6 +2463,10 @@ class BakeConstrainedActions(bpy.types.Operator):
         row = column.split(factor=0.30, align=True)
         row.label(text="")
         row.prop(self, "copy_visibility_fcurves") # Add the new checkbox here
+
+        row = column.split(factor=0.30, align=True)
+        row.label(text="")
+        row.prop(self, "keep_ik_bones")
 
         row = column.split(factor=0.30, align=True)
         row.label(text="")
@@ -2525,6 +2535,14 @@ class BakeConstrainedActions(bpy.types.Operator):
                     if pb.name + "_RET" in trg_ob.data.bones:
                         set_pose_bone_select(pb, True)
                         constr_bone_names.append(pb.name)
+
+                if self.keep_ik_bones:
+                    for pb in ob.pose.bones:
+                        if "IK" not in pb.name:
+                            continue
+                        set_pose_bone_select(pb, True)
+                        if pb.name not in constr_bone_names:
+                            constr_bone_names.append(pb.name)
 
                 if not constr_bone_names:
                     self.report({'WARNING'}, f"No constrained bones to bake on {ob.name}")

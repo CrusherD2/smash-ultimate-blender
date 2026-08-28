@@ -111,3 +111,45 @@ def get_id_action_fcurves(id_data):
     if action is None:
         return None
     return get_or_create_fcurves(action)
+
+
+def _action_valid_for_armature(action, armature):
+    """True when every fcurve path resolves on the given armature."""
+    if action is None or armature is None:
+        return False
+    path_resolve = armature.path_resolve
+    for fc in get_fcurves(action):
+        data_path = fc.data_path
+        if fc.array_index:
+            data_path = f"{data_path}[{fc.array_index}]"
+        try:
+            path_resolve(data_path)
+        except ValueError:
+            return False
+    return True
+
+
+def collect_actions_for_armatures(armatures):
+    """
+    Return actions that resolve on any of the given armatures and are eligible
+    for retarget baking (skips SAP Data and _old backups).
+    """
+    armatures = [
+        ob for ob in armatures
+        if ob and getattr(ob, 'type', None) == 'ARMATURE'
+    ]
+    if not armatures:
+        return []
+
+    results = []
+    seen = set()
+    for action in bpy.data.actions:
+        name = action.name
+        if name in seen:
+            continue
+        if "SAP Data" in name or "_old" in name:
+            continue
+        if any(_action_valid_for_armature(action, ob) for ob in armatures):
+            seen.add(name)
+            results.append(action)
+    return results

@@ -1338,8 +1338,7 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
     
     def _execute_bake_constrained(self, context):
         """Use the original expy_kit nla.bake constrained baker."""
-        result = bpy.ops.armature.expykit_bake_constrained_actions(
-            'EXEC_DEFAULT',
+        bake_kwargs = dict(
             clear_users_old=self.clear_users_old,
             fake_user_new=self.fake_user_new,
             exclude_deform=self.exclude_deform,
@@ -1347,6 +1346,18 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
             keep_ik_bones=self.keep_ik_bones,
             do_bake=True,
         )
+        try:
+            result = bpy.ops.armature.expykit_bake_constrained_actions(
+                'EXEC_DEFAULT',
+                **bake_kwargs,
+            )
+        except TypeError:
+            # Older bundled expy_kit builds may not expose keep_ik_bones yet.
+            bake_kwargs.pop('keep_ik_bones', None)
+            result = bpy.ops.armature.expykit_bake_constrained_actions(
+                'EXEC_DEFAULT',
+                **bake_kwargs,
+            )
         if 'CANCELLED' in result:
             return {'CANCELLED'}
         return {'FINISHED'}
