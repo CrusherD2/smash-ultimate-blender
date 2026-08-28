@@ -456,7 +456,7 @@ class ULTIMATE_OT_add_preset_retarget(AddPresetBase, bpy.types.Operator):
 
 
 class ULTIMATE_OT_map_bones_by_proximity(bpy.types.Operator):
-    """Map bones by nearest world-space position to a reference armature's preset"""
+    """Map bones whose heads are close between the active and reference armatures"""
     bl_idname = "object.ultimate_map_bones_by_proximity"
     bl_label = "Map Bones by Proximity"
     bl_options = {'REGISTER', 'UNDO'}
@@ -474,18 +474,17 @@ class ULTIMATE_OT_map_bones_by_proximity(bpy.types.Operator):
         target = context.object
         reference = context.scene.expykit_nearest_bone_ref
 
-        if not reference.data.expykit_retarget.has_settings():
-            self.report({'ERROR'}, f"Reference armature '{reference.name}' has no preset mapping")
-            return {'CANCELLED'}
-
         mapped_count, custom_count = map_bones_by_proximity(reference, target)
         if mapped_count == 0 and custom_count == 0:
-            self.report({'WARNING'}, "No bones could be mapped by proximity")
+            self.report(
+                {'WARNING'},
+                "No close bone pairs found. Make sure both armatures overlap in the viewport.",
+            )
             return {'CANCELLED'}
 
         self.report(
             {'INFO'},
-            f"Mapped {mapped_count} bones and {custom_count} custom bones from '{reference.name}'",
+            f"Mapped {mapped_count} preset bones and {custom_count} custom bones from '{reference.name}'",
         )
         return {'FINISHED'}
 
@@ -990,7 +989,10 @@ class ULTIMATE_PT_expy_retarget(ui.VIEW3D_PT_expy_retarget):
         row = box.row(align=True)
         row.prop(context.scene, 'expykit_nearest_bone_ref', text="Reference")
         row.operator(ULTIMATE_OT_map_bones_by_proximity.bl_idname, text="Map by Proximity")
-        box.label(text="Uses nearest bone positions from the reference rig", icon='INFO')
+        box.label(
+            text="Pairs bones with nearby heads (nearly touching) on the reference rig",
+            icon='INFO',
+        )
 
 
 class ULTIMATE_PT_BindPanel(ui.VIEW3D_PT_BindPanel):
@@ -1148,6 +1150,12 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
         description="Link SAP Data animations to the new retargeted animation",
         default=False
     )
+
+    keep_ik_bones: bpy.props.BoolProperty(
+        name="Keep IK Bones",
+        description="Include IK control bones in the bake and preserve their keyframes (FootIK, KneeIK, HandIK, etc.)",
+        default=True,
+    )
     
     # Bake Visible specific options
     clear_constraints_after: bpy.props.BoolProperty(
@@ -1201,6 +1209,10 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
             row = column.split(factor=0.30, align=True)
             row.label(text="")
             row.prop(self, "copy_visibility_fcurves")
+
+            row = column.split(factor=0.30, align=True)
+            row.label(text="")
+            row.prop(self, "keep_ik_bones")
         
         else:  # VISIBLE mode
             column.label(text="Bake Visible Mode:", icon='INFO')
@@ -1250,7 +1262,7 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
     
     def _execute_bake_visible(self, context):
         """Bake using visual keying - bulk bakes all actions like the constrained mode"""
-        from ...expy_kit.operators import validate_actions
+        from ..anim.fcurve_compat import collect_actions_for_armatures
         
         ob = context.object
         
@@ -1276,16 +1288,8 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
             self.report({'ERROR'}, f"No animation data on source armature ({source_armature.name})")
             return {'CANCELLED'}
         
-        # Get list of actions to bake - those that belong to the SOURCE armature
-        actions_to_bake = []
-        for action in bpy.data.actions:
-            if "SAP Data" in action.name:
-                continue
-            if "_old" in action.name:
-                continue
-            # Check if action belongs to the source armature
-            if validate_actions(action, source_armature.path_resolve):
-                actions_to_bake.append(action)
+        # Get list of actions to bake - those that belong to the source or destination armature
+        actions_to_bake = collect_actions_for_armatures([source_armature, dest_armature])
         
         if not actions_to_bake:
             self.report({'WARNING'}, "No actions found to bake")
@@ -1340,6 +1344,7 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
             fake_user_new=self.fake_user_new,
             exclude_deform=self.exclude_deform,
             copy_visibility_fcurves=self.copy_visibility_fcurves,
+            keep_ik_bones=self.keep_ik_bones,
             do_bake=True,
         )
         if 'CANCELLED' in result:
