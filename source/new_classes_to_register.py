@@ -17,6 +17,7 @@ classes = [
     source.model.import_model.SUB_PT_import_model,
     source.model.import_model.SUB_OP_select_individual_model,
     source.model.import_model.SUB_OP_select_model_import_folder,
+    source.model.import_model.SUB_OP_refresh_model_import_list,
     source.model.import_model.SUB_OP_import_model,
     source.model.import_model.SUB_UL_model_import_list,
     source.model.import_model.SUB_OP_import_selected_model,
@@ -288,6 +289,7 @@ classes = [
     source.updater.version_check.SUB_OP_download_update,
     source.updater.version_check.SUB_OP_install_update,
     source.updater.version_check.SUB_OP_restart_blender,
+    source.updater.version_check.SUB_OP_view_update_changelog,
     source.updater.version_check.SUB_OP_check_for_updates,
     source.extras.eye_material_custom_vector_31_modal.SUB_OP_eye_material_custom_vector_31_modal,
     source.extras.bone_removal.SUB_OT_remove_selected_bones,
@@ -316,8 +318,10 @@ def register():
             bpy.utils.register_class(cls)
         except ValueError:
             print(f"Class {cls.__name__} is already registered")
+    source.model.import_model.register_handlers()
 
 def unregister():
+    source.model.import_model.unregister_handlers()
     for cls in reversed(classes):
         try:
             bpy.utils.unregister_class(cls)

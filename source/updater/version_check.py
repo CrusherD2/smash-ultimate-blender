@@ -55,6 +55,7 @@ LATEST_COMMIT_MESSAGE: str = None
 LATEST_COMMIT_DATE: str = None
 CURRENT_COMMIT_SHA: str = None
 CURRENT_COMMIT_MESSAGE: str = None
+PENDING_UPDATE_COMMITS: list = []
 BRANCH_DOWNLOAD_URL: str = "https://github.com/CrusherD2/smash-ultimate-blender/archive/refs/heads/animation-workflow.zip"
 UPDATE_DOWNLOAD_PROGRESS: float = 0.0
 UPDATE_STATUS: str = "idle"  # idle, checking, downloading, installing, ready_to_restart
@@ -98,12 +99,65 @@ def get_commit_message_by_sha(sha):
         print(f"Smash_ultimate_blender: Error fetching commit message for {sha}: {e}")
         return "Unknown message"
 
+
+def _parse_commit_entry(commit_data):
+    """Normalize a GitHub commit payload into a small dict for UI display."""
+    commit_info = commit_data.get("commit", {})
+    author_info = commit_info.get("author", {})
+    message = commit_info.get("message", "No message")
+    first_line = message.splitlines()[0] if message else "No message"
+    return {
+        "sha": commit_data.get("sha", "")[:8],
+        "message": first_line,
+        "full_message": message,
+        "date": (author_info.get("date") or "")[:10],
+        "author": author_info.get("name") or "Unknown",
+    }
+
+
+def get_commits_between(base_sha, head_sha):
+    """Return commits on animation-workflow from base_sha (exclusive) to head_sha (inclusive)."""
+    if not head_sha:
+        return []
+    if not base_sha or base_sha == head_sha:
+        return []
+
+    try:
+        response = requests.get(
+            f"https://api.github.com/repos/CrusherD2/smash-ultimate-blender/compare/{base_sha}...{head_sha}",
+            timeout=15,
+        )
+        response.raise_for_status()
+        compare_data = response.json()
+        commits = compare_data.get("commits", [])
+        if commits:
+            return [_parse_commit_entry(commit) for commit in reversed(commits)]
+
+        # Fallback when compare returns no commits (e.g. shallow history edge cases)
+        head_commit = requests.get(
+            f"https://api.github.com/repos/CrusherD2/smash-ultimate-blender/commits/{head_sha}",
+            timeout=10,
+        )
+        head_commit.raise_for_status()
+        return [_parse_commit_entry(head_commit.json())]
+    except Exception as e:
+        print(f"Smash_ultimate_blender: Error fetching commit changelog: {e}")
+        if LATEST_COMMIT_MESSAGE:
+            return [{
+                "sha": head_sha[:8] if head_sha else "unknown",
+                "message": LATEST_COMMIT_MESSAGE.splitlines()[0],
+                "full_message": LATEST_COMMIT_MESSAGE,
+                "date": (LATEST_COMMIT_DATE or "")[:10],
+                "author": "Unknown",
+            }]
+        return []
+
 def check_for_newer_version():
     """
     Check the animation-workflow branch for new commits.
     If there's a newer commit than what we have stored, mark update as available.
     """
-    global UPDATE_STATUS, UPDATE_AVAILABLE, LATEST_COMMIT_SHA, LATEST_COMMIT_MESSAGE, LATEST_COMMIT_DATE, CURRENT_COMMIT_SHA, CURRENT_COMMIT_MESSAGE
+    global UPDATE_STATUS, UPDATE_AVAILABLE, LATEST_COMMIT_SHA, LATEST_COMMIT_MESSAGE, LATEST_COMMIT_DATE, CURRENT_COMMIT_SHA, CURRENT_COMMIT_MESSAGE, PENDING_UPDATE_COMMITS
     
     UPDATE_STATUS = "checking"
     
@@ -157,10 +211,12 @@ def check_for_newer_version():
             print(f"  Current: {current_sha[:8] if current_sha else 'None'}")
             print(f"  Latest:  {latest_sha[:8]}")
             print(f"  Message: {latest_message[:100]}...")
+            PENDING_UPDATE_COMMITS = get_commits_between(current_sha, latest_sha)
             UPDATE_AVAILABLE = True
         else:
             # No update available
             print("Smash_ultimate_blender: Plugin is up to date")
+            PENDING_UPDATE_COMMITS = []
             UPDATE_AVAILABLE = False
             
     except Exception as e:
@@ -642,6 +698,69 @@ class SUB_OP_restart_blender(Operator):
         layout.label(text="Current file has unsaved changes!")
         layout.label(text="Save before restarting?")
         layout.operator("wm.save_mainfile", text="Save and Continue")
+
+class SUB_OP_view_update_changelog(Operator):
+    """Show commit messages included in the pending update"""
+    bl_idname = "sub.view_update_changelog"
+    bl_label = "Update Changelog"
+    bl_description = "Show what changed in the commits included in this update"
+
+    def execute(self, context):
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        global PENDING_UPDATE_COMMITS
+
+        if not PENDING_UPDATE_COMMITS and LATEST_COMMIT_MESSAGE:
+            PENDING_UPDATE_COMMITS = [{
+                "sha": (LATEST_COMMIT_SHA or "")[:8],
+                "message": LATEST_COMMIT_MESSAGE.splitlines()[0],
+                "full_message": LATEST_COMMIT_MESSAGE,
+                "date": (LATEST_COMMIT_DATE or "")[:10],
+                "author": "",
+            }]
+
+        return context.window_manager.invoke_popup(self, width=520)
+
+    def draw(self, context):
+        layout = self.layout
+        col = layout.column(align=True)
+        col.label(text="Changes in this update", icon='INFO')
+
+        if CURRENT_COMMIT_SHA and LATEST_COMMIT_SHA:
+            col.label(text=f"{CURRENT_COMMIT_SHA[:8]}  ->  {LATEST_COMMIT_SHA[:8]}")
+        if LATEST_COMMIT_DATE:
+            col.label(text=f"Latest commit date: {LATEST_COMMIT_DATE[:10]}")
+
+        col.separator()
+
+        if not PENDING_UPDATE_COMMITS:
+            col.label(text="No commit details available.")
+            return
+
+        box = col.box()
+        inner = box.column(align=True)
+        for index, commit in enumerate(PENDING_UPDATE_COMMITS, start=1):
+            row = inner.row(align=True)
+            row.label(text=f"{index}.", icon='BLANK1')
+            message_col = row.column(align=True)
+            header = commit.get("message", "No message")
+            sha = commit.get("sha", "")
+            date = commit.get("date", "")
+            author = commit.get("author", "")
+            meta_parts = [part for part in (sha, date, author) if part]
+            message_col.label(text=header)
+            if meta_parts:
+                message_col.label(text=" | ".join(meta_parts))
+            full_message = commit.get("full_message", "")
+            if full_message and "\n" in full_message:
+                for extra_line in full_message.splitlines()[1:]:
+                    extra_line = extra_line.strip()
+                    if extra_line:
+                        message_col.label(text=f"    {extra_line}")
+            if index != len(PENDING_UPDATE_COMMITS):
+                inner.separator()
+
 
 class SUB_OP_check_for_updates(Operator):
     """Manually check for updates"""

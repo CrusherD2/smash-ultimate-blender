@@ -47,6 +47,13 @@ class SUB_PT_update_plugin(Panel):
             
         if LATEST_COMMIT_DATE:
             layout.row().label(text=f"Date: {LATEST_COMMIT_DATE[:10]}")  # Show just the date part
+
+        layout.separator()
+        layout.row().operator(
+            "sub.view_update_changelog",
+            text="View What's New",
+            icon='TEXT',
+        )
         
         layout.separator()
         
