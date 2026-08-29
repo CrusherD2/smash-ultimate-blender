@@ -58,6 +58,33 @@ def get_fcurves(action: bpy.types.Action, id_type: str = 'OBJECT'):
     return channelbag.fcurves if channelbag is not None else []
 
 
+def _iter_channelbags(action: bpy.types.Action):
+    """Yield existing channelbags for a layered action (Blender 5+)."""
+    if action is None or uses_legacy_action_fcurves(action):
+        return
+    for layer in action.layers:
+        for strip in layer.strips:
+            for slot in action.slots:
+                channelbag = strip.channelbag(slot, ensure=False)
+                if channelbag is not None:
+                    yield channelbag
+
+
+def get_all_action_fcurves(action: bpy.types.Action, id_type: str = 'OBJECT'):
+    """Return every fcurve on an action across all layered slots."""
+    if action is None:
+        return []
+    if uses_legacy_action_fcurves(action):
+        return list(get_fcurves(action))
+
+    fcurves = []
+    for channelbag in _iter_channelbags(action):
+        fcurves.extend(channelbag.fcurves)
+    if not fcurves:
+        fcurves.extend(get_fcurves(action, id_type=id_type))
+    return fcurves
+
+
 def get_or_create_fcurves(action: bpy.types.Action, id_type: str = 'OBJECT'):
     """
     Like get_fcurves(), but ensures the layer/strip/slot/channelbag exist
@@ -91,11 +118,17 @@ def find_fcurve(action: bpy.types.Action, data_path: str, index: int = 0, id_typ
 
 def remove_fcurve(action: bpy.types.Action, fcurve: bpy.types.FCurve, id_type: str = 'OBJECT'):
     """Equivalent of the old `action.fcurves.remove(fcurve)`."""
+    if action is None or fcurve is None:
+        return
     if uses_legacy_action_fcurves(action):
         action.fcurves.remove(fcurve)
         return
+    for channelbag in _iter_channelbags(action):
+        if fcurve in channelbag.fcurves:
+            channelbag.fcurves.remove(fcurve)
+            return
     channelbag = _get_or_create_channelbag(action, id_type, ensure=False)
-    if channelbag is not None:
+    if channelbag is not None and fcurve in channelbag.fcurves:
         channelbag.fcurves.remove(fcurve)
 
 
