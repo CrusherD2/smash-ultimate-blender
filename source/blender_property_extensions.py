@@ -439,6 +439,11 @@ class SubSceneProperties(PropertyGroup):
         description="Include finger bones (FingerL11, FingerR23, etc.) in the mirroring process",
         default=True
     )
+    mirror_smash_y_anim_flip: BoolProperty(
+        name="Smash Y Anim Flip",
+        description="Use Studio SB anim_flip for Y-axis mirroring (best for imported nuanmb animations on standard Smash rigs). Off uses fcurve mirroring like X/Z",
+        default=False,
+    )
     anim_include_transform: BoolProperty(
         name="Include Transform",
         description="Include Transform Track",
