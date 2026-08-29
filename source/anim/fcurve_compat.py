@@ -70,6 +70,34 @@ def _iter_channelbags(action: bpy.types.Action):
                     yield channelbag
 
 
+def _find_fcurve_in_channelbag(channelbag, fcurve):
+    """Return the channelbag fcurve matching fcurve, if any."""
+    if channelbag is None or fcurve is None:
+        return None
+    for fc in channelbag.fcurves:
+        if fc == fcurve:
+            return fc
+        if fc.data_path == fcurve.data_path and fc.array_index == fcurve.array_index:
+            return fc
+    return None
+
+
+def find_fcurve(action: bpy.types.Action, data_path: str, index: int = 0, id_type: str = 'OBJECT'):
+    """Equivalent of the old `action.fcurves.find(...)`."""
+    if action is None:
+        return None
+    if uses_legacy_action_fcurves(action):
+        return action.fcurves.find(data_path, index=index)
+    for channelbag in _iter_channelbags(action):
+        found = channelbag.fcurves.find(data_path, index=index)
+        if found is not None:
+            return found
+    channelbag = _get_or_create_channelbag(action, id_type, ensure=False)
+    if channelbag is None:
+        return None
+    return channelbag.fcurves.find(data_path, index=index)
+
+
 def get_all_action_fcurves(action: bpy.types.Action, id_type: str = 'OBJECT'):
     """Return every fcurve on an action across all layered slots."""
     if action is None:
@@ -106,16 +134,6 @@ def new_fcurve(action: bpy.types.Action, data_path: str, index: int = 0, action_
     return channelbag.fcurves.new(data_path, index=index, group_name=action_group)
 
 
-def find_fcurve(action: bpy.types.Action, data_path: str, index: int = 0, id_type: str = 'OBJECT'):
-    """Equivalent of the old `action.fcurves.find(...)`."""
-    if uses_legacy_action_fcurves(action):
-        return action.fcurves.find(data_path, index=index)
-    channelbag = _get_or_create_channelbag(action, id_type, ensure=False)
-    if channelbag is None:
-        return None
-    return channelbag.fcurves.find(data_path, index=index)
-
-
 def remove_fcurve(action: bpy.types.Action, fcurve: bpy.types.FCurve, id_type: str = 'OBJECT'):
     """Equivalent of the old `action.fcurves.remove(fcurve)`."""
     if action is None or fcurve is None:
@@ -124,12 +142,15 @@ def remove_fcurve(action: bpy.types.Action, fcurve: bpy.types.FCurve, id_type: s
         action.fcurves.remove(fcurve)
         return
     for channelbag in _iter_channelbags(action):
-        if fcurve in channelbag.fcurves:
-            channelbag.fcurves.remove(fcurve)
+        match = _find_fcurve_in_channelbag(channelbag, fcurve)
+        if match is not None:
+            channelbag.fcurves.remove(match)
             return
     channelbag = _get_or_create_channelbag(action, id_type, ensure=False)
-    if channelbag is not None and fcurve in channelbag.fcurves:
-        channelbag.fcurves.remove(fcurve)
+    if channelbag is not None:
+        match = _find_fcurve_in_channelbag(channelbag, fcurve)
+        if match is not None:
+            channelbag.fcurves.remove(match)
 
 
 def get_id_action_fcurves(id_data):

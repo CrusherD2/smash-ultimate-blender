@@ -4,7 +4,7 @@ from bpy.props import EnumProperty, BoolProperty
 import logging
 import mathutils
 
-from ..anim.fcurve_compat import get_fcurves, new_fcurve, find_fcurve, remove_fcurve
+from ..anim.fcurve_compat import get_fcurves, get_all_action_fcurves, new_fcurve, find_fcurve, remove_fcurve
 from ..blender_compat import is_armature_bone_selected, is_pose_bone_selected
 from .anim_flip import (
     collect_excluded_bone_names,
@@ -171,6 +171,18 @@ def _idle_library_pose_data(context, act):
     return None
 
 
+def _has_smash_pose_source(act, context):
+    """True when the action has Smash TRS data for the Y-axis pose mirror path."""
+    if load_smash_pose_cache(act):
+        return True
+    return _idle_library_pose_data(context, act) is not None
+
+
+def _should_use_smash_y_mirror(act, context, selected_bones_only):
+    """Use Smash pose flip for Y only when we have cached TRS and a full-body mirror."""
+    return not selected_bones_only and _has_smash_pose_source(act, context)
+
+
 def _frames_for_action(act, only_active_frame, scene, selected_bone_names=None):
     if only_active_frame:
         return [scene.frame_current]
@@ -283,7 +295,7 @@ def mirror_action(
     selected_bone_names=None,
 ):
     
-    if not (act and get_fcurves(act)):
+    if not (act and get_all_action_fcurves(act)):
         print("No Keyframes")
         return
     
@@ -349,7 +361,7 @@ def mirror_action(
         # Step 1: Collect all source data first to prevent overwriting issues
         keyframe_data = []  # List of (source_path, target_path, array_index, value, left_handle, right_handle)
         
-        for fc in get_fcurves(act):
+        for fc in get_all_action_fcurves(act):
             data_path = fc.data_path
             array_index = fc.array_index
             path, _dot, attribute = data_path.rpartition('.')
@@ -426,9 +438,9 @@ def mirror_action(
         # Full animation mirroring: collect all data first, delete fcurves, then create new ones
         # Step 1: Collect all fcurve data with mirrored values
         fcurve_data = []  # List of (target_path, array_index, keyframe_values, action_group)
-        fcurves_to_remove = []  # Track which fcurves to remove
+        paths_to_remove = set()  # (data_path, array_index)
         
-        for fc in get_fcurves(act):
+        for fc in get_all_action_fcurves(act):
             data_path = fc.data_path
             array_index = fc.array_index
 
@@ -488,11 +500,13 @@ def mirror_action(
             
             # Store the mirrored data
             fcurve_data.append((target_data_path, array_index, keyframe_values, target_bone_name))
-            fcurves_to_remove.append(fc)
+            paths_to_remove.add((data_path, array_index))
         
-        # Step 2: Remove all source fcurves
-        for fc in fcurves_to_remove:
-            remove_fcurve(act, fc)
+        # Step 2: Remove all source fcurves by path (safe on Blender 5 layered actions)
+        for data_path, array_index in paths_to_remove:
+            existing_fc = find_fcurve(act, data_path, index=array_index)
+            if existing_fc:
+                remove_fcurve(act, existing_fc)
         
         # Step 3: Create new fcurves with mirrored data
         for target_path, array_index, keyframe_values, action_group_name in fcurve_data:
@@ -767,9 +781,14 @@ class SUB_OT_mirror_action(Operator):
             selected_bone_names=captured_bones if self.selected_bones_only else None,
         )
 
+        use_smash_y = _should_use_smash_y_mirror(action, context, self.selected_bones_only)
+
         # Apply mirroring
         if self.axis == 'Y':
-            mirror_action_smash_y(action, **smash_y_kwargs)
+            if use_smash_y:
+                mirror_action_smash_y(action, **smash_y_kwargs)
+            else:
+                mirror_action(action, axis='Y', **fcurve_kwargs)
             if self.rotate_180:
                 rotate_hip_180(context.active_object, self.axis, only_active_frame=self.only_active_frame, current_frame=current_frame)
         elif self.axis in ('X', 'Z'):
@@ -778,7 +797,10 @@ class SUB_OT_mirror_action(Operator):
                 rotate_hip_180(context.active_object, self.axis, only_active_frame=self.only_active_frame, current_frame=current_frame)
         elif self.axis == 'XY':
             mirror_action(action, axis='X', **fcurve_kwargs)
-            mirror_action_smash_y(action, **smash_y_kwargs)
+            if use_smash_y:
+                mirror_action_smash_y(action, **smash_y_kwargs)
+            else:
+                mirror_action(action, axis='Y', **fcurve_kwargs)
             if self.rotate_180:
                 rotate_hip_180(context.active_object, 'X', only_active_frame=self.only_active_frame, current_frame=current_frame)
                 rotate_hip_180(context.active_object, 'Y', only_active_frame=self.only_active_frame, current_frame=current_frame)
@@ -789,14 +811,20 @@ class SUB_OT_mirror_action(Operator):
                 rotate_hip_180(context.active_object, 'X', only_active_frame=self.only_active_frame, current_frame=current_frame)
                 rotate_hip_180(context.active_object, 'Z', only_active_frame=self.only_active_frame, current_frame=current_frame)
         elif self.axis == 'YZ':
-            mirror_action_smash_y(action, **smash_y_kwargs)
+            if use_smash_y:
+                mirror_action_smash_y(action, **smash_y_kwargs)
+            else:
+                mirror_action(action, axis='Y', **fcurve_kwargs)
             mirror_action(action, axis='Z', **fcurve_kwargs)
             if self.rotate_180:
                 rotate_hip_180(context.active_object, 'Y', only_active_frame=self.only_active_frame, current_frame=current_frame)
                 rotate_hip_180(context.active_object, 'Z', only_active_frame=self.only_active_frame, current_frame=current_frame)
         elif self.axis == 'XYZ':
             mirror_action(action, axis='X', **fcurve_kwargs)
-            mirror_action_smash_y(action, **smash_y_kwargs)
+            if use_smash_y:
+                mirror_action_smash_y(action, **smash_y_kwargs)
+            else:
+                mirror_action(action, axis='Y', **fcurve_kwargs)
             mirror_action(action, axis='Z', **fcurve_kwargs)
             if self.rotate_180:
                 rotate_hip_180(context.active_object, 'X', only_active_frame=self.only_active_frame, current_frame=current_frame)
@@ -804,7 +832,7 @@ class SUB_OT_mirror_action(Operator):
                 rotate_hip_180(context.active_object, 'Z', only_active_frame=self.only_active_frame, current_frame=current_frame)
         # Skip 'O'; helps back and forth between poses
         
-        if self.axis in ('Y', 'XY', 'YZ', 'XYZ'):
+        if self.axis in ('Y', 'XY', 'YZ', 'XYZ') and use_smash_y:
             message = f"Action mirrored on {self.axis}-axis using Smash anim_flip."
         else:
             message = f"Action mirrored on {self.axis}-axis using {mirror_space.lower()} space!"
