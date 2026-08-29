@@ -23,7 +23,7 @@ from .anim_flip import (
 # Set up logging
 logger = logging.getLogger(__name__)
 
-# Extra axes kept for the operator UI. Default Y uses Smash-space anim_flip instead.
+# Extra axes kept for the operator UI. Y uses the same fcurve mirror path as X/Z.
 NEGATE_DATA_PATH_XAXIS = (
     ('location', 0),
     ('rotation_quaternion', 2),
@@ -765,13 +765,6 @@ class SUB_OT_mirror_action(Operator):
         include_fingers = self.include_fingers
         
         action = context.active_object.animation_data.action
-        smash_y_kwargs = dict(
-            selected_bones_only=self.selected_bones_only,
-            context=context,
-            only_active_frame=self.only_active_frame,
-            include_fingers=include_fingers,
-            selected_bone_names=captured_bones if self.selected_bones_only else None,
-        )
         fcurve_kwargs = dict(
             selected_bones_only=self.selected_bones_only,
             context=context,
@@ -781,14 +774,9 @@ class SUB_OT_mirror_action(Operator):
             selected_bone_names=captured_bones if self.selected_bones_only else None,
         )
 
-        use_smash_y = _should_use_smash_y_mirror(action, context, self.selected_bones_only)
-
-        # Apply mirroring
+        # Apply mirroring (all axes use the fcurve path; X/Z were already stable on B5.2)
         if self.axis == 'Y':
-            if use_smash_y:
-                mirror_action_smash_y(action, **smash_y_kwargs)
-            else:
-                mirror_action(action, axis='Y', **fcurve_kwargs)
+            mirror_action(action, axis='Y', **fcurve_kwargs)
             if self.rotate_180:
                 rotate_hip_180(context.active_object, self.axis, only_active_frame=self.only_active_frame, current_frame=current_frame)
         elif self.axis in ('X', 'Z'):
@@ -797,10 +785,7 @@ class SUB_OT_mirror_action(Operator):
                 rotate_hip_180(context.active_object, self.axis, only_active_frame=self.only_active_frame, current_frame=current_frame)
         elif self.axis == 'XY':
             mirror_action(action, axis='X', **fcurve_kwargs)
-            if use_smash_y:
-                mirror_action_smash_y(action, **smash_y_kwargs)
-            else:
-                mirror_action(action, axis='Y', **fcurve_kwargs)
+            mirror_action(action, axis='Y', **fcurve_kwargs)
             if self.rotate_180:
                 rotate_hip_180(context.active_object, 'X', only_active_frame=self.only_active_frame, current_frame=current_frame)
                 rotate_hip_180(context.active_object, 'Y', only_active_frame=self.only_active_frame, current_frame=current_frame)
@@ -811,20 +796,14 @@ class SUB_OT_mirror_action(Operator):
                 rotate_hip_180(context.active_object, 'X', only_active_frame=self.only_active_frame, current_frame=current_frame)
                 rotate_hip_180(context.active_object, 'Z', only_active_frame=self.only_active_frame, current_frame=current_frame)
         elif self.axis == 'YZ':
-            if use_smash_y:
-                mirror_action_smash_y(action, **smash_y_kwargs)
-            else:
-                mirror_action(action, axis='Y', **fcurve_kwargs)
+            mirror_action(action, axis='Y', **fcurve_kwargs)
             mirror_action(action, axis='Z', **fcurve_kwargs)
             if self.rotate_180:
                 rotate_hip_180(context.active_object, 'Y', only_active_frame=self.only_active_frame, current_frame=current_frame)
                 rotate_hip_180(context.active_object, 'Z', only_active_frame=self.only_active_frame, current_frame=current_frame)
         elif self.axis == 'XYZ':
             mirror_action(action, axis='X', **fcurve_kwargs)
-            if use_smash_y:
-                mirror_action_smash_y(action, **smash_y_kwargs)
-            else:
-                mirror_action(action, axis='Y', **fcurve_kwargs)
+            mirror_action(action, axis='Y', **fcurve_kwargs)
             mirror_action(action, axis='Z', **fcurve_kwargs)
             if self.rotate_180:
                 rotate_hip_180(context.active_object, 'X', only_active_frame=self.only_active_frame, current_frame=current_frame)
@@ -832,10 +811,7 @@ class SUB_OT_mirror_action(Operator):
                 rotate_hip_180(context.active_object, 'Z', only_active_frame=self.only_active_frame, current_frame=current_frame)
         # Skip 'O'; helps back and forth between poses
         
-        if self.axis in ('Y', 'XY', 'YZ', 'XYZ') and use_smash_y:
-            message = f"Action mirrored on {self.axis}-axis using Smash anim_flip."
-        else:
-            message = f"Action mirrored on {self.axis}-axis using {mirror_space.lower()} space!"
+        message = f"Action mirrored on {self.axis}-axis using {mirror_space.lower()} space!"
         if self.rotate_180:
             message += f" Hip rotated 180° on {self.axis}-axis."
         self.report({"INFO"}, message)
