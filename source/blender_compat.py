@@ -30,12 +30,20 @@ def uses_legacy_action_fcurves(action=None):
 
 
 def assign_action(animation_data, action):
-    """Assign an action and, on 4.4+/5.x, the first action slot."""
+    """Assign an action and, on 4.4+/5.x, a slot compatible with the animated ID."""
     if animation_data is None:
         return
     animation_data.action = action
     if action is None:
         return
+    if hasattr(animation_data, 'action_suitable_slots'):
+        suitable = animation_data.action_suitable_slots
+        if suitable:
+            try:
+                animation_data.action_slot = suitable[0]
+                return
+            except (AttributeError, TypeError, RuntimeError):
+                pass
     slots = getattr(action, 'slots', None)
     if slots and len(slots) > 0 and hasattr(animation_data, 'action_slot'):
         try:
