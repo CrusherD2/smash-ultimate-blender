@@ -319,6 +319,25 @@ class SubSceneProperties(PropertyGroup):
         name="Animation Import Files Index",
         default=0
     )
+    raw_animation_import_folder_path: StringProperty(
+        name="Raw Animation Import Folder Path",
+        description="Path to the folder containing .rawanim files",
+        default=""
+    )
+    raw_animation_import_files: CollectionProperty(
+        name="Raw Animation Import Files",
+        description="List of found raw animation files",
+        type=AnimationImportFile
+    )
+    raw_animation_import_files_index: IntProperty(
+        name="Raw Animation Import Files Index",
+        default=0
+    )
+    raw_animations_expanded: BoolProperty(
+        name="Raw Animations Expanded",
+        description="Whether the Raw Animations section is expanded",
+        default=True
+    )
     action_export_list: CollectionProperty(
         name="Action Export List",
         description="List of actions for batch export",
@@ -369,6 +388,17 @@ class SubSceneProperties(PropertyGroup):
         description="Whether the IK Tools section is expanded",
         default=False
     )
+    bulk_ik_expanded: BoolProperty(
+        name="Bulk IK Expanded",
+        description="Whether the Bulk IK section is expanded",
+        default=False
+    )
+    bulk_ik_leg_l: StringProperty(name="Leg L", default="LegL")
+    bulk_ik_knee_l: StringProperty(name="Knee L", default="KneeL")
+    bulk_ik_foot_l: StringProperty(name="Foot L", default="FootL")
+    bulk_ik_leg_r: StringProperty(name="Leg R", default="LegR")
+    bulk_ik_knee_r: StringProperty(name="Knee R", default="KneeR")
+    bulk_ik_foot_r: StringProperty(name="Foot R", default="FootR")
     related_animations_expanded: BoolProperty(
         name="Related Animations Expanded",
         description="Whether the Related Animations section is expanded",
@@ -378,6 +408,11 @@ class SubSceneProperties(PropertyGroup):
         name="Batch Export Actions Expanded",
         description="Whether the Batch Export Actions section is expanded",
         default=False
+    )
+    anim_include_raw_animation: BoolProperty(
+        name="Include Raw Animation",
+        description="Also export a sparse .rawanim file alongside the .nuanmb export",
+        default=False,
     )
     import_options_expanded: BoolProperty(
         name="Import Options Expanded",

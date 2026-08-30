@@ -117,7 +117,7 @@ class SUB_PT_animation_tools(Panel):
                 col.operator("sub.create_arm_ik", text="Create Arm IK Bones")
                 col.operator("sub.create_foot_ik", text="Create Foot IK Bones")
                 # Only show buttons for operators that are registered
-                if hasattr(bpy.types, 'SUB_OP_quick_switch_ik_fk') or hasattr(bpy.ops, 'sub.quick_switch_ik_fk'):
+                if hasattr(bpy.types, 'SUB_OP_quick_switch_ik_fk'):
                     col.operator("sub.quick_switch_ik_fk", text="Switch IK/FK")
                 col.separator()
                 
@@ -128,9 +128,56 @@ class SUB_PT_animation_tools(Panel):
                 
                 # IK/FK Control section (moved to bottom)
                 col.label(text="IK/FK Control:")
-                if hasattr(bpy.types, 'SUB_OP_advanced_ik_fk_control') or hasattr(bpy.ops, 'sub.advanced_ik_fk_control'):
+                if hasattr(bpy.types, 'SUB_OP_advanced_ik_fk_control'):
                     col.operator("sub.advanced_ik_fk_control", text="Advanced IK/FK Control")
                 col.operator("sub.toggle_ik_influence", text="Toggle IK Influence")
+
+                # Bulk IK sub-section
+                bulk_box = box.box()
+                bulk_header = bulk_box.row()
+                bulk_header.prop(ssp, "bulk_ik_expanded",
+                                 icon="TRIA_DOWN" if ssp.bulk_ik_expanded else "TRIA_RIGHT",
+                                 icon_only=True, emboss=False)
+                bulk_header.label(text="Bulk IK")
+
+                if ssp.bulk_ik_expanded:
+                    arm_obj = context.object
+                    if arm_obj and arm_obj.type == 'ARMATURE':
+                        bulk_col = bulk_box.column(align=True)
+                        bulk_col.label(text="Left Leg:")
+                        row = bulk_col.row(align=True)
+                        row.prop_search(ssp, "bulk_ik_leg_l", arm_obj.data, "bones", text="Leg")
+                        op = row.operator("sub.bulk_ik_pick_bone", text="", icon='EYEDROPPER')
+                        op.target_property = "bulk_ik_leg_l"
+                        row = bulk_col.row(align=True)
+                        row.prop_search(ssp, "bulk_ik_knee_l", arm_obj.data, "bones", text="Knee")
+                        op = row.operator("sub.bulk_ik_pick_bone", text="", icon='EYEDROPPER')
+                        op.target_property = "bulk_ik_knee_l"
+                        row = bulk_col.row(align=True)
+                        row.prop_search(ssp, "bulk_ik_foot_l", arm_obj.data, "bones", text="Foot")
+                        op = row.operator("sub.bulk_ik_pick_bone", text="", icon='EYEDROPPER')
+                        op.target_property = "bulk_ik_foot_l"
+
+                        bulk_col.separator()
+                        bulk_col.label(text="Right Leg:")
+                        row = bulk_col.row(align=True)
+                        row.prop_search(ssp, "bulk_ik_leg_r", arm_obj.data, "bones", text="Leg")
+                        op = row.operator("sub.bulk_ik_pick_bone", text="", icon='EYEDROPPER')
+                        op.target_property = "bulk_ik_leg_r"
+                        row = bulk_col.row(align=True)
+                        row.prop_search(ssp, "bulk_ik_knee_r", arm_obj.data, "bones", text="Knee")
+                        op = row.operator("sub.bulk_ik_pick_bone", text="", icon='EYEDROPPER')
+                        op.target_property = "bulk_ik_knee_r"
+                        row = bulk_col.row(align=True)
+                        row.prop_search(ssp, "bulk_ik_foot_r", arm_obj.data, "bones", text="Foot")
+                        op = row.operator("sub.bulk_ik_pick_bone", text="", icon='EYEDROPPER')
+                        op.target_property = "bulk_ik_foot_r"
+
+                        bulk_col.separator()
+                        bulk_col.operator("sub.bulk_ik_match_all", text="Run Bulk IK on All Animations", icon='RENDER_ANIMATION')
+                        bulk_col.operator("sub.bulk_ik_bake_all", text="Bulk Bake & Remove IK on All Animations", icon='EXPORT')
+                    else:
+                        bulk_box.label(text="Select an armature to configure Bulk IK", icon='INFO')
 
         layout.separator()
         
@@ -188,6 +235,7 @@ class SUB_PT_animation_tools(Panel):
             
             # Mirror Animation button
             col.operator("sub.mirror_action", text="Mirror Animation")
+            col.operator("sub.mirror_all_actions", text="Mirror All Loaded Animations", icon='RENDER_ANIMATION')
             
             # Add bottom spacing
             col.separator()

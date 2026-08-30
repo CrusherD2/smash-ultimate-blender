@@ -10,6 +10,17 @@ from ..blender_compat import assign_action
 def invoke_position_match_dialog(cleanup_mode='LEGS'):
     bpy.ops.sub.fk_to_ik_transfer('INVOKE_DEFAULT', cleanup_mode=cleanup_mode)
 
+
+def run_fk_to_ik_match_for_raw_import(context, cleanup_mode='LEGS'):
+    """Match IK controls to FK on the current frame only (no dialogs)."""
+    if context.mode != 'POSE':
+        bpy.ops.object.mode_set(mode='POSE', toggle=False)
+    return bpy.ops.sub.fk_to_ik_transfer(
+        'EXEC_DEFAULT',
+        cleanup_mode=cleanup_mode,
+        entire_animation=False,
+    )
+
 class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
     """Perfectly positions IK controls to match the FK bone positions"""
     bl_idname = "sub.fk_to_ik_transfer"
@@ -69,6 +80,22 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
         default=False
     )
 
+    custom_leg_bone_l: bpy.props.StringProperty(name="Leg L", default="LegL", options={'SKIP_SAVE'})
+    custom_knee_bone_l: bpy.props.StringProperty(name="Knee L", default="KneeL", options={'SKIP_SAVE'})
+    custom_foot_bone_l: bpy.props.StringProperty(name="Foot L", default="FootL", options={'SKIP_SAVE'})
+    custom_leg_bone_r: bpy.props.StringProperty(name="Leg R", default="LegR", options={'SKIP_SAVE'})
+    custom_knee_bone_r: bpy.props.StringProperty(name="Knee R", default="KneeR", options={'SKIP_SAVE'})
+    custom_foot_bone_r: bpy.props.StringProperty(name="Foot R", default="FootR", options={'SKIP_SAVE'})
+
+    show_progress: bpy.props.BoolProperty(
+        name="Show Progress",
+        default=True,
+        options={'SKIP_SAVE', 'HIDDEN'},
+    )
+
+    def _fk_leg_bone(self, side, part):
+        return getattr(self, f"custom_{part}_bone_{side.lower()}")
+
     @classmethod
     def poll(cls, context):
         return (context.object and 
@@ -97,7 +124,7 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
         # This captures the true FK positions in world space without any IK influence
         original_fk_world_matrices = {}
         for side in ["L", "R"]:
-            foot_bone = armature_object.pose.bones.get(f"Foot{side}")
+            foot_bone = armature_object.pose.bones.get(self._fk_leg_bone(side, "foot"))
             hand_bone = armature_object.pose.bones.get(f"Hand{side}")
             if foot_bone:
                 # Convert to world space matrix
@@ -114,9 +141,9 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
         # Process arms and legs with IK
         for side in ["L", "R"]:
             # -- LEG CHAIN --
-            leg_bone = armature_object.pose.bones.get(f"Leg{side}")
-            knee_bone = armature_object.pose.bones.get(f"Knee{side}")
-            foot_bone = armature_object.pose.bones.get(f"Foot{side}")
+            leg_bone = armature_object.pose.bones.get(self._fk_leg_bone(side, "leg"))
+            knee_bone = armature_object.pose.bones.get(self._fk_leg_bone(side, "knee"))
+            foot_bone = armature_object.pose.bones.get(self._fk_leg_bone(side, "foot"))
             foot_ik_bone = armature_object.pose.bones.get(f"FootIK{side}")
             knee_ik_bone = armature_object.pose.bones.get(f"KneeIK{side}")
             
@@ -254,9 +281,12 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
         # (constraints are off, IK bones are placed but not yet influencing)
         fk_positions = {}
         for side in ["L", "R"]:
-            fk_positions[f'leg_pos{side}'] = armature_object.pose.bones.get(f"Leg{side}").matrix.to_translation() if armature_object.pose.bones.get(f"Leg{side}") else None
-            fk_positions[f'knee_pos{side}'] = armature_object.pose.bones.get(f"Knee{side}").matrix.to_translation() if armature_object.pose.bones.get(f"Knee{side}") else None
-            fk_positions[f'foot_pos{side}'] = armature_object.pose.bones.get(f"Foot{side}").matrix.to_translation() if armature_object.pose.bones.get(f"Foot{side}") else None
+            leg_pb = armature_object.pose.bones.get(self._fk_leg_bone(side, "leg"))
+            knee_pb = armature_object.pose.bones.get(self._fk_leg_bone(side, "knee"))
+            foot_pb = armature_object.pose.bones.get(self._fk_leg_bone(side, "foot"))
+            fk_positions[f'leg_pos{side}'] = leg_pb.matrix.to_translation() if leg_pb else None
+            fk_positions[f'knee_pos{side}'] = knee_pb.matrix.to_translation() if knee_pb else None
+            fk_positions[f'foot_pos{side}'] = foot_pb.matrix.to_translation() if foot_pb else None
             
             # Shoulder pos might be faked if Shoulder bone doesn't exist, retrieve the one used for pole calc
             shoulder_bone = armature_object.pose.bones.get(f"Shoulder{side}")
@@ -348,7 +378,9 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
         names = []
         for side in ("L", "R"):
             names.extend((
-                f"Leg{side}", f"Knee{side}", f"Foot{side}",
+                self._fk_leg_bone(side, "leg"),
+                self._fk_leg_bone(side, "knee"),
+                self._fk_leg_bone(side, "foot"),
                 f"Shoulder{side}", f"Arm{side}", f"Hand{side}",
                 f"FootIK{side}", f"KneeIK{side}", f"HandIK{side}", f"ArmIK{side}",
             ))
@@ -396,10 +428,10 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
         """Solve both knees with one depsgraph sample at pole_angle 0."""
         jobs = []
         for side in ("L", "R"):
-            knee_bone = armature_object.pose.bones.get(f"Knee{side}")
+            knee_bone = armature_object.pose.bones.get(self._fk_leg_bone(side, "knee"))
             knee_ik_bone = armature_object.pose.bones.get(f"KneeIK{side}")
-            leg_bone = armature_object.pose.bones.get(f"Leg{side}")
-            foot_bone = armature_object.pose.bones.get(f"Foot{side}")
+            leg_bone = armature_object.pose.bones.get(self._fk_leg_bone(side, "leg"))
+            foot_bone = armature_object.pose.bones.get(self._fk_leg_bone(side, "foot"))
             ik_constraint = self._find_ik_constraint(knee_bone)
             if not all([knee_bone, knee_ik_bone, leg_bone, foot_bone, ik_constraint]):
                 continue
@@ -536,13 +568,15 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
             self._pole_sign_checked = False
             
             # Show a progress indicator in the status bar
-            context.window_manager.progress_begin(0, 100)
+            if self.show_progress:
+                context.window_manager.progress_begin(0, 100)
             
             try:
                 for frame_num in range(start_frame, end_frame + 1):
                     # Update progress
-                    progress = (frame_num - start_frame) / total_frames * 100
-                    context.window_manager.progress_update(progress)
+                    if self.show_progress:
+                        progress = (frame_num - start_frame) / total_frames * 100
+                        context.window_manager.progress_update(progress)
                     
                     # Set the current frame
                     context.scene.frame_set(frame_num)
@@ -554,15 +588,19 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
                 if self._collect_keys:
                     self._flush_recorded_keys(context.object)
                     
-                # End progress indicator
-                context.window_manager.progress_end()
+                if self.show_progress:
+                    context.window_manager.progress_end()
                 
                 # Return to the original frame
                 context.scene.frame_set(original_frame)
                 
                 keep_frame = start_frame if self.reference_frame == 'FIRST' else end_frame
                 if self._should_remove_knee_frames() and self.remove_knee_frames:
-                    self.remove_fk_keyframes(context, keep_frame, ["KneeL", "KneeR", "LegL", "LegR"], "knee/leg")
+                    knee_leg_names = [
+                        self.custom_knee_bone_l, self.custom_knee_bone_r,
+                        self.custom_leg_bone_l, self.custom_leg_bone_r,
+                    ]
+                    self.remove_fk_keyframes(context, keep_frame, knee_leg_names, "knee/leg")
                 if self._should_remove_arm_frames() and self.remove_arm_frames:
                     self.remove_fk_keyframes(context, keep_frame, ["ArmL", "ArmR"], "arm")
                 
@@ -576,7 +614,8 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
                 
             except Exception as e:
                 # End progress indicator if there was an error
-                context.window_manager.progress_end()
+                if self.show_progress:
+                    context.window_manager.progress_end()
                 context.scene.frame_set(original_frame)
                 self.report({'ERROR'}, f"Error processing animation: {str(e)}")
                 return {'CANCELLED'}
@@ -670,8 +709,8 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
         
         # Foot bones to process
         foot_bones = [
-            armature_object.pose.bones.get("FootL"),
-            armature_object.pose.bones.get("FootR")
+            armature_object.pose.bones.get(self.custom_foot_bone_l),
+            armature_object.pose.bones.get(self.custom_foot_bone_r),
         ]
         
         # Filter out None values (in case a bone doesn't exist)

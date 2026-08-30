@@ -1253,6 +1253,7 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
     
     def execute(self, context):
         if not self.do_bake:
+            self.report({'INFO'}, "Enable 'Bake and Exit' to run the bake")
             return {'FINISHED'}
         
         if self.bake_mode == 'VISIBLE':
@@ -1262,45 +1263,41 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
     
     def _execute_bake_visible(self, context):
         """Bake using visual keying - bulk bakes all actions like the constrained mode"""
-        from ..anim.fcurve_compat import collect_actions_for_armatures
+        from ..anim.fcurve_compat import collect_actions_for_bake
+        from ...expy_kit.operators import resolve_bake_armature_pair
         
         ob = context.object
         
         if not ob or ob.type != 'ARMATURE':
             self.report({'ERROR'}, "No armature selected")
             return {'CANCELLED'}
-        
-        # Find the target armature (the one this armature is constrained TO)
-        trg_ob = self._get_trg_ob(ob)
-        
-        if trg_ob:
-            # We have constraints pointing to another armature - bake from that
-            source_armature = trg_ob
-            dest_armature = ob
-            print(f"Bake Visible: Found constrained setup - baking from {trg_ob.name} to {ob.name}")
-        else:
-            # No constraints - just bake the current armature's own actions
-            source_armature = ob
-            dest_armature = ob
-            print(f"Bake Visible: No constraints found - baking {ob.name}'s own actions")
-        
-        if not source_armature.animation_data:
-            self.report({'ERROR'}, f"No animation data on source armature ({source_armature.name})")
+
+        action_armature, bake_armature = resolve_bake_armature_pair(ob)
+        if action_armature is None or bake_armature is None:
+            self.report({'ERROR'}, "No armature selected")
             return {'CANCELLED'}
+
+        if action_armature != bake_armature:
+            print(f"Bake Visible: baking from {action_armature.name} to {bake_armature.name}")
+        else:
+            print(f"Bake Visible: baking {bake_armature.name}'s own actions")
+
+        if not action_armature.animation_data:
+            action_armature.animation_data_create()
         
-        # Get list of actions to bake - those that belong to the source or destination armature
-        actions_to_bake = collect_actions_for_armatures([source_armature, dest_armature])
+        actions_to_bake = collect_actions_for_bake(action_armature, bake_armature, extra_armatures=[ob])
         
         if not actions_to_bake:
             self.report({'WARNING'}, "No actions found to bake")
             return {'CANCELLED'}
         
         total_actions = len(actions_to_bake)
+        print(f"Bake Visible: found {total_actions} actions to bake")
         
         # Store which bones have constraints (to clear after all baking)
         bones_with_constraints = []
         if self.clear_constraints_after:
-            for pb in dest_armature.pose.bones:
+            for pb in bake_armature.pose.bones:
                 if pb.constraints:
                     bones_with_constraints.append(pb.name)
         
@@ -1308,18 +1305,19 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
             from .fast_bake import bake_visible_actions
             baked_count = bake_visible_actions(
                 context,
-                source_armature,
-                dest_armature,
+                action_armature,
+                bake_armature,
                 actions_to_bake,
                 fake_user_new=self.fake_user_new,
                 clear_users_old=self.clear_users_old,
+                keep_ik_bones=self.keep_ik_bones,
             )
             
             # Clear constraints after all baking is done
             if self.clear_constraints_after:
                 for bone_name in bones_with_constraints:
                     try:
-                        pbone = dest_armature.pose.bones[bone_name]
+                        pbone = bake_armature.pose.bones[bone_name]
                         for constr in reversed(pbone.constraints):
                             pbone.constraints.remove(constr)
                     except KeyError:

@@ -589,6 +589,12 @@ def import_model(operator: bpy.types.Operator, context: bpy.types.Context):
         if len(ssp.animation_import_files) == 0:
             operator.report({'INFO'}, f'Animation directory not found: {anim_path}')
 
+    try:
+        from ..anim.raw_anim import refresh_raw_animation_import_list
+        refresh_raw_animation_import_list(ssp)
+    except Exception:
+        pass
+
     # Auto-store predefined idle animations if they exist
     if len(ssp.animation_import_files) > 0:
         # Initialize predefined poses list first

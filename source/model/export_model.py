@@ -57,8 +57,22 @@ class SUB_PT_export_model(Panel):
             layout.row().operator('sub.vanilla_nusktb_selector', icon='FILE', text='Select Vanilla Nusktb')
             layout.row().operator('sub.model_exporter', icon='EXPORT', text='Export Model Files Anyways...')
             return
-        
-        new_bones, missing_bones = get_standard_bone_changes(ssp.model_export_arma, ssp.vanilla_nusktb)
+
+        if not os.path.isfile(ssp.vanilla_nusktb):
+            layout.row().label(text='Vanilla .nusktb file not found on disk', icon='ERROR')
+            layout.row().label(text=str(ssp.vanilla_nusktb))
+            layout.row().operator('sub.vanilla_nusktb_selector', icon='FILE', text='Select Vanilla Nusktb')
+            layout.row().operator('sub.model_exporter', icon='EXPORT', text='Export Model Files Anyways...')
+            return
+
+        try:
+            new_bones, missing_bones = get_standard_bone_changes(ssp.model_export_arma, ssp.vanilla_nusktb)
+        except RuntimeError as exc:
+            layout.row().label(text='Could not read vanilla .nusktb', icon='ERROR')
+            layout.row().label(text=str(exc))
+            layout.row().operator('sub.vanilla_nusktb_selector', icon='FILE', text='Select Vanilla Nusktb')
+            layout.row().operator('sub.model_exporter', icon='EXPORT', text='Export Model Files Anyways...')
+            return
         if any(len(s) > 0 for s in (new_bones, missing_bones)):
             layout.row().label(text='Change in "Standard Bones" detected!')
             if len(new_bones) > 0:

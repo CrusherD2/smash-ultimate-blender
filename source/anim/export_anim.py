@@ -16,7 +16,18 @@ from pathlib import Path
 
 from ...dependencies import ssbh_data_py
 from .import_anim import get_hierarchy_order
-from .fcurve_compat import get_fcurves
+from .fcurve_compat import get_all_action_fcurves, get_fcurves
+from .raw_anim import (
+    ensure_fighter_raw_anim_directory,
+    ensure_rawanim_filename,
+    ensure_rawanim_filepath,
+    export_raw_animation,
+    get_anim_folder_path,
+    get_suggested_raw_anim_directory,
+    normalize_anim_stem,
+    resolve_raw_anim_export_path,
+    strip_rawanim_suffix,
+)
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -219,10 +230,12 @@ class SUB_PT_export_anim(Panel):
             elif obj.animation_data.action is None:
                 row.label(text=f'The selected {obj.type.lower()} has no action!', icon='ERROR')
             else:
+                ssp = context.scene.sub_scene_properties
+                if obj.type == 'ARMATURE':
+                    layout.prop(ssp, "anim_include_raw_animation", text="Include Raw Animation")
                 row.operator(SUB_OP_anim_export.bl_idname, icon='EXPORT', text='Export Current Animation')
                 
                 # Add collapsible batch export section
-                ssp = context.scene.sub_scene_properties
                 box = layout.box()
                 header_row = box.row()
                 header_row.prop(ssp, "batch_export_actions_expanded", 
@@ -250,6 +263,11 @@ class SUB_PT_export_anim(Panel):
                     row = box.row()
                     row.scale_y = 1.2
                     row.operator(SUB_OP_batch_export_anim.bl_idname, icon='EXPORT', text='Export Selected Actions')
+
+                if obj.type == 'ARMATURE':
+                    row = layout.row()
+                    row.scale_y = 1.2
+                    row.operator(SUB_OP_raw_anim_export.bl_idname, icon='EXPORT', text='Export Raw Animation')
         else:
             row.label(text=f'The selected {obj.type.lower()} is not an armature or a camera.')
 
@@ -579,11 +597,8 @@ def sanitize_filename(filename):
 
 
 def strip_nuanmb_suffix(name):
-    """Remove every trailing .nuanmb so imported action names do not stack the extension."""
-    stripped = name
-    while stripped.lower().endswith('.nuanmb'):
-        stripped = stripped[:-7]
-    return stripped
+    """Remove .nuanmb, .rawanim, and Blender duplicate suffixes from a name."""
+    return normalize_anim_stem(name)
 
 
 def ensure_nuanmb_filename(filename):
@@ -597,6 +612,112 @@ def ensure_nuanmb_filepath(filepath):
     if directory:
         return os.path.join(directory, filename)
     return filename
+
+
+def export_raw_animation_for_object(
+    context: Context,
+    operator: Operator,
+    obj: bpy.types.Object,
+    filepath: str,
+    frame_start: int,
+    frame_end: int,
+) -> bool:
+    if obj.type != 'ARMATURE':
+        operator.report({'WARNING'}, 'Raw animation export is only supported for armatures.')
+        return False
+    if obj.animation_data is None or obj.animation_data.action is None:
+        operator.report({'ERROR'}, 'No action to export as raw animation.')
+        return False
+
+    raw_filepath = ensure_rawanim_filepath(filepath)
+    if not export_raw_animation(
+        obj,
+        obj.animation_data.action,
+        raw_filepath,
+        frame_start,
+        frame_end,
+        operator,
+    ):
+        return False
+
+    operator.report({'INFO'}, f"Successfully exported raw animation to {os.path.basename(raw_filepath)}")
+    return True
+
+
+class SUB_OP_raw_anim_export(Operator):
+    bl_idname = 'sub.raw_anim_export'
+    bl_label = 'Export Raw Animation'
+    bl_description = 'Export pose bone keyframes without baking every frame (.rawanim)'
+
+    filter_glob: StringProperty(
+        default='*.rawanim',
+        options={'HIDDEN'}
+    )
+    first_blender_frame: IntProperty(
+        name='Start Frame',
+        description='First exported frame',
+        default=1,
+    )
+    last_blender_frame: IntProperty(
+        name='End Frame',
+        description='Last exported frame',
+        default=1,
+    )
+    filepath: StringProperty(subtype="FILE_PATH")
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return (
+            obj is not None
+            and obj.type == 'ARMATURE'
+            and obj.animation_data is not None
+            and obj.animation_data.action is not None
+        )
+
+    def invoke(self, context: Context, _event):
+        action_name = strip_rawanim_suffix(context.active_object.animation_data.action.name)
+        safe_name = sanitize_filename(ensure_rawanim_filename(action_name))
+        self.first_blender_frame = context.scene.frame_start
+        self.last_blender_frame = context.scene.frame_end
+
+        ssp = context.scene.sub_scene_properties
+        raw_dir = get_suggested_raw_anim_directory(ssp)
+        if raw_dir:
+            ensure_fighter_raw_anim_directory(raw_dir)
+            self.filepath = os.path.join(raw_dir, safe_name)
+        else:
+            base_dir = get_anim_folder_path(ssp)
+            if base_dir:
+                self.filepath = os.path.join(base_dir, safe_name)
+            else:
+                self.filepath = safe_name
+
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "first_blender_frame")
+        layout.prop(self, "last_blender_frame")
+
+    def execute(self, context):
+        ssp = context.scene.sub_scene_properties
+        raw_filepath = ensure_rawanim_filepath(self.filepath)
+        ssp.last_anim_export_dir = os.path.dirname(raw_filepath)
+
+        obj = context.active_object
+        if not export_raw_animation_for_object(
+            context,
+            self,
+            obj,
+            raw_filepath,
+            self.first_blender_frame,
+            self.last_blender_frame,
+        ):
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
 
 class SUB_OP_anim_export(Operator):
     bl_idname = 'sub.anim_export'
@@ -804,6 +925,19 @@ class SUB_OP_anim_export(Operator):
                 self.transform_override_compensate_scale)  
 
         self.report({'INFO'}, f"Successfully exported animation to {os.path.basename(filepath)}")
+
+        if ssp.anim_include_raw_animation and obj.type == 'ARMATURE':
+            raw_filepath = resolve_raw_anim_export_path(filepath, ssp)
+            if not export_raw_animation_for_object(
+                context,
+                self,
+                obj,
+                raw_filepath,
+                self.first_blender_frame,
+                self.last_blender_frame,
+            ):
+                return {'CANCELLED'}
+
         return {'FINISHED'}
            
 class Location():
@@ -894,8 +1028,7 @@ def does_armature_data_have_fcurves(arma: bpy.types.Object) -> bool:
     if arma.data.animation_data.action is None:
         return False
     
-    fcurves = get_fcurves(arma.data.animation_data.action)
-    return fcurves is not None and len(fcurves) > 0
+    return len(get_all_action_fcurves(arma.data.animation_data.action)) > 0
 
 def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.types.Object, filepath, include_transform_track, include_material_track, include_visibility_track, first_blender_frame, last_blender_frame, transform_compensate_scale: bool = False, transform_override_translation: bool = False, transform_override_rotation: bool = False, transform_override_scale: bool = False, transform_override_compensate_scale: bool = False, override_bone_names: list[str] | None = None, use_exclude_list: bool = True):
     # SSBH Anim Setup
@@ -1129,10 +1262,12 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
         vis_track_index_to_name: dict[int, str] = {}
         vis_track_index_to_values: dict[int, list[bool]] = {}
         fcurve: bpy.types.FCurve
-        for fcurve in get_fcurves(arma.data.animation_data.action):
+        for fcurve in get_all_action_fcurves(arma.data.animation_data.action):
             regex = r'.*\[(\d*)\]\.value'
             matches = re.match(regex, fcurve.data_path)
             if matches is None: # Not a visibility fcurve, its probably a material track fcurve
+                continue
+            if not fcurve.data_path.startswith('sub_anim_properties.vis_track_entries'):
                 continue
             vis_track_index = int(matches.groups()[0])
             if vis_track_index >= len(sap.vis_track_entries): # this can happen if the user removes entries manually but not the fcurves
@@ -1165,7 +1300,7 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
         # In addition, fcurves may only exist for a few indices of a CustomVector or TextureTransform, since the user may not have animated them all
         # Example: mat_name_prop_name_to_values['EyeL']['CustomVector31'] -> [[1.0,1.0,1.0,1.0], ...]
         mat_name_prop_name_to_values: dict[str, dict[str, list[CustomVector|CustomFloat|CustomBool|PatternIndex|TextureTransform]]] = {}
-        for fcurve in get_fcurves(arma.data.animation_data.action):
+        for fcurve in get_all_action_fcurves(arma.data.animation_data.action):
             regex = r"sub_anim_properties\.mat_tracks\[(\d+)\]\.properties\[(\d+)\](\.\w+)"
             matches = re.match(regex, fcurve.data_path)
             if matches is None: # The vis and mat track fcurves are in the same action, so its normal to not match every fcurve

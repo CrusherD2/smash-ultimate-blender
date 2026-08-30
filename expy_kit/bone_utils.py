@@ -692,3 +692,21 @@ def relative_pose_direction(start_pose_bone, end_pose_bone, mat):
 
     direction = mat @ direction
     return direction.normalized()
+
+
+def get_ik_control_bone_names(armature_data):
+    """Return IK helper control bones (FootIK, KneeIK, HandIK, ArmIK, etc.)."""
+    return [bone.name for bone in armature_data.bones if "IK" in bone.name]
+
+
+def append_ik_bones_for_bake(armature_object, bone_names, select=False):
+    """Add IK control bones to a bake/cleanup list, optionally selecting them for nla.bake."""
+    result = list(bone_names)
+    for ik_name in get_ik_control_bone_names(armature_object.data):
+        if ik_name not in result:
+            result.append(ik_name)
+        if select:
+            pose_bone = armature_object.pose.bones.get(ik_name)
+            if pose_bone:
+                set_pose_bone_select(pose_bone, True)
+    return result

@@ -74,7 +74,15 @@ def sync_sap_action_handler(scene):
         
         # If we found a matching SAP action and it's different from current, switch to it
         if expected_sap_action and expected_sap_action != current_sap_action:
-            obj.data.animation_data.action = expected_sap_action
+            from ..blender_compat import assign_action
+            assign_action(obj.data.animation_data, expected_sap_action)
+
+
+def mark_sap_sync_known(armature_object: bpy.types.Object):
+    """Record the current bone action so the SAP sync handler does not fight imports."""
+    global _last_known_actions
+    if armature_object.animation_data and armature_object.animation_data.action:
+        _last_known_actions[armature_object.name] = armature_object.animation_data.action
 
 # Additional handler for depsgraph updates (more frequent)
 @bpy.app.handlers.persistent  
@@ -234,7 +242,8 @@ class SUB_OP_sync_sap_action(Operator):
         expected_sap_action = bpy.data.actions.get(expected_sap_action_name)
         
         if expected_sap_action:
-            obj.data.animation_data.action = expected_sap_action
+            from ..blender_compat import assign_action
+            assign_action(obj.data.animation_data, expected_sap_action)
             self.report({'INFO'}, f"Synced SAP action to: {expected_sap_action_name}")
         else:
             self.report({'WARNING'}, f"No matching SAP action found: {expected_sap_action_name}")
@@ -928,15 +937,8 @@ class SUB_OP_organize_vis_entries_by_move(Operator):
         return {'FINISHED'}
 
 def remove_visibility_drivers(context):
-    arma = context.object
-    mesh_children = [child for child in arma.children if child.type == 'MESH']
-    for m in mesh_children:
-        if not m.animation_data:
-            continue
-        drivers = m.animation_data.drivers
-        for d in drivers:
-            if any(d.data_path == s for s in ['hide_viewport', 'hide_render']):
-                drivers.remove(d)
+    from .import_anim import remove_visibility_drivers_for_armature
+    remove_visibility_drivers_for_armature(context.object)
 
 def remove_anim_material_drivers(arma:bpy.types.Object):
     from ..model.material.sub_matl_data import SUB_PG_sub_matl_data
