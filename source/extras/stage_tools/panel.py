@@ -15,12 +15,16 @@ class SUB_PT_stage_tools(Panel):
 
     @classmethod
     def poll(cls, context):
-        return context.mode in {"OBJECT", "POSE", "PAINT_VERTEX", "EDIT_MESH"}
+        if context.mode not in {"OBJECT", "POSE", "PAINT_VERTEX", "EDIT_MESH"}:
+            return False
+        return getattr(context.scene, "sub_scene_properties", None) is not None
 
     def draw(self, context):
         layout = self.layout
         layout.use_property_split = False
-        ssp = context.scene.sub_scene_properties
+        ssp = getattr(context.scene, "sub_scene_properties", None)
+        if ssp is None:
+            return
 
         box = layout.box()
         header = box.row()

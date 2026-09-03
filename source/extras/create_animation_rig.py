@@ -1963,7 +1963,6 @@ class SUB_OP_create_animation_rig(Operator):
             ('MAIN', "Main", ""),
             ('IK', "IK", ""),
             ('EYE', "Eye", ""),
-            ('FINGERS', "Fingers", ""),
         ),
         default='MAIN',
         options={'HIDDEN', 'SKIP_SAVE'},
@@ -2044,16 +2043,6 @@ class SUB_OP_create_animation_rig(Operator):
         ),
         default='MATCH',
     )
-    match_fingers: bpy.props.BoolProperty(
-        name="Match Finger Sliders to Animation",
-        description="Move the sliders to the current finger pose / loaded animation",
-        default=True,
-    )
-    fingers_entire_animation: bpy.props.BoolProperty(
-        name="Entire Animation",
-        description="Match every frame in the scene range and keyframe the sliders",
-        default=True,
-    )
 
     @classmethod
     def poll(cls, context):
@@ -2091,7 +2080,6 @@ class SUB_OP_create_animation_rig(Operator):
             'MAIN': 6,
             'IK': 8,
             'EYE': 10,
-            'FINGERS': 5,
         }.get(self.stage, 6)
         offset = int(row * (rows - 0.35))
         self._warp_cursor(context, self.dialog_mouse_x, self.dialog_mouse_y - offset)
@@ -2114,8 +2102,6 @@ class SUB_OP_create_animation_rig(Operator):
             "eye_measure_from_mesh": self.eye_measure_from_mesh,
             "eye_look_live_preview": self.eye_look_live_preview,
             "eye_material_anim": self.eye_material_anim,
-            "match_fingers": self.match_fingers,
-            "fingers_entire_animation": self.fingers_entire_animation,
         }
 
     def execute(self, context):
@@ -2132,8 +2118,6 @@ class SUB_OP_create_animation_rig(Operator):
             stages.append('IK')
         if self.setup_eye_look:
             stages.append('EYE')
-        if self.setup_finger_sliders:
-            stages.append('FINGERS')
         return stages
 
     def _next_stage(self):
@@ -2179,11 +2163,6 @@ class SUB_OP_create_animation_rig(Operator):
                 layout.prop(self, "eye_material_anim", expand=True)
             layout.label(text="Invert X / Invert Y are sliders next to the eye bone.")
             return
-        layout.label(text="Finger Slider Options")
-        layout.prop(self, "match_fingers")
-        col = layout.column()
-        col.enabled = self.match_fingers
-        col.prop(self, "fingers_entire_animation")
 
     def _build(self, context):
         armature_obj = find_target_armature(context)
@@ -2254,15 +2233,6 @@ class SUB_OP_create_animation_rig(Operator):
                 from . import finger_sliders
                 slider_count = finger_sliders.build_finger_sliders(context, armature_obj)
                 progress.update(0.7)
-                if self.match_fingers and slider_count:
-                    finger_sliders.match_finger_sliders(
-                        context,
-                        armature_obj,
-                        entire_animation=self.fingers_entire_animation,
-                        progress=progress,
-                        progress_start=0.7,
-                        progress_end=0.9,
-                    )
 
             if self.hide_helpers:
                 _hide_clutter(armature_obj)
@@ -2288,7 +2258,12 @@ class SUB_OP_create_animation_rig(Operator):
                 _ensure_ik_influence_drivers(armature_obj)
             cleaned = 0
             if ssp is not None and ssp.clean_keyframes_after_rig:
-                cleaned += clean_redundant_keys_on_id(armature_obj)
+                from .finger_sliders import is_finger_match_fcurve_path
+                # Official metacarpals (Finger*10/20/...) look "redundant" to the
+                # cleaner but they hold the fist pose. Never strip Finger* keys.
+                cleaned += clean_redundant_keys_on_id(
+                    armature_obj, skip_data_path=is_finger_match_fcurve_path
+                )
                 cleaned += clean_redundant_keys_on_id(armature_obj.data)
             progress.update(1.0)
 

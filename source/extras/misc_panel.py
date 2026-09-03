@@ -328,6 +328,9 @@ class SUB_PT_animation_tools(Panel):
         row = layout.row(align=True)
         row.operator("sub.remove_swing_bone_animation", text="Remove Animation from Swing Bones")
 
+        row = layout.row(align=True)
+        row.operator("sub.gif_or_photo", text="Gif or Photo", icon="RENDER_ANIMATION")
+
 class SUB_PT_model_tools(Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -538,9 +541,10 @@ class SUB_PT_misc_utilities(Panel):
                 text="Convert All to Principled BSDF",
                 icon="MATERIAL",
             )
-        
-    
-        
+
+        layout.separator()
+        from .smash_viewport import draw_smash_viewport_ui
+        draw_smash_viewport_ui(layout, context) 
 class SUB_OP_mirror_vertex_groups(bpy.types.Operator):
     bl_idname = "sub.mirror_vertex_groups"
     bl_label = "Mirror Vertex Groups"

@@ -188,7 +188,7 @@ def clean_fcurve_redundant_keys(fcurve, threshold=1e-4):
     return removed
 
 
-def clean_redundant_keys_on_id(id_data, threshold=1e-4):
+def clean_redundant_keys_on_id(id_data, threshold=1e-4, skip_data_path=None):
     """Clean baked-interpolation keys on every fcurve of this ID's action."""
     if id_data is None:
         return 0
@@ -200,6 +200,8 @@ def clean_redundant_keys_on_id(id_data, threshold=1e-4):
         return 0
     removed = 0
     for fcurve in get_all_action_fcurves(action, id_type=id_type_for_id_data(id_data)):
+        if skip_data_path is not None and skip_data_path(fcurve.data_path or ""):
+            continue
         removed += clean_fcurve_redundant_keys(fcurve, threshold)
     return removed
 

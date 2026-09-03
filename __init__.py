@@ -4,7 +4,7 @@ bl_info = {
     'category': 'Object',
     'location': 'View 3D > Tool Shelf > Ultimate',
     'description': 'A collection of tools for importing models and animations to smash ultimate.',
-    'version': (4, 1, 0),
+    'version': (4, 2, 0),
     'blender': (4, 0, 0),
     'warning': 'TO REMOVE: First "Disable" the plugin, then restart blender, then you can hit "Remove" to uninstall',
     'doc_url': 'https://github.com/ssbucarlos/smash-ultimate-blender/wiki',
@@ -109,10 +109,6 @@ def unregister():
 
     bpy.types.VIEW3D_MT_paint_vertex.remove(set_linear_vertex_color.menu_func)
 
-    # Remove sub_scene_properties from the Scene object
-    if hasattr(bpy.types.Scene, "sub_scene_properties"):
-        del bpy.types.Scene.sub_scene_properties
-
     # Cleanup SAP action auto-sync system
     from .source.anim.anim_data import cleanup_sap_auto_sync
     cleanup_sap_auto_sync()
@@ -126,9 +122,12 @@ def unregister():
     # Unregister swing module
     swing.unregister()
     
-    # Unregister extras module
+    # Unregister extras module (panels) before deleting scene properties
     from .source import extras
     extras.unregister()
+
+    if hasattr(bpy.types.Scene, "sub_scene_properties"):
+        del bpy.types.Scene.sub_scene_properties
 
     print('Unloaded Smash Ultimate Blender Tools!')
             

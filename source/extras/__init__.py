@@ -2,6 +2,7 @@ from . import attribute_renamer
 from . import create_animation_rig
 from . import create_meshes
 from . import eye_rig
+from . import smash_viewport
 from . import finger_sliders
 from . import face_picker
 from . import misc_panel
@@ -32,6 +33,7 @@ from . import stage_tools
 
 # Import animation_scroll module
 from . import animation_scroll
+from . import viewport_capture
 
 # Explicit registration function for the package
 def register():
@@ -49,8 +51,10 @@ def register():
     
     # Register animation_scroll
     animation_scroll.register()
+    viewport_capture.register()
     face_picker.register()
     eye_rig.register()
+    smash_viewport.register()
     create_animation_rig.register()
     
     # Register misc_panel first since IK panel depends on it
@@ -69,8 +73,10 @@ def register():
     
 def unregister():
     face_picker.unregister()
+    smash_viewport.unregister()
     eye_rig.unregister()
     create_animation_rig.unregister()
+    viewport_capture.unregister()
     # Unregister animation_scroll
     animation_scroll.unregister()
     

@@ -7,3 +7,9 @@ __pycache__
 .vscode/*
 .DS_Store
 .current_commit
+native/vendor/
+native/**/target/
+native/.cargo/config.toml
+native/bin/*.dll
+native/bin/*.so
+native/bin/*.dylib

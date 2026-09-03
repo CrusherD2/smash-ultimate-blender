@@ -41,7 +41,9 @@ CIRCLE_COLLECTION = "Finger Circles"
 STANDARD_COLLECTION = "Standard Bones"
 
 _HAND_RE = re.compile(r"^Hand([LR])(\d*)$")
-_FINGER_RE = re.compile(r"^Finger([LR])(\d*)([1-5])([1-3])$")
+# Finger{L|R}{optional extra-hand digits}{digit 1-5}{joint 0-3}.
+# Joint 0 is the metacarpal (FingerR10). Extra hands: FingerL211.
+_FINGER_RE = re.compile(r"^Finger([LR])(\d*)([1-5])([0-3])$")
 _SLIDER_KNOB_RE = re.compile(r"^BL_(Curl|Spread|Thumb|Index|Middle|Ring|Pinky)_([LR]\d*)$")
 
 FINGERS = (
@@ -51,8 +53,9 @@ FINGERS = (
     ("Ring", 3),
     ("Pinky", 4),
 )
+ALL_SEGMENTS = (0, 1, 2, 3)
 SEGMENTS = (1, 2, 3)
-SEGMENT_WEIGHTS = {1: 0.8, 2: 1.0, 3: 1.0}
+SEGMENT_WEIGHTS = {0: 0.35, 1: 0.8, 2: 1.0, 3: 1.0}
 THUMB_DIGIT = 5
 SPREAD_FACTORS = {1: 1.0, 2: 0.35, 3: -0.35, 4: -1.0, THUMB_DIGIT: 0.8}
 
@@ -96,6 +99,24 @@ def parse_finger_bone(name):
         "segment": int(match.group(4)),
         "suffix": bone_name_suffix(name),
     }
+
+
+def _armature_bones(armature):
+    if getattr(armature, "type", None) == "ARMATURE":
+        return armature.data.bones
+    return armature.bones
+
+
+def _finger_chain(armature, side, digit, suffix="", digits=""):
+    """Proximal-to-distal joints that exist, including metacarpals (segment 0)."""
+    bones = _armature_bones(armature)
+    chain = []
+    for segment in ALL_SEGMENTS:
+        name = finger_bone_name(side, digit, segment, suffix, digits=digits)
+        bone = bones.get(name)
+        if bone is not None:
+            chain.append((segment, bone, name))
+    return chain
 
 
 def is_finger_circle_bone(name):
@@ -202,20 +223,29 @@ def _rest_tail(armature, name):
     return None
 
 
+def _finger_head(armature, side, digit, suffix="", digits=""):
+    """Knuckle/head used for layout: first phalange, else the metacarpal."""
+    for segment in (1, 0, 2, 3):
+        head = _rest_head(armature, finger_bone_name(side, digit, segment, suffix, digits=digits))
+        if head is not None:
+            return head
+    return None
+
+
 def _hand_across_vector(armature, side, suffix, digits=""):
     """Index knuckle -> pinky knuckle. Used so sliders sit over the real fingers."""
-    index = _rest_head(armature, finger_bone_name(side, 1, 1, suffix, digits=digits))
-    pinky = _rest_head(armature, finger_bone_name(side, 4, 1, suffix, digits=digits))
+    index = _finger_head(armature, side, 1, suffix, digits=digits)
+    pinky = _finger_head(armature, side, 4, suffix, digits=digits)
     if index is not None and pinky is not None:
         across = pinky - index
         if across.length > 1e-6:
             return across.normalized()
-    thumb = _rest_head(armature, finger_bone_name(side, 5, 1, suffix, digits=digits))
+    thumb = _finger_head(armature, side, 5, suffix, digits=digits)
     if thumb is not None and index is not None:
         across = index - thumb
         if across.length > 1e-6:
             return across.normalized()
-    middle = _rest_head(armature, finger_bone_name(side, 2, 1, suffix, digits=digits))
+    middle = _finger_head(armature, side, 2, suffix, digits=digits)
     if index is not None and middle is not None:
         across = middle - index
         if across.length > 1e-6:
@@ -224,9 +254,9 @@ def _hand_across_vector(armature, side, suffix, digits=""):
 
 
 def _finger_bend_axis(armature, side, digit, across, suffix, up=None, digits=""):
-    bones = armature.bones
-    segments = [bones.get(finger_bone_name(side, digit, s, suffix, digits=digits)) for s in SEGMENTS]
-    root = segments[0] if segments else None
+    chain = _finger_chain(armature, side, digit, suffix, digits=digits)
+    phalanges = [bone for segment, bone, _name in chain if segment >= 1]
+    root = phalanges[0] if phalanges else (chain[0][1] if chain else None)
     along = None
     if root is not None:
         along = root.tail_local - root.head_local
@@ -243,11 +273,17 @@ def _finger_bend_axis(armature, side, digit, across, suffix, up=None, digits="")
         if hinge.length > 1e-6:
             return hinge.normalized()
 
-    if all(segments):
-        first = segments[1].head_local - segments[0].head_local
-        second = segments[2].head_local - segments[1].head_local
+    if len(phalanges) >= 3:
+        first = phalanges[1].head_local - phalanges[0].head_local
+        second = phalanges[2].head_local - phalanges[1].head_local
         if first.length > 1e-6 and second.length > 1e-6:
             normal = first.normalized().cross(second.normalized())
+            if normal.length > 0.087:
+                return normal.normalized()
+    elif len(phalanges) >= 2:
+        first = phalanges[1].head_local - phalanges[0].head_local
+        if first.length > 1e-6 and along is not None:
+            normal = along.cross(first.normalized())
             if normal.length > 0.087:
                 return normal.normalized()
 
@@ -323,7 +359,7 @@ def _slider_positions(armature, side, suffix, origin, along, across, up, box_siz
         positions[kind] = top + finger_along + across * x
 
     def across_of(digit):
-        head = _rest_head(armature, finger_bone_name(side, digit, 1, suffix, digits=digits))
+        head = _finger_head(armature, side, digit, suffix, digits=digits)
         if head is None:
             return None
         return (head - origin).dot(across)
@@ -559,6 +595,33 @@ def _curl_axis_for_finger(bone, digit, bend_vector):
     return 2, 1.0
 
 
+def _has_foreign_finger_children(bone, digit):
+    """True if this bone parents another finger's chain (official FingerR10, etc.)."""
+    for child in getattr(bone, "children", []) or []:
+        parsed = parse_finger_bone(child.name)
+        if parsed is not None and parsed["digit"] != digit:
+            return True
+        if parsed is None and _FINGER_BONE.match(canonical_bone_name(child.name)):
+            if _has_foreign_finger_children(child, digit):
+                return True
+        elif parsed is not None and _has_foreign_finger_children(child, digit):
+            return True
+    return False
+
+
+def _clear_finger_drive_props(pose_bone):
+    for key in (
+        "sub_finger_curl_axis",
+        "sub_finger_curl_weight",
+        "sub_finger_spread_axis",
+        "sub_finger_spread_weight",
+        "sub_finger_side_axis",
+        "sub_finger_side_weight",
+    ):
+        if key in pose_bone:
+            del pose_bone[key]
+
+
 def _drive_fingers(armature_obj, side, suffix, half_travel, digits=""):
     curl_name = slider_bone_name("Curl", side, suffix, digits=digits)
     spread_name = slider_bone_name("Spread", side, suffix, digits=digits)
@@ -580,13 +643,20 @@ def _drive_fingers(armature_obj, side, suffix, half_travel, digits=""):
         bend_vector = _finger_bend_axis(
             armature_obj.data, side, digit, across, suffix, up=up, digits=digits
         )
-        for segment in SEGMENTS:
-            bone_name = finger_bone_name(side, digit, segment, suffix, digits=digits)
+        chain = _finger_chain(armature_obj.data, side, digit, suffix, digits=digits)
+        driveable = [
+            (segment, bone, name)
+            for segment, bone, name in chain
+            if segment != 0 and not _has_foreign_finger_children(bone, digit)
+        ]
+        spread_segment = None
+        if digit != THUMB_DIGIT and driveable:
+            # Same as the original rig: spread on joint 1 when it exists.
+            spread_segment = 1 if any(seg == 1 for seg, _bone, _name in driveable) else driveable[0][0]
+        for segment, bone, bone_name in chain:
             pose_bone = armature_obj.pose.bones.get(bone_name)
             if pose_bone is None:
                 continue
-            bone = armature_obj.data.bones[bone_name]
-            curl_axis, curl_sign = _curl_axis_for_finger(bone, digit, bend_vector)
             data_path = f'pose.bones["{bone_name}"].rotation_euler'
             for stale in range(3):
                 try:
@@ -596,8 +666,14 @@ def _drive_fingers(armature_obj, side, suffix, half_travel, digits=""):
             for constraint in list(pose_bone.constraints):
                 if constraint.name.startswith(FINGER_CON_PREFIX):
                     pose_bone.constraints.remove(constraint)
+            # Official metacarpals (FingerR10/20/30/40) keep their Smash animation.
+            # Driving them with the phalange sliders pulls Mario's fists off-pose.
+            if segment == 0 or _has_foreign_finger_children(bone, digit):
+                _clear_finger_drive_props(pose_bone)
+                continue
+            curl_axis, curl_sign = _curl_axis_for_finger(bone, digit, bend_vector)
 
-            weight = SEGMENT_WEIGHTS[segment] * max_curl * curl_sign
+            weight = SEGMENT_WEIGHTS.get(segment, 1.0) * max_curl * curl_sign
             pose_bone["sub_finger_curl_axis"] = curl_axis
             pose_bone["sub_finger_curl_weight"] = weight
             if digit == THUMB_DIGIT:
@@ -647,7 +723,7 @@ def _drive_fingers(armature_obj, side, suffix, half_travel, digits=""):
                 side_axis, side_sign = _axis_from_vector(
                     bone, side_vector.normalized(), exclude=curl_axis
                 )
-                side_weight = SEGMENT_WEIGHTS[segment] * max_side * side_sign
+                side_weight = SEGMENT_WEIGHTS.get(segment, 1.0) * max_side * side_sign
                 pose_bone["sub_finger_side_axis"] = side_axis
                 pose_bone["sub_finger_side_weight"] = side_weight
                 if offset_name in armature_obj.pose.bones:
@@ -663,7 +739,7 @@ def _drive_fingers(armature_obj, side, suffix, half_travel, digits=""):
                     )
                 continue
 
-            if segment != 1:
+            if segment != spread_segment:
                 continue
             spread_axis, spread_sign = _axis_from_vector(
                 bone, side_vector.normalized(), exclude=curl_axis
@@ -740,9 +816,7 @@ def build_finger_sliders(context, armature_obj):
                     continue
                 if kind not in ("Curl", "Spread"):
                     digit = next(d for label, d in FINGERS if label == kind)
-                    if armature_obj.data.edit_bones.get(
-                        finger_bone_name(side, digit, 1, suffix, digits=digits)
-                    ) is None:
+                    if not _finger_chain(armature_obj.data, side, digit, suffix, digits=digits):
                         continue
                 control_name = slider_bone_name(kind, side, suffix, digits=digits)
                 pad_name = pad_bone_name(kind, side, suffix, digits=digits)
@@ -976,28 +1050,6 @@ def _set_local_xyz_euler(pose_bone, euler):
         pose_bone.rotation_euler = euler
 
 
-def _twist_about_local_axis(pose_bone, axis_index):
-    quat = pose_bone.matrix_basis.to_quaternion()
-    if quat.w < 0.0:
-        quat.negate()
-    axis = Vector((0.0, 0.0, 0.0))
-    axis[axis_index] = 1.0
-    dot = quat.x * axis.x + quat.y * axis.y + quat.z * axis.z
-    twist = Quaternion((quat.w, axis.x * dot, axis.y * dot, axis.z * dot))
-    if twist.magnitude < 1e-12:
-        return 0.0
-    twist.normalize()
-    imag = Vector((twist.x, twist.y, twist.z))
-    angle = 2.0 * math.atan2(imag.length, twist.w)
-    if imag.dot(axis) < 0.0:
-        angle = -angle
-    while angle > math.pi:
-        angle -= 2.0 * math.pi
-    while angle < -math.pi:
-        angle += 2.0 * math.pi
-    return angle
-
-
 def _key_pose_rotation(pose_bone, frame):
     if pose_bone.rotation_mode == "QUATERNION":
         pose_bone.keyframe_insert("rotation_quaternion", frame=frame, group=pose_bone.name)
@@ -1006,15 +1058,6 @@ def _key_pose_rotation(pose_bone, frame):
     else:
         pose_bone.keyframe_insert("rotation_euler", frame=frame, group=pose_bone.name)
         pose_bone.keyframe_insert("rotation_quaternion", frame=frame, group=pose_bone.name)
-
-
-def _set_pose_rotation(pose_bone, quat):
-    if pose_bone.rotation_mode == "QUATERNION":
-        pose_bone.rotation_quaternion = quat
-    elif pose_bone.rotation_mode == "AXIS_ANGLE":
-        pose_bone.rotation_axis_angle = (quat.angle, quat.axis.x, quat.axis.y, quat.axis.z)
-    else:
-        pose_bone.rotation_euler = quat.to_euler(pose_bone.rotation_mode)
 
 
 def _axis_quat(axis_index, angle):
@@ -1111,139 +1154,13 @@ def _bone_chain_depth(pose_bone):
     return depth
 
 
-def match_finger_sliders_frame(armature_obj, context=None, keyframe=False, frame=None):
-    """Move sliders to the current FK finger pose, then leave the leftover rotation
-    on the Smash bones so TRANSFORM AFTER/ADD reconstructs the original pose.
-    """
-    _heal_finger_circle_disable(armature_obj)
-    half = float(armature_obj.data.get("sub_finger_slider_travel", 0.05))
-    half = max(half, 1e-6)
-    constraints = list(_iter_finger_slider_constraints(armature_obj))
-    for _pose_bone, constraint in constraints:
-        constraint.mute = True
-    if context is not None:
-        context.view_layer.update()
-
-    captured = {}
-    curl_samples = {}
-    side_samples = {}
-    touched_fingers = []
-    for pose_bone in armature_obj.pose.bones:
-        parsed = parse_finger_bone(pose_bone.name)
-        if parsed is None:
-            continue
-        axis = pose_bone.get("sub_finger_curl_axis")
-        weight = pose_bone.get("sub_finger_curl_weight")
-        if axis is None or not weight:
-            continue
-        side = parsed["side"]
-        digits = parsed["digits"]
-        digit = parsed["digit"]
-        segment = parsed["segment"]
-        suffix = parsed["suffix"]
-        captured[pose_bone.name] = pose_bone.matrix_basis.to_quaternion()
-        angle = _twist_about_local_axis(pose_bone, int(axis))
-        amount = max(-1.0, min(1.0, angle / float(weight)))
-        sample_weight = abs(SEGMENT_WEIGHTS.get(segment, 1.0))
-        if digit == THUMB_DIGIT:
-            name = slider_bone_name("Thumb", side, suffix, digits=digits)
-        else:
-            kind = next((label for label, d in FINGERS if d == digit), None)
-            name = slider_bone_name(kind, side, suffix, digits=digits) if kind else None
-        if name:
-            curl_samples.setdefault(name, []).append((amount * half, sample_weight))
-
-        side_axis = pose_bone.get("sub_finger_side_axis")
-        side_weight = pose_bone.get("sub_finger_side_weight")
-        if digit == THUMB_DIGIT and side_axis is not None and side_weight:
-            side_angle = _twist_about_local_axis(pose_bone, int(side_axis))
-            side_amount = max(-1.0, min(1.0, side_angle / float(side_weight)))
-            if name:
-                side_samples.setdefault(name, []).append((side_amount * half, sample_weight))
-        touched_fingers.append(pose_bone)
-
-    def _average(samples):
-        total_weight = sum(weight for _value, weight in samples)
-        if total_weight <= 1e-8:
-            return 0.0
-        return sum(value * weight for value, weight in samples) / total_weight
-
-    for name, samples in curl_samples.items():
-        slider = armature_obj.pose.bones.get(name)
-        if slider is None or not samples:
-            continue
-        slider.location.y = max(-half, min(half, _average(samples)))
-
-    for name, samples in side_samples.items():
-        slider = armature_obj.pose.bones.get(name)
-        if slider is None or not samples:
-            continue
-        slider.location.x = max(-half, min(half, _average(samples)))
-
-    for side, digits, suffix in iter_hand_slots(armature_obj):
-        for kind in ("Curl", "Spread"):
-            slider = armature_obj.pose.bones.get(
-                slider_bone_name(kind, side, suffix, digits=digits)
-            )
-            if slider is not None:
-                slider.location.x = 0.0
-                slider.location.y = 0.0
-
-    if context is not None:
-        context.view_layer.update()
-    for pose_bone in touched_fingers:
-        captured_quat = captured.get(pose_bone.name)
-        if captured_quat is None:
-            continue
-        _set_pose_rotation(
-            pose_bone,
-            _subtract_slider_constraints(armature_obj, pose_bone, captured_quat, half),
-        )
-
-    if keyframe and frame is not None:
-        for pose_bone in armature_obj.pose.bones:
-            if is_finger_slider_bone(pose_bone.name):
-                pose_bone.keyframe_insert("location", frame=frame, group=pose_bone.name)
-        for pose_bone in touched_fingers:
-            _key_pose_rotation(pose_bone, frame)
-
-    for _pose_bone, constraint in constraints:
-        constraint.mute = False
-    return len(curl_samples) + len(side_samples)
-
-
-def match_finger_sliders(
-    context,
-    armature_obj,
-    entire_animation=False,
-    progress=None,
-    progress_start=0.0,
-    progress_end=1.0,
-):
-    half = float(armature_obj.data.get("sub_finger_slider_travel", 0.05))
-    for side, digits, suffix in iter_hand_slots(armature_obj):
-        _drive_fingers(armature_obj, side, suffix, half, digits=digits)
-    scene = context.scene
-    if not entire_animation:
-        if progress is not None:
-            progress.update(progress_end)
-        return match_finger_sliders_frame(armature_obj, context)
-
-    start, end = int(scene.frame_start), int(scene.frame_end)
-    original = scene.frame_current
-    total = max(1, end - start + 1)
-    keyed = 0
-    try:
-        for index, frame in enumerate(range(start, end + 1)):
-            scene.frame_set(frame)
-            match_finger_sliders_frame(armature_obj, context, keyframe=True, frame=frame)
-            keyed += 1
-            if progress is not None:
-                factor = progress_start + ((index + 1) / total) * (progress_end - progress_start)
-                progress.update(factor)
-    finally:
-        scene.frame_set(original)
-    return keyed
+def is_finger_match_fcurve_path(path):
+    """True for Smash Finger* keys (including metacarpals) and BL_* slider keys."""
+    match = re.search(r'pose\.bones\[["\']([^"\']+)["\']', path or "")
+    if not match:
+        return False
+    name = match.group(1)
+    return is_finger_slider_bone(name) or parse_finger_bone(name) is not None or is_finger_circle_bone(name)
 
 
 def bake_finger_slider_keys(
@@ -1374,50 +1291,6 @@ class SUB_OP_bake_finger_sliders(Operator):
             {"INFO"},
             f"Baked {keyed} finger keyframe(s). These are real quaternion keys, so they will export.",
         )
-        return {"FINISHED"}
-
-
-class SUB_OP_match_finger_sliders(Operator):
-    bl_idname = "sub.match_finger_sliders"
-    bl_label = "Match Finger Sliders"
-    bl_description = "Move the finger sliders to the current pose or loaded animation so they match the Smash finger bones"
-    bl_options = {"REGISTER", "UNDO"}
-
-    entire_animation: bpy.props.BoolProperty(
-        name="Entire Animation",
-        description="Match every frame in the scene range and keyframe the sliders",
-        default=True,
-    )
-
-    @classmethod
-    def poll(cls, context):
-        from .create_animation_rig import find_target_armature
-        arm = find_target_armature(context)
-        return arm is not None and has_finger_sliders(arm)
-
-    def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self, width=320)
-
-    def draw(self, context):
-        self.layout.prop(self, "entire_animation")
-
-    def execute(self, context):
-        from .create_animation_rig import ProgressCursor, find_target_armature, _activate_armature
-        armature_obj = find_target_armature(context)
-        if armature_obj is None:
-            self.report({"ERROR"}, "Select a Smash Ultimate armature.")
-            return {"CANCELLED"}
-        _activate_armature(context, armature_obj)
-        if context.mode != "POSE":
-            bpy.ops.object.mode_set(mode="POSE")
-        with ProgressCursor(context) as progress:
-            count = match_finger_sliders(
-                context, armature_obj, self.entire_animation, progress=progress
-            )
-        if self.entire_animation:
-            self.report({"INFO"}, f"Matched finger sliders across {count} frame(s).")
-        else:
-            self.report({"INFO"}, f"Matched {count} finger slider(s) to the current pose.")
         return {"FINISHED"}
 
 

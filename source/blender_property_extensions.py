@@ -14,6 +14,30 @@ from .model.material import sub_matl_data
 from .model.skel import helper_bone_data
 
 
+def _update_smash_viewport(self, context):
+    try:
+        from .extras.smash_viewport import update_smash_viewport
+        update_smash_viewport(self, context)
+    except Exception:
+        pass
+
+
+def _update_smash_vp_background(self, context):
+    try:
+        from .extras.smash_viewport import update_smash_vp_background
+        update_smash_vp_background(self, context)
+    except Exception:
+        pass
+
+
+def _update_smash_vp_lighting(self, context):
+    try:
+        from .extras.smash_viewport import update_smash_vp_lighting
+        update_smash_vp_lighting(self, context)
+    except Exception:
+        pass
+
+
 def poll_armature_object(_self, obj):
     return obj is not None and getattr(obj, 'type', None) == 'ARMATURE'
 
@@ -500,6 +524,33 @@ class SubSceneProperties(PropertyGroup):
         name="Shape Keys Prefix",
         description="Prefix to use when converting shape keys to meshes",
         default=""
+    )
+    smash_viewport: BoolProperty(
+        name="Smash Viewport",
+        description=(
+            "Set the scene render engine to Smash Viewport. Then use Rendered "
+            "shading in the 3D View, the same way you would with Cycles. "
+            "Overlays, selection, and object visibility stay under Blender"
+        ),
+        default=False,
+        update=_update_smash_viewport,
+    )
+    smash_vp_bg_color: FloatVectorProperty(
+        name="Background",
+        description="Smash Viewport background color",
+        subtype="COLOR",
+        size=3,
+        min=0.0,
+        max=1.0,
+        default=(0.0, 0.0, 0.0),
+        update=_update_smash_vp_background,
+    )
+    smash_vp_light_path: StringProperty(
+        name="Stage Lights",
+        description="Stage light.nuanmb used by Smash Viewport (same as SSBH Editor)",
+        default="",
+        subtype="FILE_PATH",
+        update=_update_smash_vp_lighting,
     )
     eye_look_live_preview: BoolProperty(
         name="Live Preview",
