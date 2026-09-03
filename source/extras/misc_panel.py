@@ -3,9 +3,15 @@ import bpy
 from bpy.types import Panel, Operator
 
 from ..model.material.convert_smash_material import (
-    find_target_armature,
+    find_target_armature as find_material_armature,
     armature_has_converted_smash_materials,
     armature_has_unconverted_smash_materials,
+)
+from .create_animation_rig import (
+    armature_has_animation_rig,
+    armature_has_ik,
+    armature_ik_is_enabled,
+    find_target_armature as find_anim_rig_armature,
 )
 
 from typing import TYPE_CHECKING
@@ -29,6 +35,62 @@ class SUB_PT_animation_tools(Panel):
 
         layout = self.layout
         layout.use_property_split = False
+
+        row = layout.row(align=True)
+        row.scale_y = 1.5
+        row.operator("sub.create_animation_rig", text="Create Animation Rig", icon="OUTLINER_OB_ARMATURE")
+        row.operator("sub.remove_animation_rig", text="", icon="X")
+        layout.prop(ssp, "clean_keyframes_after_rig", text="Clean keyframes after creation")
+
+        arm = find_anim_rig_armature(context)
+        if arm is not None and armature_has_ik(arm):
+            has_arms = armature_has_ik(arm, 'ARMS')
+            has_legs = armature_has_ik(arm, 'LEGS')
+            if has_arms:
+                row = layout.row(align=True)
+                row.label(text="Arms")
+                if armature_ik_is_enabled(arm, 'ARMS'):
+                    op = row.operator("sub.anim_rig_toggle_ik_fk", text="Switch to FK", icon="BONE_DATA")
+                else:
+                    op = row.operator("sub.anim_rig_toggle_ik_fk", text="Switch to IK", icon="CON_KINEMATIC")
+                op.limbs = 'ARMS'
+            if has_legs:
+                row = layout.row(align=True)
+                row.label(text="Legs")
+                if armature_ik_is_enabled(arm, 'LEGS'):
+                    op = row.operator("sub.anim_rig_toggle_ik_fk", text="Switch to FK", icon="BONE_DATA")
+                else:
+                    op = row.operator("sub.anim_rig_toggle_ik_fk", text="Switch to IK", icon="CON_KINEMATIC")
+                op.limbs = 'LEGS'
+            if has_arms and has_legs:
+                row = layout.row(align=True)
+                row.label(text="Both")
+                op = row.operator("sub.anim_rig_toggle_ik_fk", text="IK", icon="CON_KINEMATIC")
+                op.limbs = 'BOTH'
+                op.set_enabled = True
+                op.enable_ik = True
+                op = row.operator("sub.anim_rig_toggle_ik_fk", text="FK", icon="BONE_DATA")
+                op.limbs = 'BOTH'
+                op.set_enabled = True
+                op.enable_ik = False
+
+        from .finger_sliders import has_finger_sliders, finger_sliders_are_enabled
+        if arm is not None and has_finger_sliders(arm):
+            row = layout.row(align=True)
+            row.label(text="Fingers")
+            if finger_sliders_are_enabled(arm):
+                op = row.operator("sub.toggle_finger_sliders", text="Switch to Circles", icon="MESH_CIRCLE")
+                op.set_enabled = True
+                op.enable_sliders = False
+            else:
+                op = row.operator("sub.toggle_finger_sliders", text="Switch to Sliders", icon="DRIVER")
+                op.set_enabled = True
+                op.enable_sliders = True
+
+        if arm is not None and armature_has_animation_rig(arm):
+            layout.operator("sub.bake_and_remove_rig", text="Bake and Remove Rig", icon="ACTION")
+
+        layout.separator()
 
         # Add idle pose library (moved to top)
         box = layout.box()
@@ -394,15 +456,69 @@ class SUB_PT_misc_utilities(Panel):
     def draw(self, context):
         layout = self.layout
         layout.use_property_split = False
+        ssp = context.scene.sub_scene_properties
 
-        # Eye Material Custom Vector 31 Modal Operator
-        row = layout.row(align=True)
-        row.operator("sub.eye_material_custom_vector_31_modal")
+        eye_box = layout.box()
+        eye_box.label(text="Eye Look (CustomVector31)", icon="HIDE_OFF")
+        eye_box.operator("sub.setup_eye_cv31", icon="DRIVER")
+
+        arma = context.object if (context.object and context.object.type == 'ARMATURE') else None
+        if arma is not None:
+            sap = arma.data.sub_anim_properties
+            ready = any(
+                (t := sap.mat_tracks.get(n)) is not None
+                and t.properties.get('CustomVector31') is not None
+                for n in ('EyeL', 'EyeR')
+            )
+            if not ready:
+                warn = eye_box.box()
+                warn.alert = True
+                warn.label(text="No EyeL/EyeR CustomVector31 yet -", icon="ERROR")
+                warn.label(text="aiming will do nothing. Run Set Up first.")
+
+        eye_box.separator()
+        eye_box.label(text="Look Control Rig", icon="BONE_DATA")
+        eye_box.operator("sub.add_eye_look_control", icon="BONE_DATA")
+        eye_box.operator("sub.match_eye_look_from_material", icon="KEYINGSET")
+        eye_box.operator("sub.bake_eye_look", icon="KEYFRAME")
+        eye_box.prop(ssp, "eye_look_live_preview")
+        eye_box.prop(ssp, "eye_look_mode")
+        rowlc = eye_box.row(align=True)
+        if ssp.eye_look_mode == 'LOOK_AT':
+            rowlc.prop(ssp, "eye_look_gain", text="Gain X")
+            rowlc.prop(ssp, "eye_look_gain_y", text="Gain Y")
+        else:
+            rowlc.prop(ssp, "eye_look_sensitivity", text="Sens X")
+            rowlc.prop(ssp, "eye_look_sensitivity_y", text="Sens Y")
+        eye_box.prop(ssp, "eye_look_clamp")
+        rowinv = eye_box.row(align=True)
+        rowinv.prop(ssp, "eye_look_invert_x", toggle=True)
+        rowinv.prop(ssp, "eye_look_invert_y", toggle=True)
+        eye_box.prop(ssp, "eye_look_pupil_from_scale")
+        if ssp.eye_look_pupil_from_scale:
+            eye_box.prop(ssp, "eye_look_scale_about_pupil")
+            if ssp.eye_look_scale_about_pupil:
+                eye_box.prop(ssp, "eye_pupil_centre_auto")
+                if not ssp.eye_pupil_centre_auto:
+                    eye_box.prop(ssp, "eye_pupil_centre", text="Centre UV")
+                eye_box.operator("sub.measure_pupil_centre", icon="EYEDROPPER")
+            pupil_box = eye_box.box()
+            pupil_box.label(text="Scale the control bone (S) to resize", icon="INFO")
+            pupil_box.label(text="the pupil. Smaller bone = smaller pupil.")
+        hint = eye_box.box()
+        hint.label(text="Move the control in Pose Mode to preview,", icon="INFO")
+        hint.label(text="then Bake Eyes so the look exports")
+        hint.label(text="and the control bone is removed.")
+        hint.label(text="Live preview alone won't export -")
+        hint.label(text="export reads keyframes, not drivers.")
+        hint.label(text="Turn on Live Preview for Solid Texture")
+        hint.label(text="and Material look, including imported")
+        hint.label(text="EyeL/EyeR material anims. Turn it off when done.")
 
         layout.separator()
         box = layout.box()
         box.label(text="Armature Materials", icon="MATERIAL")
-        armature = find_target_armature(context)
+        armature = find_material_armature(context)
         if armature is None:
             row = box.row()
             row.enabled = False

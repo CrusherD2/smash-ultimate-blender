@@ -989,7 +989,10 @@ def process_mesh(operator: Operator, context: Context, mesh_object_copy: Object,
         override['active_object'] = mesh_object_copy
         override['selected_objects'] = [mesh_object_copy]
         with context.temp_override(**override):
-            for modifier in mesh_object_copy.modifiers:
+            for modifier in list(mesh_object_copy.modifiers):
+                if modifier.name.startswith('SUB_Eye'):
+                    mesh_object_copy.modifiers.remove(modifier)
+                    continue
                 if armature_position == 'REST': # Optimization to speed up export when the user doesn't want to export armature changes anyways
                     if modifier.type != 'ARMATURE':
                         bpy.ops.object.modifier_apply(modifier=modifier.name)
@@ -1288,6 +1291,8 @@ def make_mesh_object(operator, context, mesh: bpy.types.Object, group_name, i, m
 
     smash_uv_names = ['map1', 'bake1', 'uvSet', 'uvSet1', 'uvSet2']
     for uv_layer in mesh.data.uv_layers:
+        if uv_layer.name.startswith('.') or uv_layer.name.startswith('_sub_eye'):
+            continue
         if uv_layer.name not in smash_uv_names:
             # TODO: Use more specific exception classes?
             valid_attribute_list = ', '.join(smash_uv_names)
@@ -1567,6 +1572,11 @@ def find_non_helper_ancestor_index(bone: EditBone, bones: list[EditBone]) -> int
         return find_non_helper_ancestor_index(bone.parent, bones)
     return bones.index(bone.parent)
 
+
+def is_blender_control_bone(name: str) -> bool:
+    """Animation-rig sliders / eye look bones. Never write these into a .nusktb."""
+    return bool(name) and name.startswith('BL_')
+
 def make_skel(operator, context, mode):
     ssp: SubSceneProperties = context.scene.sub_scene_properties
     arma: bpy.types.Object = ssp.model_export_arma
@@ -1601,6 +1611,8 @@ def make_skel(operator, context, mode):
                 new_bones.append(blender_bone)
 
         for blender_bone in parent_first_ordered_bones:
+            if is_blender_control_bone(blender_bone.name):
+                continue
             if blender_bone not in new_bones:
                 bones_not_in_vanilla.append(blender_bone)
                 if blender_bone.name.startswith('H_') or blender_bone.name.startswith('S_'): # Need to insert new helper or swing bones at the end
@@ -1630,8 +1642,13 @@ def make_skel(operator, context, mode):
 
             skel.bones.append(ssbh_bone)
     else:
-        for bone in parent_first_ordered_bones:
-            ssbh_bone = get_ssbh_bone(bone, parent_first_ordered_bones.index(bone.parent) if bone.parent else None)
+        export_bones = [bone for bone in parent_first_ordered_bones if not is_blender_control_bone(bone.name)]
+        for bone in export_bones:
+            parent = bone.parent
+            while parent is not None and is_blender_control_bone(parent.name):
+                parent = parent.parent
+            parent_index = export_bones.index(parent) if parent else None
+            ssbh_bone = get_ssbh_bone(bone, parent_index)
             skel.bones.append(ssbh_bone)
 
     if ssp.vanilla_update_prc != '':

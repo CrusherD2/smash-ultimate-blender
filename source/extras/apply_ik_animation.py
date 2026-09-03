@@ -19,20 +19,30 @@ def collect_fk_bone_names(armature_object, leg_bone_map=None):
             for part in ("Leg", "Knee", "Foot", "Arm", "Hand"):
                 names.add(f"{part}{side}")
 
-    for side in ("L", "R"):
-        for part in ("Arm", "Hand"):
-            names.add(f"{part}{side}")
+    for pose_bone in armature_object.pose.bones:
+        for constraint in pose_bone.constraints:
+            if constraint.type not in {"IK", "COPY_ROTATION"}:
+                continue
+            subtarget = constraint.subtarget or ""
+            if "IK" in subtarget:
+                names.add(pose_bone.name)
 
     return [name for name in names if name in armature_object.data.bones]
 
 
+def skip_ik_visual_bake(name):
+    """Finger / slider / extra control bones must not be visual-baked with IK."""
+    if not name:
+        return False
+    if name.startswith("Finger") or name.startswith("BL_"):
+        return True
+    return False
+
+
 def bake_action_visual(context, armature_object, frame_start, frame_end):
     bpy.ops.object.mode_set(mode="POSE")
-    try:
-        bpy.ops.pose.select_all(action="SELECT")
-    except Exception:
-        for bone in armature_object.pose.bones:
-            set_pose_bone_select(bone, True)
+    for bone in armature_object.pose.bones:
+        set_pose_bone_select(bone, not skip_ik_visual_bake(bone.name))
 
     bpy.ops.nla.bake(
         frame_start=frame_start,
@@ -102,6 +112,8 @@ def bake_and_clean_current_action(context, armature_object, leg_bone_map=None, r
             armature_object.animation_data.action,
             ik_bone_names,
         )
+    from .create_animation_rig import _remove_ik_fk_switch_keys
+    _remove_ik_fk_switch_keys(armature_object)
 
     if remove_ik_rig:
         remove_constraints_from_bones(armature_object, fk_bone_names)

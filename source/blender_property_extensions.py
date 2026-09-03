@@ -18,6 +18,18 @@ def poll_armature_object(_self, obj):
     return obj is not None and getattr(obj, 'type', None) == 'ARMATURE'
 
 
+def _update_eye_look_live_preview(self, context):
+    try:
+        from .extras.eye_rig import start_eye_preview, stop_eye_preview
+        scene = getattr(context, 'scene', None)
+        if self.eye_look_live_preview:
+            start_eye_preview(scene)
+        else:
+            stop_eye_preview(scene)
+    except Exception:
+        pass
+
+
 def register():
     from .extras.face_picker import SUB_PG_face_picker_data
 
@@ -277,21 +289,6 @@ class SubSceneProperties(PropertyGroup):
         description='The selected .numatb',
         default='',
     )
-    cv31_modal_last_mode: StringProperty(
-        name='Last Eye Material CV31 Modal Operator Mode',
-        description='the last used mode for this operator',
-        default='LEFT',
-    )
-    cv31_modal_use_auto_keyframe: BoolProperty(
-        name='Use Auto Keyframe',
-        description='True if a keyframe should be automatically inserted on confirm',
-        default=True,
-    )
-    cv31_modal_reset_on_mode_switch: BoolProperty(
-        name='Reset on Mode Switch',
-        description='If true, switching modes will "undo" the changes made while in that mode',
-        default=False,
-    )
     last_anim_import_dir: StringProperty(
         subtype="DIR_PATH",
         default=""
@@ -357,6 +354,11 @@ class SubSceneProperties(PropertyGroup):
     idle_pose_list_index: IntProperty(
         name="Idle Pose List Index",
         default=0
+    )
+    clean_keyframes_after_rig: BoolProperty(
+        name="Clean keyframes after creation",
+        description="After creating the animation rig, remove keys that sit on baked interpolation so only the keys that change the pose remain",
+        default=True,
     )
     idle_pose_include_trans: BoolProperty(
         name="Include Trans Bone",
@@ -498,6 +500,82 @@ class SubSceneProperties(PropertyGroup):
         name="Shape Keys Prefix",
         description="Prefix to use when converting shape keys to meshes",
         default=""
+    )
+    eye_look_live_preview: BoolProperty(
+        name="Live Preview",
+        description=(
+            "Show eye look in Solid Texture and Material. Works with BL_EyeLook "
+            "and with imported EyeL/EyeR CustomVector31 anims. On by default. "
+            "Bake still has to run to create the keyframes export reads"
+        ),
+        default=True,
+        update=_update_eye_look_live_preview,
+    )
+    eye_look_gain_y: FloatProperty(
+        name="Gain Y",
+        description="Vertical travel per look angle in Look At mode",
+        default=0.70, soft_min=0.0, soft_max=4.0,
+    )
+    eye_look_sensitivity_y: FloatProperty(
+        name="Sensitivity Y",
+        description="Vertical UV movement per Blender unit in Flat Offset mode",
+        default=0.10, soft_min=0.0, soft_max=2.0,
+    )
+    eye_pupil_centre_auto: BoolProperty(
+        name="Auto Pupil Centre",
+        description="Measure the scale pivot from the eye meshes' average UV",
+        default=True,
+    )
+    eye_pupil_centre: FloatVectorProperty(
+        name="Pupil Centre UV",
+        description="The UV the pupil scales about, when Auto Pupil Centre is off",
+        size=2, default=(0.5, 0.5), soft_min=0.0, soft_max=1.0,
+    )
+    eye_look_mode: EnumProperty(
+        name="Aim Mode",
+        description="How the control bone's position becomes an eye direction",
+        items=[
+            ("LOOK_AT", "Look At (3D)",
+             "Aim at wherever the control sits in 3D. Park it on the camera and the character looks at the camera"),
+            ("OFFSET", "Flat Offset (2D)",
+             "Map the control's sideways and vertical offset straight onto the eye UVs"),
+        ],
+        default="LOOK_AT",
+    )
+    eye_look_gain: FloatProperty(
+        name="Gain",
+        description="How far the eyes travel for a given look angle in Look At mode",
+        default=0.35, soft_min=0.0, soft_max=2.0,
+    )
+    eye_look_scale_about_pupil: BoolProperty(
+        name="Scale About Pupil",
+        description="Compensate the UV translate so resizing the pupil keeps it centred and still aimed at the target",
+        default=True,
+    )
+    eye_look_pupil_from_scale: BoolProperty(
+        name="Pupil Size From Bone Scale",
+        description="Drive CustomVector31 X/Y from the control bone's scale. Shrink the bone to shrink the pupil",
+        default=True,
+    )
+    eye_look_invert_x: BoolProperty(
+        name="Invert X",
+        description="Flip which way the eyes look horizontally",
+        default=False,
+    )
+    eye_look_invert_y: BoolProperty(
+        name="Invert Y",
+        description="Flip which way the eyes look vertically",
+        default=False,
+    )
+    eye_look_sensitivity: FloatProperty(
+        name="Sensitivity",
+        description="UV units the eye moves per Blender unit the control moves",
+        default=0.05, soft_min=0.0, soft_max=1.0,
+    )
+    eye_look_clamp: FloatProperty(
+        name="Clamp",
+        description="Largest UV offset allowed, so the pupil can't slide off the eye",
+        default=0.5, min=0.0,
     )
 
     # Transform override bone filtering (shared by exporters)

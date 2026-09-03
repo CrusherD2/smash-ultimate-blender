@@ -1044,7 +1044,10 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
         bone_name_to_rotation_values: dict[str, list[Rotation]] = {}
         bone_name_to_scale_values: dict[str, list[Scale]] = {}
         bone_to_rel_matrix_local = {}
-        reordered_pose_bones = get_hierarchy_order(list(arma.pose.bones))
+        reordered_pose_bones = [
+            bone for bone in get_hierarchy_order(list(arma.pose.bones))
+            if not bone.name.startswith('BL_')
+        ]
 
         # Fill value dicts with default values. Not every bone will be animated, so for these the default values of a matrix basis will be needed
         for pose_bone in reordered_pose_bones:
@@ -1076,6 +1079,8 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
                 operator.report(type={'WARNING'}, message=f"The fcurve with data path {fcurve.data_path} will not be exported, its format only partially matched the expected pattern of a bone fcurve.")
                 continue
             bone_name = matches.groups()[0]
+            if bone_name.startswith('BL_'):
+                continue
             transform_subtype = matches.groups()[1]
             if transform_subtype == 'location':
                 for index, frame in enumerate(range(first_blender_frame, last_blender_frame+1)):

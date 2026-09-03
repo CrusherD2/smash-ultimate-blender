@@ -18,7 +18,7 @@ from bpy.types import Operator, Panel
 from mathutils import Matrix, Quaternion, Vector
 from ..model.import_model import get_blender_transform
 from ..blender_compat import assign_action, draw_progress, ensure_action_slot
-from .fcurve_compat import find_fcurve, new_fcurve
+from .fcurve_compat import find_fcurve, new_fcurve, style_material_fcurve, style_visibility_fcurve
 from .raw_anim import (
     RAW_ANIM_EXTENSION,
     import_raw_animation,
@@ -1054,6 +1054,7 @@ def import_model_anim(context: bpy.types.Context, filepath: str,
             if fcurve is not None:
                 for keyframe in fcurve.keyframe_points:
                     keyframe.interpolation = 'CONSTANT'
+                style_visibility_fcurve(fcurve)
                 fcurve.update()
 
     if material_group:
@@ -1074,6 +1075,8 @@ def import_model_anim(context: bpy.types.Context, filepath: str,
                         for index, value in enumerate(vector_index_values):
                             frame_and_value_flattened.extend([scene.frame_start + index, value])
                         fcurve.keyframe_points.foreach_set('co', frame_and_value_flattened)
+                        fcurve.update()
+                        style_material_fcurve(fcurve)
                 elif prop.sub_type == 'FLOAT':
                     data_path=f'sub_anim_properties.mat_tracks[{mat_track_index}].properties[{prop_index}].custom_float'
                     fcurve = create_fcurve(sap_action, 'ARMATURE', data_path, action_group=f'Material ({mat_track.name})')
@@ -1082,6 +1085,8 @@ def import_model_anim(context: bpy.types.Context, filepath: str,
                     for index, value in enumerate(track.values):
                         frame_and_value_flattened.extend([scene.frame_start + index, value])
                     fcurve.keyframe_points.foreach_set('co', frame_and_value_flattened)
+                    fcurve.update()
+                    style_material_fcurve(fcurve)
                 elif prop.sub_type == 'BOOL':
                     data_path=f'sub_anim_properties.mat_tracks[{mat_track_index}].properties[{prop_index}].custom_bool'
                     fcurve = create_fcurve(sap_action, 'ARMATURE', data_path, action_group=f'Material ({mat_track.name})')
@@ -1090,6 +1095,8 @@ def import_model_anim(context: bpy.types.Context, filepath: str,
                     for index, value in enumerate(track.values):
                         frame_and_value_flattened.extend([scene.frame_start + index, value])
                     fcurve.keyframe_points.foreach_set('co', frame_and_value_flattened)
+                    fcurve.update()
+                    style_material_fcurve(fcurve)
                 elif prop.sub_type == 'PATTERN':
                     data_path=f'sub_anim_properties.mat_tracks[{mat_track_index}].properties[{prop_index}].pattern_index'
                     fcurve = create_fcurve(sap_action, 'ARMATURE', data_path, action_group=f'Material ({mat_track.name})')
@@ -1098,6 +1105,8 @@ def import_model_anim(context: bpy.types.Context, filepath: str,
                     for index, value in enumerate(track.values):
                         frame_and_value_flattened.extend([scene.frame_start + index, value])
                     fcurve.keyframe_points.foreach_set('co', frame_and_value_flattened)
+                    fcurve.update()
+                    style_material_fcurve(fcurve)
                 elif prop.sub_type == 'TEXTURE':
                     data_path=f'sub_anim_properties.mat_tracks[{mat_track_index}].properties[{prop_index}].texture_transform'
                     for index in (0,1,2,3,4):
@@ -1117,6 +1126,8 @@ def import_model_anim(context: bpy.types.Context, filepath: str,
                         for index, value in enumerate(vector_index_values):
                             frame_and_value_flattened.extend([scene.frame_start + index, value])
                         fcurve.keyframe_points.foreach_set('co', frame_and_value_flattened)
+                        fcurve.update()
+                        style_material_fcurve(fcurve)
                 elif prop.sub_type == 'DIFFUSE_UV':
                     # TODO: implement support for diffuse UV transforms
                     pass
@@ -1132,6 +1143,11 @@ def import_model_anim(context: bpy.types.Context, filepath: str,
 
     from .anim_data import mark_sap_sync_known
     mark_sap_sync_known(arma)
+    try:
+        from ..extras.eye_rig import ensure_eye_live_preview
+        ensure_eye_live_preview(scene)
+    except Exception:
+        pass
 
 
 def get_raw_matrix(bone_to_node, bone, index, node) -> Matrix:

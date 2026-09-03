@@ -622,6 +622,14 @@ def set_visibility_tracks(arma, enable_names, managed_names, insert_keyframes=Fa
                 data_path=f"sub_anim_properties.vis_track_entries[{index}].value",
                 group="Visibility",
             )
+    if insert_keyframes:
+        try:
+            from ..anim.fcurve_compat import style_visibility_action
+            animation_data = getattr(arma.data, 'animation_data', None)
+            if animation_data is not None:
+                style_visibility_action(animation_data.action, create_spacer=True)
+        except Exception:
+            pass
     return changed
 
 

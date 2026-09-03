@@ -1,6 +1,8 @@
 from . import attribute_renamer
+from . import create_animation_rig
 from . import create_meshes
-from . import eye_material_custom_vector_31_modal
+from . import eye_rig
+from . import finger_sliders
 from . import face_picker
 from . import misc_panel
 from . import set_linear_vertex_color
@@ -48,6 +50,8 @@ def register():
     # Register animation_scroll
     animation_scroll.register()
     face_picker.register()
+    eye_rig.register()
+    create_animation_rig.register()
     
     # Register misc_panel first since IK panel depends on it
     misc_panel.register()
@@ -65,6 +69,8 @@ def register():
     
 def unregister():
     face_picker.unregister()
+    eye_rig.unregister()
+    create_animation_rig.unregister()
     # Unregister animation_scroll
     animation_scroll.unregister()
     

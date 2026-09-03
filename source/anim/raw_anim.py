@@ -10,7 +10,7 @@ from pathlib import Path
 import bpy
 
 from ..blender_compat import assign_action, ensure_action_slot
-from .fcurve_compat import find_fcurve, get_all_action_fcurves, new_fcurve, remove_fcurve
+from .fcurve_compat import find_fcurve, get_all_action_fcurves, new_fcurve, remove_fcurve, style_visibility_fcurve
 
 RAW_ANIM_FORMAT = "sub_raw_anim"
 RAW_ANIM_VERSION = 1
@@ -289,6 +289,7 @@ def _import_visibility_tracks(
                 keyframe.interpolation = (
                     key_data.get("interpolation", "CONSTANT") if key_data else "CONSTANT"
                 )
+            style_visibility_fcurve(fcurve)
             fcurve.update()
 
     from .import_anim import setup_visibility_drivers

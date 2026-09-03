@@ -15,7 +15,13 @@ from bpy.props import (
     PointerProperty,
     FloatVectorProperty,)
 
-from .fcurve_compat import get_id_action_fcurves
+from .fcurve_compat import (
+    apply_dopesheet_key_colors,
+    get_id_action_fcurves,
+    restore_dopesheet_key_colors,
+    style_eye_control_action,
+    style_visibility_action,
+)
 
 mat_sub_types = (
     ('VECTOR', 'Custom Vector', 'Custom Vector'),
@@ -53,11 +59,11 @@ def sync_sap_action_handler(scene):
                 del _last_known_actions[obj.name]
             continue
             
+        current_action = obj.animation_data.action
+
         # Skip if no armature data animation data
         if not obj.data.animation_data:
             continue
-            
-        current_action = obj.animation_data.action
         current_sap_action = obj.data.animation_data.action
         
         # Check if the action has changed since last time
@@ -76,6 +82,16 @@ def sync_sap_action_handler(scene):
         if expected_sap_action and expected_sap_action != current_sap_action:
             from ..blender_compat import assign_action
             assign_action(obj.data.animation_data, expected_sap_action)
+            current_sap_action = expected_sap_action
+            try:
+                from ..extras.eye_rig import ensure_eye_live_preview, match_eye_look_from_material
+                match_eye_look_from_material(obj, overwrite=False)
+                ensure_eye_live_preview(scene)
+            except Exception:
+                pass
+
+        if current_sap_action is not None:
+            style_visibility_action(current_sap_action)
 
 
 def mark_sap_sync_known(armature_object: bpy.types.Object):
@@ -92,6 +108,11 @@ def sync_sap_action_depsgraph_handler(scene, depsgraph):
     This catches more events including action changes.
     """
     sync_sap_action_handler(scene)
+    screen = getattr(bpy.context, 'screen', None)
+    if screen is not None and getattr(screen, 'is_animation_playing', False):
+        return
+    if not bpy.app.timers.is_registered(_style_visibility_soon):
+        bpy.app.timers.register(_style_visibility_soon, first_interval=0.05)
 
 # Timer function for periodic checking
 def sync_sap_timer():
@@ -832,6 +853,8 @@ class SUB_OP_insert_all_vis_entry_keyframes(Operator):
         sap: SUB_PG_sub_anim_data = arma.data.sub_anim_properties
         for index, vis_entry in enumerate(sap.vis_track_entries):
             arma.data.keyframe_insert(data_path=f'sub_anim_properties.vis_track_entries[{index}].value', group='Visibility')
+        if arma.data.animation_data is not None:
+            style_visibility_action(arma.data.animation_data.action, create_spacer=True)
         return {'FINISHED'}
 
 class SUB_OP_organize_vis_entries_alphabetically(Operator):
@@ -1140,14 +1163,46 @@ def dummy_update(self, context):
     '''
     This is needed to force blender to update the driver values when updating via a modal.
     '''
-    pass
+    if not bpy.app.timers.is_registered(_style_visibility_soon):
+        bpy.app.timers.register(_style_visibility_soon, first_interval=0.05)
+
+
+def _style_visibility_soon():
+    try:
+        apply_dopesheet_key_colors()
+        for obj in bpy.data.objects:
+            if obj.type != 'ARMATURE':
+                continue
+            data_ad = getattr(obj.data, 'animation_data', None)
+            sap_action = getattr(data_ad, 'action', None) if data_ad else None
+            if sap_action is not None:
+                style_visibility_action(sap_action)
+            obj_ad = getattr(obj, 'animation_data', None)
+            obj_action = getattr(obj_ad, 'action', None) if obj_ad else None
+            if obj_action is not None:
+                style_eye_control_action(obj_action)
+            pose = getattr(obj, 'pose', None)
+            eye_bone = pose.bones.get('BL_EyeLook') if pose is not None else None
+            if eye_bone is not None:
+                try:
+                    eye_bone.color.palette = 'THEME03'
+                    eye_bone.bone.color.palette = 'THEME03'
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return None
+
+
+def vis_value_update(self, context):
+    dummy_update(self, context)
 
 class SUB_PG_vis_track_entry(PropertyGroup):
     name: StringProperty(
         name="Vis Name",
         default="Unknown",
         update=vis_track_name_update,)
-    value: BoolProperty(name="Visible", default=False, update=dummy_update)
+    value: BoolProperty(name="Visible", default=False, update=vis_value_update)
 
 class SUB_PG_mat_track_property(PropertyGroup):
     name: StringProperty(
@@ -1220,6 +1275,23 @@ def register():
     
     # Subscribe to action changes for direct detection
     subscribe_to_action_changes()
+    apply_dopesheet_key_colors()
+    try:
+        from .fcurve_compat import get_all_action_fcurves, is_ik_fk_fcurve, is_visibility_fcurve
+        for obj in bpy.data.objects:
+            if obj.type != 'ARMATURE':
+                continue
+            anim = getattr(obj.data, 'animation_data', None)
+            action = getattr(anim, 'action', None) if anim else None
+            if action is None:
+                continue
+            for fcurve in get_all_action_fcurves(action, id_type='ARMATURE'):
+                if (is_visibility_fcurve(fcurve) or is_ik_fk_fcurve(fcurve)) and fcurve.hide:
+                    fcurve.hide = False
+    except Exception:
+        pass
+    if not bpy.app.timers.is_registered(_style_visibility_soon):
+        bpy.app.timers.register(_style_visibility_soon, first_interval=0.2)
     
 
     """
@@ -1242,6 +1314,8 @@ def unregister():
     # Unregister the timer
     if bpy.app.timers.is_registered(sync_sap_timer):
         bpy.app.timers.unregister(sync_sap_timer)
+    if bpy.app.timers.is_registered(_style_visibility_soon):
+        bpy.app.timers.unregister(_style_visibility_soon)
     
     # Clear the stored actions
     global _last_known_actions
@@ -1249,6 +1323,7 @@ def unregister():
     
     # Unsubscribe from action changes
     unsubscribe_from_action_changes()
+    restore_dopesheet_key_colors()
     
 if __name__ == '__main__':
     register()
