@@ -1,0 +1,149 @@
+name: Build Smash Viewport plugins
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [animation-workflow]
+    paths:
+      - native/ssbh_blender_preview/**
+      - native/ssbh_editor.rev
+      - .github/workflows/build-smash-viewport.yml
+
+concurrency:
+  group: smash-viewport-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  SSB_EDITOR_REPO: https://github.com/CrusherD2/ssbh_editor.git
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Vendor ssbh_wgpu
+        shell: bash
+        run: |
+          set -euo pipefail
+          rev="$(tr -d '[:space:]' < native/ssbh_editor.rev)"
+          src="${RUNNER_TEMP}/ssbh_editor"
+          git clone --filter=blob:none --sparse "$SSB_EDITOR_REPO" "$src"
+          git -C "$src" sparse-checkout set vendor/ssbh_wgpu
+          git -C "$src" fetch --depth 1 origin "$rev"
+          git -C "$src" checkout --detach FETCH_HEAD
+          mkdir -p native/vendor
+          rm -rf native/vendor/ssbh_wgpu
+          cp -R "$src/vendor/ssbh_wgpu" native/vendor/ssbh_wgpu
+      - name: Build
+        working-directory: native/ssbh_blender_preview
+        run: cargo build --release
+      - name: Stage plugin
+        shell: bash
+        run: |
+          mkdir -p native/bin
+          cp native/ssbh_blender_preview/target/release/ssbh_blender_preview.dll native/bin/ssbh_blender_preview.dll
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-windows
+          path: native/bin/ssbh_blender_preview.dll
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm cmake pkg-config libssl-dev
+      - name: Vendor ssbh_wgpu
+        run: |
+          set -euo pipefail
+          rev="$(tr -d '[:space:]' < native/ssbh_editor.rev)"
+          src="${RUNNER_TEMP}/ssbh_editor"
+          git clone --filter=blob:none --sparse "$SSB_EDITOR_REPO" "$src"
+          git -C "$src" sparse-checkout set vendor/ssbh_wgpu
+          git -C "$src" fetch --depth 1 origin "$rev"
+          git -C "$src" checkout --detach FETCH_HEAD
+          mkdir -p native/vendor
+          rm -rf native/vendor/ssbh_wgpu
+          cp -R "$src/vendor/ssbh_wgpu" native/vendor/ssbh_wgpu
+      - name: Build
+        working-directory: native/ssbh_blender_preview
+        run: cargo build --release
+      - name: Stage plugin
+        run: |
+          mkdir -p native/bin
+          cp native/ssbh_blender_preview/target/release/libssbh_blender_preview.so native/bin/libssbh_blender_preview.so
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-linux
+          path: native/bin/libssbh_blender_preview.so
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Vendor ssbh_wgpu
+        run: |
+          set -euo pipefail
+          rev="$(tr -d '[:space:]' < native/ssbh_editor.rev)"
+          src="${RUNNER_TEMP}/ssbh_editor"
+          git clone --filter=blob:none --sparse "$SSB_EDITOR_REPO" "$src"
+          git -C "$src" sparse-checkout set vendor/ssbh_wgpu
+          git -C "$src" fetch --depth 1 origin "$rev"
+          git -C "$src" checkout --detach FETCH_HEAD
+          mkdir -p native/vendor
+          rm -rf native/vendor/ssbh_wgpu
+          cp -R "$src/vendor/ssbh_wgpu" native/vendor/ssbh_wgpu
+      - name: Build universal dylib
+        working-directory: native/ssbh_blender_preview
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+          mkdir -p ../bin
+          lipo -create -output ../bin/libssbh_blender_preview.dylib \
+            target/aarch64-apple-darwin/release/libssbh_blender_preview.dylib \
+            target/x86_64-apple-darwin/release/libssbh_blender_preview.dylib
+          lipo -info ../bin/libssbh_blender_preview.dylib
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-macos
+          path: native/bin/libssbh_blender_preview.dylib
+
+  publish:
+    needs: [windows, linux, macos]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Commit plugins
+        run: |
+          set -euo pipefail
+          mkdir -p native/bin
+          cp artifacts/plugin-windows/ssbh_blender_preview.dll native/bin/ssbh_blender_preview.dll
+          cp artifacts/plugin-linux/libssbh_blender_preview.so native/bin/libssbh_blender_preview.so
+          cp artifacts/plugin-macos/libssbh_blender_preview.dylib native/bin/libssbh_blender_preview.dylib
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- native/bin/ssbh_blender_preview.dll native/bin/libssbh_blender_preview.so native/bin/libssbh_blender_preview.dylib
+          if git diff --staged --quiet; then
+            echo "Plugins unchanged"
+            exit 0
+          fi
+          git commit -m "Add Linux and macOS Smash Viewport plugins."
+          git push origin HEAD:${{ github.ref_name }}

@@ -271,11 +271,18 @@ def load_native_library():
     path = native_plugin_path()
     if not path:
         _lib_error = (
-            "ssbh_blender_preview.dll not found. Build it with "
-            "`cargo build --release` in native/ssbh_blender_preview. See native/README.md."
+            "Smash Viewport plugin not found. Windows ships "
+            "native/bin/ssbh_blender_preview.dll; Linux and macOS plugins are "
+            "native/bin/libssbh_blender_preview.so and "
+            "native/bin/libssbh_blender_preview.dylib. See native/README.md."
         )
         return None
-    os.environ.setdefault("WGPU_BACKEND", "dx12")
+    if sys.platform == "win32":
+        os.environ.setdefault("WGPU_BACKEND", "dx12")
+    elif sys.platform == "darwin":
+        os.environ.setdefault("WGPU_BACKEND", "metal")
+    else:
+        os.environ.setdefault("WGPU_BACKEND", "vulkan")
     try:
         _lib = _bind_lib(ctypes.CDLL(path))
         _lib_error = ""
@@ -1499,7 +1506,7 @@ def update_smash_viewport(self, context):
         if not native_plugin_path():
             global _last_error
             _last_error = (
-                "ssbh_blender_preview.dll not found. See native/README.md."
+                "Smash Viewport plugin not found. See native/README.md."
             )
         _enable_smash_viewport(scene)
         return

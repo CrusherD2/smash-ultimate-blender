@@ -234,10 +234,13 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 
 impl Preview {
     fn new() -> Result<Self, String> {
-        // Blender's viewport is OpenGL (nvoglv64). Probing Vulkan/GL from this
-        // process crashes the NVIDIA driver. Stay on DX12 on Windows.
+        // Blender's viewport is OpenGL. Probing extra backends from this
+        // process can crash NVIDIA's Windows driver, so stay on DX12 there.
+        // Linux uses Vulkan; macOS uses Metal.
         let backends = if cfg!(windows) {
             wgpu::Backends::DX12
+        } else if cfg!(target_os = "macos") {
+            wgpu::Backends::METAL
         } else {
             wgpu::Backends::VULKAN
         };
