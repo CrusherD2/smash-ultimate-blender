@@ -1,137 +1,198 @@
-# smash-ultimate-blender 
+# Smash Ultimate Blender Tools (Animation Workflow)
+
 [![wiki](https://img.shields.io/badge/wiki-guide-success)](https://github.com/ssbucarlos/smash-ultimate-blender/wiki)
 
-Blender Plugin that contains utilities for Smash Ultimate models and animations.
+Blender addon for Super Smash Bros. Ultimate models and animations. This is the **animation-workflow** fork of [ssbucarlos/smash-ultimate-blender](https://github.com/ssbucarlos/smash-ultimate-blender). It keeps the original import/export pipeline and adds the animator-facing tools below.
 
-## Key Features
-1. Import/Export of Model, Material, Texture, Animation, and Swing files
-   - Model Files: `.numdlb`, `.numshb`, `.nusktb`, `.nuhlpb`, `update.prc`, `.numeshexb`, `.adjb`
-   - Material & Texture Files: `.numatb`, `.nutexb`
-   - Animation Files: `.nuanmb` 
-   - Swing Files: `swing.prc`
-2. Tools for creating a "Magic Exo Skel" for real-time animation retargeting in-game.
-   - UI panel for step-by-step creation
-   - Modifier setup for previewing real-time retargeting pre-export
-3. Extra QOL Features for Animators
-   - Import/Export Camera `.nuanmb`
-   - Drivers for previewing `Visibilty` and `Material` data in animation files.
-   - UI Panels for easily editing `Visiblity` and `Material` data in animation files.
-   - Modal Operator for intuitively editing Characters eyes in animations.
-4. Advanced Material Conversion System
-   - One-click conversion from Blender's Principled BSDF materials to Smash Ultimate materials
-   - Smart material detection for emission, subsurface scattering, and standard PBR materials
-   - Two workflow options:
-     - Full workflow: Automatically generates PRM textures with customizable resolution (64-8192px)
-     - Simple workflow: Converts materials without generating textures (faster)
-   - Smart normal map handling - uses existing normal maps when available
-   - Ambient Occlusion support through dedicated AO nodes
-   - Resource-aware processing with appropriate warnings for texture generation
-   - Auto-detection of material features (diffuse, emission, SSS) and UV/vertex color setups
-   - Compatible with Cycles render engine for baking advanced material properties
-   - Preserves original material configurations where possible
-5. Comprehensive IK & Animation Toolset
-   - Complete IK rigging system for characters:
-     - Full body IK setup with `create_ik_armsandlegs.py`
-     - Individual limb IK controls (arms, legs)
-     - IK influence toggle for animation refinement
-   - Animation workflow enhancements:
-     - Pose library for rapid animation development
-     - Hip animation transfer between character rigs
-     - IK animation application system
-   - Advanced bone tools:
-     - Bone cleanup utilities
-     - Enhanced weight transfer for character modifications
-     - Bone alignment tools for precise skeletal setup
-   - Naming utilities for managing materials, textures, and attributes
-6. Advanced Exo-Skeleton Management
-   - Complete "Un-Exo" functionality to remove exo skeletons from models
-   - Exo bone cleanup system for removing unnecessary bones
-   - Enhanced bone alignment tools for precise skeleton adjustments
-   - Weight transfer optimization for skeleton modifications
-   - Comprehensive workflow for converting between standard and exo rigs
-   - Improved bone hierarchy management for complex character setups
-   - Full support for both creating and removing exo skeletons as needed
+If you only need vanilla model and animation I/O, the [upstream addon](https://github.com/ssbucarlos/smash-ultimate-blender) is enough. Use this fork if you want Smash Viewport, the animation rig, folder/raw anim workflows, retargeting, facial tools, and the rest of the Ultimate tab extras.
+
+![Mario in Smash Viewport with the Ultimate tab](docs/readme/blender-overview.png)
+
+## Smash Viewport
+
+A custom render engine (`Smash Viewport`) that draws Smash shaders with the same `ssbh_wgpu` renderer SSBH Editor uses.
+
+![Mario idle in Smash Viewport](docs/readme/smash-viewport.png)
+
+1. Properties → Render → **Render Engine → Smash Viewport**
+2. In the 3D View, set shading to **Rendered** (not Solid / Material Preview)
+3. Floor grid and other overlays stay under Viewport Overlays; hide them there if you want a clean black backdrop
+
+![Smash Viewport render settings](docs/readme/smash-viewport-settings.png)
+
+- **Background** — clear color for the Smash draw (default black)
+- **Stage Lights** — load a stage `light.nuanmb`
+- **Training Lights** — the default training-stage lighting
+- Smash shaders are perspective. Numpad ortho views are matched with a pulled-back perspective so lighting still works
+
+Shipped native plugins (the addon updater installs these with the rest of the zip):
+
+| OS | File | GPU API |
+| --- | --- | --- |
+| Windows | `native/bin/ssbh_blender_preview.dll` | DX12 |
+| Linux | `native/bin/libssbh_blender_preview.so` | Vulkan |
+| macOS | `native/bin/libssbh_blender_preview.dylib` | Metal (Intel + Apple Silicon) |
+
+After a native plugin update, **fully quit Blender** (not F3 reload) so the OS can replace the loaded library. Build notes: [`native/README.md`](native/README.md).
+
+## What this fork adds
+
+These are the pieces that are **not** in the main plugin, or are substantially different here.
+
+### Animation importer and exporter
+
+![Ultimate tab: model and animation importer](docs/readme/ultimate-tab.png)
+
+**Importer** (select the Smash armature or camera first):
+
+- Browse a single `.nuanmb`, or **Browse Animation Folder** and pick from a list
+- **Import Selected Animation** / **Import All Animations**
+- Import options: transform, material, visibility
+- **Raw Animations** — browse a folder of `.rawanim` files, import selected or all (fighter `motion/body` folders auto-point at `rawanims` when present)
+
+**Exporter**:
+
+- Export the current action, or **batch export** a checklist of actions
+- **Export Raw Animation** / include raw animation on normal export
+- Bone override list, populate-from-armature, **Thrown** preset
+- Bones named `BL_*` are skipped on anim (and model) export so helper controls never ship in-game
+
+### Animation Tools
+
+- **Create Animation Rig** — control shapes on a `smush_blender_import` armature
+  - Optional IK (hands, feet, poles), including extra arms such as `HandL2`
+  - **Finger sliders** (thumb pad + curl/spread; extra hands get the same controls). Toggle sliders vs Smash finger circles after creation
+  - **Eye look** (`BL_EyeLook` + `CustomVector31`)
+  - Hide helper / swing bones, match IK to the loaded anim, clean leftover keyframes
+- Remove rig, or **Bake and Remove Rig** (fingers / eyes / IK)
+- IK/FK switches for Arms, Legs, or Both
+- **Idle Pose Library** — store/apply idles, include Trans, mirrored, 180 rotate
+- **User Poses** — add/remove poses, apply to selected bones or the current frame
+- **IK Tools** — create arm/leg IK, bake & remove IK/FK, toggle influence, **Bulk IK** on every loaded animation
+- **Transfer Hip Animation to Trans**
+- **Mirror Animation** — space, Smash Y Anim Flip, custom extra bones, **Mirror All Loaded Animations**
+- Reset Bone Locations, Ground Character, Invert Positive and Negative, Remove Animation from Swing Bones
+- **Gif or Photo** (also on the Action Editor header)
+
+### Gif or Photo and Animation Scroll
+
+On the Action Editor / Dope Sheet header (and in Animation Tools):
+
+- **Start Animation Scroll** — mouse-wheel through every loaded action; the timeline jumps to that clip's range; unanimated bones go to rest (`_RET` bones are left alone)
+- **Gif or Photo** — copies a transparent Smash Viewport (or GPU viewport) capture to the clipboard. Photo is a still. GIF records the scene range at 30 FPS (Esc cancels). Temp files are deleted when Blender closes
+- **Easy Facial Animation** appears on that header when a face library is set up
+
+### Model Tools
+
+![Model Tools and the rest of the Ultimate tab](docs/readme/model-tools.png)
+
+- Limit Weights to 4
+- Mirror Vertex Groups / Mirror Mesh as Separate Object
+- Unstack UV Islands
+- Convert Shape Keys to Meshes (prefix)
+- Remove Selected Bones, Connect Bone Chain, Delete Unweighted Bones
+- **Roll Value Copier** — copy bone roll from a source armature to a target (name-matched, optional selected-only)
+
+### Easy Facial Animation
+
+Opens from the Action Editor header, Ultimate Animation Data, or its own window.
+
+- Vis-mesh and bone-based expression tabs
+- Capture / apply expressions with thumbnails
+- Save/load a JSON expression library
+- Face camera create / view / remove
+- Preview assigned vis tracks
+
+### Misc.
+
+- **Eye Look (CustomVector31)** — set up EyeL/EyeR tracks, add `BL_EyeLook`, match from material, bake, live preview (Solid Texture / Material). Look At vs offset mode, gain/sensitivity, clamp, invert, pupil size from control-bone scale. Live preview does not export; bake writes the keys export reads
+- **Convert All to Principled BSDF** / **Revert to Smash Material** on the imported armature
+- Smash Viewport toggle/status (same engine as Render Properties)
+
+### Retargeting
+
+Expy Kit lives in the Ultimate tab (always listed; most operators want Pose Mode).
+
+- Smash auto-preset for `smush_blender_import`
+- Save/load bone-map presets
+- Map by proximity from a reference armature
+- Bind, conversion, bake constrained actions
+
+### Stage Tools
+
+- Import/export stage `light.nuanmb`, viewport preview, edit intensity/color on selected lights
+- Ambient SH `.shpcanim` import/export, intensity/tint, vertex-paint local ambient, bake multipliers
+
+### Animation data and Blender 4 / 5
+
+- Ultimate Animation Data still drives vis and material tracks
+- SAP action auto-sync so vis/mat stay attached to the current action
+- Action slots / fcurve helpers for Blender 4 and 5
+- `ParamLabels.csv` lives outside the addon so updates do not wipe custom hashes (`%APPDATA%/Smash Ultimate Labels` on Windows)
+
+### Helper bones (`BL_*`)
+
+Any extra control you add (IK widgets, finger sliders, eye look, custom helpers) **must** be named with the `BL_` prefix. The rig already does this. Export skips `BL_*` bones so they never end up in a `.nusktb` or `.nuanmb`.
+
+## Shared with the main plugin
+
+Still here, documented on the [upstream wiki](https://github.com/ssbucarlos/smash-ultimate-blender/wiki):
+
+- Import/export of `.numdlb`, `.numshb`, `.nusktb`, `.nuhlpb`, `update.prc`, `.numeshexb`, `.adjb`, `.numatb`, `.nutexb`, `.nuanmb`, `swing.prc`
+- Camera `.nuanmb`
+- Magic Exo Skel Maker (build, preview modifiers, un-exo, bone align, weight transfer, cleanup)
+- Material Re-Importer, Attribute Renamer, swing collision editing
+- Vis/mat drivers and the original eye modal
+- Smash material conversion (Principled BSDF and Fortnite FPv3 `_D` / `_M` / `_S` maps)
 
 ## Installation
-Check the [wiki](https://github.com/ssbucarlos/smash-ultimate-blender/wiki) for tutorials and usage instructions. 
-1. Select a version
-  - For the latest version, click the green `Code` button and select `Download ZIP`.
-  - For a specific version, check the "Releases" page.
-2. Install the .ZIP in Blender under Edit > Preferences > Addons > Install. 
-3. Make sure the addon is enabled by searching for "Smash Ultimate".
-4. After installing the plugin in blender, in the 3D Viewport pull up the Sidebar (Hotkey is 'N'), and look for the new 'Ultimate' tab in the Sidebar. **If the addon panel doesn't show up, make sure you are in object mode!**
 
-    ![image](https://user-images.githubusercontent.com/77519735/131579719-3bf859ac-40ad-4661-8b4c-0d0d0e34da8a.png)
-5. Click on the 'Ultimate' tab.
+Tutorials for the shared import/export flow are on the [wiki](https://github.com/ssbucarlos/smash-ultimate-blender/wiki).
 
-    ![image](https://github.com/ssbucarlos/smash-ultimate-blender/assets/77519735/b9fab746-2ddf-45f8-8cec-4351993219d5)
+1. Download this fork, not the upstream zip
+   - Latest: GitHub → [CrusherD2/smash-ultimate-blender](https://github.com/CrusherD2/smash-ultimate-blender) → branch **`animation-workflow`** → Code → **Download ZIP**
+   - Or a specific commit from that branch
+2. Blender → Edit → Preferences → Add-ons → Install From Disk → pick the zip
+3. Enable **Smash Ultimate Blender Tools**
+4. In the 3D Viewport, open the Sidebar (`N`) and open the **Ultimate** tab. **If the tab is missing, switch to Object or Pose mode** (Edit Mesh hides most of these panels)
 
-## System Requirements
-The plugin supports 64-bit versions of Blender 4.0 and Blender 5.x for Windows, Linux, and MacOS. Apple machines with M1 processors are also supported.
-If your computer can run a supported version of Blender but fails to install the plugin, please make an issue in [issues](https://github.com/ssbucarlos/smash-ultimate-blender/issues).
+## System requirements
 
-## Legacy Blender Version Support
-* Check the releases page for older versions of the plugin that work for the legacy blender version.
-* This started with 3.6 LTS, older versions of blender require digging through the commit history and finding a really old version that worked with that old blender version.
+64-bit **Blender 4.0** and **Blender 5.x** on Windows, Linux, and macOS (including Apple Silicon). Smash Viewport needs a working DX12 / Vulkan / Metal GPU stack on those platforms.
 
-## Uninstalling / Updating
+If Blender runs but the addon will not enable, open an issue on [this fork](https://github.com/CrusherD2/smash-ultimate-blender/issues).
 
-### Auto-Updater (New!)
-The plugin now includes a built-in auto-updater that makes keeping your installation current effortless:
+## Updating
 
-- **Live Code Monitoring**: The plugin automatically monitors the animation-workflow branch for new commits
-- **Instant Notifications**: When new code is pushed, a panel appears in the "Ultimate" tab showing what changed
-- **One-Click Updates**: Single "Download & Install Update" button that handles everything automatically
-- **Safe Installation**: Creates automatic backups and handles locked files (like .venv) intelligently  
-- **Automatic Restart**: Blender restarts automatically after installation to complete the update
-- **Commit Details**: Shows current and latest commit messages instead of cryptic version numbers
+### Auto-updater
 
-The updater monitors commits directly - no need to create releases or tags!
+This fork watches the **`animation-workflow`** branch (not GitHub Releases). When a new commit lands, **Update Available!** appears in the Ultimate tab with the changelog and **Download & Install Update**. It backs up the current install and restarts Blender.
 
-### Manual Updating
-TO REMOVE: First "Disable" the plugin, then restart blender, then you can hit "Remove" to uninstall. Then you can install the newest version.
+Smash Viewport binaries ship in that zip. After an update that changes them, quit Blender completely once so the new `.dll` / `.so` / `.dylib` can load.
+
+### Manual update
+
+Disable the addon, restart Blender, Remove, then install the new zip.
+
+## Uninstalling
+
+Disable the addon, restart Blender, then Remove.
 
 ## In case of problems
-1. Export Issues? Please go read the [export issues](https://github.com/ssbucarlos/smash-ultimate-blender/wiki/Read-this-if-you-have-export-issues.-Or-want-to-avoid-Export-Issues) wiki page and see if your issue gets fixed, if not...
-2. Please read the wiki to see if that issue is mentioned in the [List of Known Issues](https://github.com/ssbucarlos/smash-ultimate-blender/wiki/Known-Blender-Issues) wiki page, if not...
-3. Please go add a new issue in the Issues page so the issue can be tracked.
 
-## Useful Tools
-* SSBH Editor (view models and animations and edit materials) https://github.com/ScanMountGoat/ssbh_editor
-* Ultimate Tex (batch convert .NUTEXB to .PNG on Windows, MacOS, or Linux) https://github.com/ScanMountGoat/ultimate_tex
-* Switch Toolbox (to convert .NUTEXB to .PNG on Windows) https://github.com/KillzXGaming/Switch-Toolbox
+1. Export issues: [wiki: export issues](https://github.com/ssbucarlos/smash-ultimate-blender/wiki/Read-this-if-you-have-export-issues.-Or-want-to-avoid-Export-Issues)
+2. [Known issues](https://github.com/ssbucarlos/smash-ultimate-blender/wiki/Known-Blender-Issues)
+3. Fork-specific bugs: [CrusherD2/smash-ultimate-blender issues](https://github.com/CrusherD2/smash-ultimate-blender/issues)
 
-## Special Thanks
-* SMG for creating SSBH_DATA_PY, which without it none of this would be possible https://github.com/ScanMountGoat/ssbh_data_py
-(and also for providing alot of the reference code for how to use the library, most of which was shamelessly stolen and implemented here)
-(and also for making CrossMod which was a great reference for how smash ultimate shaders work, from the CrossMod render code certain details such as which step of the shading process do vertex colors get factored in was used)
-* The Rokoko plugin https://github.com/Rokoko/rokoko-studio-live-blender for being the reference used for the UI code used in this project.
+## Useful tools
 
-## Material Conversion
+- SSBH Editor — https://github.com/ScanMountGoat/ssbh_editor
+- Ultimate Tex — https://github.com/ScanMountGoat/ultimate_tex
+- Switch Toolbox — https://github.com/KillzXGaming/Switch-Toolbox
 
-### Supported Material Types
+## Special thanks
 
-The addon supports converting the following material types to Smash Ultimate format:
-
-1. **Principled BSDF** - Standard Blender material node
-2. **Fortnite FPv3 Material** - Fortnite's material system
-
-### Fortnite Material Support
-
-The addon can now convert Fortnite's FPv3 Materials to Smash Ultimate format. It automatically detects Fortnite's texture naming conventions:
-
-- **_D** textures - Used for diffuse/albedo (mapped to COL/Texture0)
-- **_M** textures - Contains masks with the following channel mapping:
-  - Red channel → PRM Blue (Ambient Occlusion)
-  - Blue channel → PRM Red (Subsurface/Skin metalness)
-- **_S** textures - Contains surface properties with the following channel mapping:
-  - Red channel → PRM Alpha (Specular)
-  - Green channel → PRM Green (Roughness)
-  - Blue channel → PRM Red (Metalness for non-skin materials)
-
-To convert a Fortnite material:
-1. Import your Fortnite model/material into Blender
-2. Select the material
-3. Go to Properties > Material > Smash Materials panel
-4. Click "Convert to Smash Ultimate Material"
-5. The addon will automatically detect the FPv3 material and create the appropriate PRM texture
+- SMG for [ssbh_data_py](https://github.com/ScanMountGoat/ssbh_data_py), SSBH Editor / `ssbh_wgpu`, and CrossMod shader reference
+- [ssbucarlos/smash-ultimate-blender](https://github.com/ssbucarlos/smash-ultimate-blender) for the original addon
+- The Rokoko plugin for UI patterns used in the exo panels
+- Expy Kit, which the Retargeting tab embeds
