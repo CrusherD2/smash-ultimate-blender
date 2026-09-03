@@ -6,6 +6,10 @@ addon blits that image into a 3D View set to **Rendered**.
 
 Solid / Material shading stay Workbench / EEVEE.
 
+Windows builds ship `native/bin/ssbh_blender_preview.dll` so Smash Viewport
+works after an addon update. Rebuild and replace that file when the crate
+changes.
+
 ## Build
 
 1. Put `ssbh_wgpu` at `native/vendor/ssbh_wgpu`.
@@ -18,11 +22,12 @@ Solid / Material shading stay Workbench / EEVEE.
 cargo build --release
 ```
 
-Copy the DLL if you want a stable path:
+Copy the result over the shipped plugin:
 
 - Windows: `ssbh_blender_preview/target/release/ssbh_blender_preview.dll`
-- Optional: copy to `native/bin/ssbh_blender_preview.dll`
+- Destination: `native/bin/ssbh_blender_preview.dll`
 
 The addon searches `native/bin/` then `target/release/` then `target/debug/`.
 
-Do not commit `vendor/` or `target/`. Do not put a machine-specific path in `Cargo.toml`.
+Do not commit `vendor/`, `target/`, or `*.reload.dll`. Do not put a
+machine-specific path in `Cargo.toml`.

@@ -13,3 +13,4 @@ native/.cargo/config.toml
 native/bin/*.dll
 native/bin/*.so
 native/bin/*.dylib
+!native/bin/ssbh_blender_preview.dll
