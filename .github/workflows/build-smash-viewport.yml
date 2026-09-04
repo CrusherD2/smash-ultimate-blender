@@ -39,6 +39,8 @@ jobs:
           mkdir -p native/vendor
           rm -rf native/vendor/ssbh_wgpu
           cp -R "$src/vendor/ssbh_wgpu" native/vendor/ssbh_wgpu
+      - name: Apply viewport renderer extensions
+        run: python native/ssbh_blender_preview/patch_vendor.py
       - name: Build
         working-directory: native/ssbh_blender_preview
         run: cargo build --release
@@ -73,6 +75,8 @@ jobs:
           mkdir -p native/vendor
           rm -rf native/vendor/ssbh_wgpu
           cp -R "$src/vendor/ssbh_wgpu" native/vendor/ssbh_wgpu
+      - name: Apply viewport renderer extensions
+        run: python native/ssbh_blender_preview/patch_vendor.py
       - name: Build
         working-directory: native/ssbh_blender_preview
         run: cargo build --release
@@ -104,6 +108,8 @@ jobs:
           mkdir -p native/vendor
           rm -rf native/vendor/ssbh_wgpu
           cp -R "$src/vendor/ssbh_wgpu" native/vendor/ssbh_wgpu
+      - name: Apply viewport renderer extensions
+        run: python native/ssbh_blender_preview/patch_vendor.py
       - name: Build universal dylib
         working-directory: native/ssbh_blender_preview
         run: |

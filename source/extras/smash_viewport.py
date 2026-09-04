@@ -74,6 +74,7 @@ _last_synced_arm_fp = None
 _mesh_sync_timer = False
 _last_vis_state = None
 _last_model_vis_state = None
+_last_mesh_transform_state = None
 _last_cv31_state = None
 _last_cam_key = None
 _last_frame = None
@@ -186,6 +187,8 @@ def invalidate_animation_state(redraw=True):
     global _last_pose_fp, _last_pose_arm_fp, _last_synced_arm_fp
     global _last_vis_state, _last_model_vis_state, _last_cv31_state
     global _last_frame, _primary_arm_obj, _smash_arm_count, _extra_fp
+    global _last_mesh_transform_state
+    _last_mesh_transform_state = None
     _last_pose_fp = None
     _last_pose_arm_fp = None
     _last_synced_arm_fp = None
@@ -352,6 +355,7 @@ def _bind_lib(lib):
     lib.ssbh_preview_last_error.restype = c_char_p
     lib.ssbh_preview_last_error.argtypes = []
     optional = (
+        ("ssbh_preview_set_mesh_transforms", c_int, [c_void_p, POINTER(c_uint), POINTER(c_char_p), POINTER(c_uint), POINTER(c_float), c_uint]),
         ("ssbh_preview_set_clear_color", c_int, [c_void_p, c_float, c_float, c_float, c_float]),
         ("ssbh_preview_load_lighting", c_int, [c_void_p, c_char_p]),
         ("ssbh_preview_clear_lighting", c_int, [c_void_p]),
@@ -450,6 +454,8 @@ def shutdown_preview():
             _lib.ssbh_preview_destroy(_preview)
         except Exception:
             pass
+    global _last_mesh_transform_state
+    _last_mesh_transform_state = None
     _preview = None
     _loaded_folder = ""
     _loaded_arm_fp = None
@@ -962,7 +968,7 @@ def _gpu_model_visible(scene, arm, view_layer, space):
     """
     return bool(
         arm is not None
-        and _object_visible(arm, view_layer, space)
+        and any(not _mesh_hidden(mesh, view_layer, space) for mesh in _iter_armature_meshes(arm))
         and not _retarget_driver_suppressed(scene, arm)
     )
 
@@ -1361,7 +1367,7 @@ def _extra_fingerprint(scene):
     vl = getattr(bpy.context, "view_layer", None)
     space = _preview_space(bpy.context)
     for arm in extra.iter_extra_armatures(scene, _skip_extra_armature):
-        if not _object_visible(arm, vl, space):
+        if not _gpu_model_visible(scene, arm, vl, space):
             parts.append(("hidden", int(arm.as_pointer())))
             continue
         folder = _folder_from_armature(arm)
@@ -1404,6 +1410,8 @@ def _ensure_extra_models(context):
         _last_error = _native_error() or "Failed to clear extra models"
         _reset_extra_state()
         return False
+    global _last_mesh_transform_state
+    _last_mesh_transform_state = None
     uploaded = {}
     smash_arms = set()
     blender_smash = set()
@@ -1421,7 +1429,7 @@ def _ensure_extra_models(context):
     vl = getattr(context, "view_layer", None)
     space = _preview_space(context)
     for arm in extra.iter_extra_armatures(scene, _skip_extra_armature):
-        if not _object_visible(arm, vl, space):
+        if not _gpu_model_visible(scene, arm, vl, space):
             continue
         folder = _folder_from_armature(arm)
         try:
@@ -1778,8 +1786,6 @@ def _collect_extra_bones(context):
             arm_ptr = 0
         file_extra = arm_ptr in _extra_smash_arms
         blender_smash = arm_ptr in _extra_blender_smash
-        if not _object_visible(arma, getattr(context, "view_layer", None), _preview_space(context)):
-            continue
         for pbone in pose.bones:
             if pbone.name.startswith(_EXTRA_BONE_PREFIX) or pbone.name.startswith("SUB_"):
                 continue
@@ -2067,17 +2073,7 @@ def _iter_armature_meshes(arm):
 
 def _gpu_mesh_hidden(obj, arm, tracks, view_layer, space):
     """Follow Outliner / vis drivers on this object. Do not use other meshes' vis tracks."""
-    del tracks
-    try:
-        if obj.hide_get():
-            return True
-    except Exception:
-        pass
-    if bool(getattr(obj, "hide_viewport", False)):
-        return True
-    if arm is not None and not _object_visible(arm, view_layer, space):
-        return True
-    return False
+    return _mesh_hidden(obj, view_layer, space)
 
 
 def _collect_mesh_visibility(context, space=None):
@@ -2150,8 +2146,6 @@ def _collect_mesh_visibility(context, space=None):
                         arm = obj.find_armature()
                     except Exception:
                         arm = None
-                if arm is not None and not _object_visible(arm, view_layer, space):
-                    continue
                 add_obj(obj, arm, _vis_track_map(arm) if arm is not None else None)
     names = []
     subindices = []
@@ -2186,6 +2180,50 @@ def _set_mesh_visibility_data(preview, names, subindices, visibles):
 def _set_mesh_visibility(preview, context):
     names, subindices, visibles = _collect_mesh_visibility(context)
     return _set_mesh_visibility_data(preview, names, subindices, visibles)
+
+
+def _sync_mesh_transforms(preview, context, depsgraph):
+    """Upload only changed mesh transforms; share armature inverses per draw."""
+    global _last_mesh_transform_state
+    setter = getattr(_lib, "ssbh_preview_set_mesh_transforms", None)
+    if setter is None:
+        return False
+    primary = _primary_smash_armature(context.scene)
+    model_indices = {ptr: i for i, ptr in enumerate(_extra_gpu_order, start=1 if _loaded_folder else 0)}
+    previous = _last_mesh_transform_state or {}
+    current = {}
+    entries = []
+    arm_inverses = {}
+    for obj in context.scene.objects:
+        if getattr(obj, "type", "") != "MESH":
+            continue
+        arm = _mesh_armature(obj)
+        model_index = 0 if arm is primary else model_indices.get(_id_key(arm))
+        if model_index is None or arm is None:
+            continue
+        arm_key = _id_key(arm)
+        if arm_key not in arm_inverses:
+            eval_arm = _evaluated_armature(arm, depsgraph)
+            arm_inverses[arm_key] = eval_arm.matrix_world.inverted_safe() @ _Y_UP_TO_Z_UP
+        eval_obj = _evaluated_armature(obj, depsgraph)
+        delta = _Z_UP_TO_Y_UP @ eval_obj.matrix_world @ arm_inverses[arm_key]
+        extra = _extra_mesh_map.get(_id_key(obj))
+        name, sub = extra if extra is not None else _smash_gpu_id(obj)
+        key = (preview, model_index, name, sub)
+        matrix = tuple(_mat4_col_major(delta))
+        current[key] = matrix
+        if previous.get(key) != matrix:
+            entries.append((model_index, name, sub, matrix))
+    if entries:
+        count = len(entries)
+        indices = (c_uint * count)(*(i for i, _, _, _ in entries))
+        names = (c_char_p * count)(*(name.encode("utf-8") for _, name, _, _ in entries))
+        subs = (c_uint * count)(*(sub for _, _, sub, _ in entries))
+        matrices = (c_float * (16 * count))(*(v for _, _, _, matrix in entries for v in matrix))
+        if setter(preview, indices, names, subs, matrices, count) != 0:
+            raise RuntimeError(_native_error() or "Mesh transforms failed")
+    _last_mesh_transform_state = current
+    return bool(entries)
 
 
 def _cv31_from_sap(sap, name):
@@ -3176,6 +3214,8 @@ def _prepare_preview(context=None, depsgraph=None):
         if not preview:
             return None
     needs_gpu = size_changed
+    if _sync_mesh_transforms(preview, context, depsgraph):
+        needs_gpu = True
     # Object visibility and retarget-pair state can change without changing the
     # scene object count. Always compare the cheap per-model state so a hidden
     # native model cannot remain frozen behind the current character.
@@ -3229,7 +3269,7 @@ def _prepare_preview(context=None, depsgraph=None):
             _last_pose_fp = pose_fp
             _last_pose_arm_fp = pose_arm_fp
             needs_gpu = True
-    if need_vis_mat:
+    if need_vis_mat or not playing:
         vis_names, vis_subs, vis_vals = _collect_mesh_visibility(context, space)
         vis_state = tuple(zip(vis_names, vis_subs, vis_vals))
         if vis_state != _last_vis_state:
@@ -3238,6 +3278,7 @@ def _prepare_preview(context=None, depsgraph=None):
                 return None
             _last_vis_state = vis_state
             needs_gpu = True
+    if need_vis_mat:
         cv_batches = _collect_material_params(context, depsgraph)
         cv_state = tuple(
             (param, tuple((label, tuple(round(v, 5) for v in xyzw)) for label, xyzw in items))

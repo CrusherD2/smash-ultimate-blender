@@ -593,8 +593,14 @@ impl Preview {
             let Some(render_model) = self.render_models.get_mut(model_index) else {
                 continue;
             };
-            for entry in &animated {
+            for (entry, base) in animated.iter().zip(&matl.entries) {
                 let key = (model_index, entry.material_label.clone());
+                // animate_materials returns all entries, including unchanged ones.
+                // Avoid rebuilding uniforms and queue writes for stable parameters.
+                let previous = self.matl_overrides.get(&key).unwrap_or(base);
+                if previous == entry {
+                    continue;
+                }
                 self.matl_overrides.insert(key, entry.clone());
                 render_model.update_material_params(&self.queue, entry, &self.shared);
             }
@@ -1341,6 +1347,45 @@ pub unsafe extern "C" fn ssbh_preview_set_world_transforms(
             set_error(err);
             -1
         }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ssbh_preview_set_mesh_transforms(
+    handle: *mut Preview,
+    model_indices: *const u32,
+    names: *const *const c_char,
+    subindices: *const u32,
+    matrices: *const f32,
+    count: u32,
+) -> i32 {
+    clear_error();
+    let result = catch(|| {
+        let preview = unsafe { preview_mut(handle)? };
+        if count == 0 { return Ok(()); }
+        if model_indices.is_null() || names.is_null() || subindices.is_null() || matrices.is_null() {
+            return Err("Null mesh transform pointer".into());
+        }
+        let names = unsafe { std::slice::from_raw_parts(names, count as usize) };
+        let subs = unsafe { std::slice::from_raw_parts(subindices, count as usize) };
+        let indices = unsafe { std::slice::from_raw_parts(model_indices, count as usize) };
+        let values = unsafe { std::slice::from_raw_parts(matrices, count as usize * 16) };
+        for (i, name) in names.iter().enumerate() {
+            let name = unsafe { c_str(*name)? };
+            let matrix = Mat4::from_cols_array(values[i * 16..i * 16 + 16].try_into().unwrap());
+            if let Some(model) = preview.render_models.get(indices[i] as usize) {
+                for mesh in &model.meshes {
+                    if mesh.name == name && mesh.subindex == subs[i] as u64 {
+                        mesh.set_object_transform(&preview.queue, matrix);
+                    }
+                }
+            }
+        }
+        Ok(())
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => { set_error(err); -1 }
     }
 }
 
