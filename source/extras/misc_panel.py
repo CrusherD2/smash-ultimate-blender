@@ -348,6 +348,17 @@ class SUB_PT_model_tools(Panel):
         layout.use_property_split = False
         ssp = context.scene.sub_scene_properties
 
+        try:
+            row = layout.row()
+            row.scale_y = 1.4
+            row.operator(
+                "sub.smash_vp_shade_setup",
+                text="Reload Smash Model",
+                icon="FILE_REFRESH",
+            )
+        except Exception:
+            pass
+
         row = layout.row(align=True)
         row.operator("sub.limit_weights", text="Limit Weights to 4")
 

@@ -261,6 +261,7 @@ class RetargetSettings(PropertyGroup):
     custom: PointerProperty(type=RetargetCustom)
 
     root: StringProperty(name="root")
+    throw: StringProperty(name="throw")
 
     active_preset: StringProperty(
         name="Active Preset",
@@ -275,6 +276,9 @@ class RetargetSettings(PropertyGroup):
                         self.custom):
             if setting.has_settings():
                 return True
+
+        if self.root or self.throw:
+            return True
 
         return False
 

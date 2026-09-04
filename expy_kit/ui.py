@@ -365,6 +365,7 @@ class AddPresetArmatureRetarget(AddPresetBase, Operator):
         "skeleton.custom",
         "skeleton.custom.name",
         "skeleton.root",
+        "skeleton.throw",
 
         "skeleton.deform_preset"
     ]
@@ -412,6 +413,7 @@ class ClearArmatureRetarget(Operator):
                     continue
 
         skeleton.root = ''
+        skeleton.throw = ''
         skeleton.deform_preset = '--'
         skeleton.active_preset = ''
         skeleton.custom.name = ''
@@ -450,9 +452,9 @@ class SetToActiveBone(Operator):
         active_bone_name = context.active_pose_bone.name
 
         if not self.slot_name:
-            if self.attr_name == 'root':
-                setattr(skeleton, 'root', active_bone_name)
-                self.report({'INFO'}, f"Set root bone to '{active_bone_name}'")
+            if self.attr_name in {'root', 'throw'}:
+                setattr(skeleton, self.attr_name, active_bone_name)
+                self.report({'INFO'}, f"Set {self.attr_name} bone to '{active_bone_name}'")
             
             return {'FINISHED'}
 
@@ -941,6 +943,12 @@ class VIEW3D_PT_expy_retarget_root(RetargetBasePanel, bpy.types.Panel):
         s_props = split.operator(SetToActiveBone.bl_idname, text="", icon='EYEDROPPER')
         s_props.attr_name = 'root'
         s_props.sub_attr_name = ''
+
+        split = layout.split(factor=0.80)
+        split.prop_search(skeleton, 'throw', ob.data, "bones", text="Throw")
+        t_props = split.operator(SetToActiveBone.bl_idname, text="", icon='EYEDROPPER')
+        t_props.attr_name = 'throw'
+        t_props.sub_attr_name = ''
 
         layout.separator()
         row = layout.row()

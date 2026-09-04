@@ -8,7 +8,7 @@ use futures::executor::block_on;
 use glam::{Mat4, Vec4};
 use ssbh_wgpu::{
     load_render_models, CameraTransforms, ModelFolder, ModelRenderOptions, RenderModel,
-    SharedRenderData, SsbhRenderer, REQUIRED_FEATURES, REQUIRED_LIMITS,
+    RenderSettings, SharedRenderData, SsbhRenderer, REQUIRED_FEATURES, REQUIRED_LIMITS,
 };
 #[cfg(windows)]
 mod gpu_share;
@@ -18,6 +18,7 @@ use image::{
     codecs::gif::{GifEncoder, Repeat},
 };
 use std::{
+    collections::HashMap,
     ffi::{c_char, CStr, CString},
     fs::File,
     io::BufWriter,
@@ -54,6 +55,7 @@ struct UnormBlit {
 pub struct Preview {
     models: Vec<ModelFolder>,
     render_models: Vec<RenderModel>,
+    primary_count: usize,
     renderer: SsbhRenderer,
     shared: SharedRenderData,
     output: OutputTargets,
@@ -172,12 +174,8 @@ fn vs(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
 @fragment
 fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let t = textureLoad(src, vec2<i32>(i32(pos.x), i32(pos.y)), 0);
-    let lum = max(t.r, max(t.g, t.b));
-    if t.a < 0.05 || lum < 0.003 {
-        return vec4<f32>(0.0);
-    }
-    let rgb = t.rgb / max(t.a, 0.05);
-    return vec4<f32>(rgb, 1.0);
+    // Keep Smash's own alpha (texture transparency). Do not force a mask.
+    return t;
 }
 "#
             .into(),
@@ -232,6 +230,38 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     }
 }
 
+fn prefix_model_bones(folder: &mut ModelFolder, prefix: &str) {
+    if prefix.is_empty() {
+        return;
+    }
+    for (_, skel) in &mut folder.skels {
+        let Some(skel) = skel else {
+            continue;
+        };
+        for bone in &mut skel.bones {
+            if !bone.name.starts_with(prefix) {
+                bone.name.insert_str(0, prefix);
+            }
+        }
+    }
+    for (_, mesh) in &mut folder.meshes {
+        let Some(mesh) = mesh else {
+            continue;
+        };
+        for obj in &mut mesh.objects {
+            if !obj.parent_bone_name.is_empty() && !obj.parent_bone_name.starts_with(prefix) {
+                obj.parent_bone_name.insert_str(0, prefix);
+            }
+            for inf in &mut obj.bone_influences {
+                if !inf.bone_name.starts_with(prefix) {
+                    inf.bone_name.insert_str(0, prefix);
+                }
+            }
+        }
+    }
+    folder.hlpbs.clear();
+}
+
 impl Preview {
     fn new() -> Result<Self, String> {
         // Blender's viewport is OpenGL. Probing extra backends from this
@@ -265,7 +295,7 @@ impl Preview {
         let height = 64;
         let scale = 1.0;
         let shared = SharedRenderData::new(&device, &queue);
-        let renderer = SsbhRenderer::new(
+        let mut renderer = SsbhRenderer::new(
             &device,
             &queue,
             width,
@@ -274,10 +304,15 @@ impl Preview {
             [0.0, 0.0, 0.0, 0.0],
             SURFACE_FORMAT,
         );
+        // Smash materials need Shaded. Bloom is off so whites do not clip in Blender.
+        let mut settings = RenderSettings::default();
+        settings.render_bloom = false;
+        renderer.update_render_settings(&queue, &settings);
         let output = create_output(&device, width, height);
         Ok(Self {
             models: Vec::new(),
             render_models: Vec::new(),
+            primary_count: 0,
             renderer,
             shared,
             output,
@@ -402,8 +437,38 @@ impl Preview {
             &self.shared,
         );
         self.models = vec![folder];
+        self.primary_count = 1;
         self.loaded_path = path.to_string_lossy().into_owned();
         Ok(())
+    }
+
+    fn load_extra_folder(&mut self, path: &Path, bone_prefix: &str) -> Result<(), String> {
+        if !path.is_dir() {
+            return Err(format!("Extra model folder not found: {}", path.display()));
+        }
+        let mut folder = ModelFolder::load_folder(path);
+        if folder.find_mesh().is_none() {
+            return Err(format!("No .numshb in extra folder {}", path.display()));
+        }
+        prefix_model_bones(&mut folder, bone_prefix);
+        let added = load_render_models(
+            &self.device,
+            &self.queue,
+            std::iter::once(&folder),
+            &self.shared,
+        );
+        if added.is_empty() {
+            return Err(format!("ssbh_wgpu did not load extra folder {}", path.display()));
+        }
+        self.render_models.extend(added);
+        self.models.push(folder);
+        Ok(())
+    }
+
+    fn clear_extra_models(&mut self) {
+        let keep = self.primary_count.min(self.models.len());
+        self.models.truncate(keep);
+        self.render_models.truncate(keep);
     }
 
     fn set_camera(
@@ -471,15 +536,18 @@ impl Preview {
         self.lighting_uploaded_frame = Some(self.lighting_frame);
     }
 
-    fn set_world_transforms(&mut self, names: &[String], matrices: &[Mat4]) {
+    fn set_world_transforms(&mut self, names: &[&str], matrices: &[Mat4]) {
         if self.render_models.is_empty() {
             return;
         }
-        let mut by_name = std::collections::HashMap::with_capacity(names.len());
+        let mut by_name = HashMap::with_capacity(names.len());
         for (name, mat) in names.iter().zip(matrices.iter()) {
-            by_name.insert(name.as_str(), *mat);
+            by_name.insert(*name, *mat);
         }
         for (model, render_model) in self.models.iter().zip(self.render_models.iter_mut()) {
+            if !render_model.is_visible {
+                continue;
+            }
             let skel = model.find_skel();
             render_model.apply_world_transform_edits(&self.queue, skel, |worlds| {
                 let Some(skel) = skel else {
@@ -521,6 +589,24 @@ impl Preview {
                             break;
                         }
                     }
+                    if !found {
+                        for float_param in &mut cloned.floats {
+                            if param_matches(float_param.param_id, param) {
+                                float_param.data = xyzw[0];
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                    if !found {
+                        for bool_param in &mut cloned.booleans {
+                            if param_matches(bool_param.param_id, param) {
+                                bool_param.data = xyzw[0] >= 0.5;
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
                     if found {
                         updates.push(cloned);
                     }
@@ -545,28 +631,30 @@ impl Preview {
         }
     }
 
-    fn set_mesh_visibility(&mut self, names: &[String], subindices: &[u32], visibles: &[u8]) {
+    fn set_model_visible(&mut self, index: usize, visible: bool) {
+        if let Some(render_model) = self.render_models.get_mut(index) {
+            render_model.is_visible = visible;
+        }
+    }
+
+    fn set_mesh_visibility(&mut self, names: &[&str], subindices: &[u32], visibles: &[u8]) {
         let count = names.len().min(subindices.len()).min(visibles.len());
+        let mut exact = HashMap::with_capacity(count);
+        let mut by_name = HashMap::with_capacity(count);
+        for i in 0..count {
+            let visible = visibles[i] != 0;
+            exact.insert((names[i], subindices[i]), visible);
+            by_name.insert(names[i], visible);
+        }
         for render_model in &mut self.render_models {
-            for mesh in &mut render_model.meshes {
-                mesh.is_visible = true;
+            if !render_model.is_visible {
+                continue;
             }
-            for i in 0..count {
-                let visible = visibles[i] != 0;
-                let mut matched = false;
-                for mesh in &mut render_model.meshes {
-                    if mesh.name == names[i] && mesh.subindex as u32 == subindices[i] {
-                        mesh.is_visible = visible;
-                        matched = true;
-                    }
-                }
-                if matched {
-                    continue;
-                }
-                for mesh in &mut render_model.meshes {
-                    if mesh.name == names[i] {
-                        mesh.is_visible = visible;
-                    }
+            for mesh in &mut render_model.meshes {
+                if let Some(&visible) = exact.get(&(mesh.name.as_str(), mesh.subindex as u32)) {
+                    mesh.is_visible = visible;
+                } else if let Some(&visible) = by_name.get(mesh.name.as_str()) {
+                    mesh.is_visible = visible;
                 }
             }
         }
@@ -642,7 +730,10 @@ impl Preview {
                 &self.output.view,
                 &self.render_models,
                 self.shared.database(),
-                &ModelRenderOptions::default(),
+                &ModelRenderOptions {
+                    draw_floor_grid: false,
+                    ..Default::default()
+                },
             );
         }
         #[cfg(windows)]
@@ -657,7 +748,12 @@ impl Preview {
                     view: gpu_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: self.clear_rgba[0],
+                            g: self.clear_rgba[1],
+                            b: self.clear_rgba[2],
+                            a: self.clear_rgba[3],
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                     depth_slice: None,
@@ -687,7 +783,7 @@ impl Preview {
         cover_grid: bool,
     ) -> Result<(), String> {
         if self.render_models.is_empty() {
-            return Err("No Smash model loaded".into());
+            return Err("No model loaded".into());
         }
         #[cfg(windows)]
         {
@@ -707,6 +803,11 @@ impl Preview {
                 dest_h,
                 must_submit,
                 cover_grid,
+                [
+                    self.clear_rgba[0] as f32,
+                    self.clear_rgba[1] as f32,
+                    self.clear_rgba[2] as f32,
+                ],
             );
             if result.is_err() {
                 self.gpu_share = None;
@@ -740,7 +841,10 @@ impl Preview {
                 &self.output.view,
                 &self.render_models,
                 self.shared.database(),
-                &ModelRenderOptions::default(),
+                &ModelRenderOptions {
+                    draw_floor_grid: false,
+                    ..Default::default()
+                },
             );
         }
         encoder.copy_texture_to_buffer(
@@ -835,7 +939,7 @@ impl Preview {
 
     fn poll_frame(&mut self, out: &mut [u8]) -> Result<(u32, u32, bool), String> {
         if self.render_models.is_empty() {
-            return Err("No Smash model loaded".into());
+            return Err("No model loaded".into());
         }
         let got_new = self.complete_pending(out, false)?;
         Ok((self.width, self.height, got_new))
@@ -843,7 +947,7 @@ impl Preview {
 
     fn render(&mut self, out: &mut [u8]) -> Result<(u32, u32, bool), String> {
         if self.render_models.is_empty() {
-            return Err("No Smash model loaded".into());
+            return Err("No model loaded".into());
         }
         let needed = self.width as usize * self.height as usize * 4;
 
@@ -868,7 +972,7 @@ impl Preview {
     /// Submit the current pose and block until that frame is in `out`.
     fn render_wait(&mut self, out: &mut [u8]) -> Result<(u32, u32, bool), String> {
         if self.render_models.is_empty() {
-            return Err("No Smash model loaded".into());
+            return Err("No model loaded".into());
         }
         let _ = self.complete_pending(out, true);
         if self.free_slot().is_none() {
@@ -971,6 +1075,70 @@ pub unsafe extern "C" fn ssbh_preview_load_folder(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn ssbh_preview_load_extra_folder(
+    ptr: *mut Preview,
+    path: *const c_char,
+    bone_prefix: *const c_char,
+) -> i32 {
+    clear_error();
+    let result = catch(|| {
+        let preview = unsafe { preview_mut(ptr)? };
+        let path = Path::new(unsafe { c_str(path)? });
+        let prefix = if bone_prefix.is_null() {
+            ""
+        } else {
+            unsafe { c_str(bone_prefix)? }
+        };
+        preview.load_extra_folder(path, prefix)
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ssbh_preview_set_model_visible(
+    ptr: *mut Preview,
+    index: u32,
+    visible: i32,
+) -> i32 {
+    clear_error();
+    let result = catch(|| {
+        let preview = unsafe { preview_mut(ptr)? };
+        preview.set_model_visible(index as usize, visible != 0);
+        Ok(())
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ssbh_preview_clear_extra_models(ptr: *mut Preview) -> i32 {
+    clear_error();
+    let result = catch(|| {
+        let preview = unsafe { preview_mut(ptr)? };
+        preview.clear_extra_models();
+        Ok(())
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn ssbh_preview_resize(
     ptr: *mut Preview,
     width: u32,
@@ -1049,7 +1217,7 @@ pub unsafe extern "C" fn ssbh_preview_set_world_transforms(
         let name_ptrs = unsafe { std::slice::from_raw_parts(names, count as usize) };
         let mut bone_names = Vec::with_capacity(count as usize);
         for ptr in name_ptrs {
-            bone_names.push(unsafe { c_str(*ptr) }?.to_owned());
+            bone_names.push(unsafe { c_str(*ptr)? });
         }
         let floats = unsafe { std::slice::from_raw_parts(matrices, count as usize * 16) };
         let mut mats = Vec::with_capacity(count as usize);
@@ -1091,7 +1259,7 @@ pub unsafe extern "C" fn ssbh_preview_set_mesh_visibility(
         let name_ptrs = unsafe { std::slice::from_raw_parts(names, count as usize) };
         let mut mesh_names = Vec::with_capacity(count as usize);
         for ptr in name_ptrs {
-            mesh_names.push(unsafe { c_str(*ptr) }?.to_owned());
+            mesh_names.push(unsafe { c_str(*ptr)? });
         }
         let subindices = unsafe { std::slice::from_raw_parts(subindices, count as usize) };
         let visibles = unsafe { std::slice::from_raw_parts(visibles, count as usize) };

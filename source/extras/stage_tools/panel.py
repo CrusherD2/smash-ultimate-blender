@@ -44,6 +44,9 @@ class SUB_PT_stage_tools(Panel):
                 box.label(text=f"{len(lights)} lighting nodes in the scene")
                 box.prop(ssp, "stage_light_preview", text="Viewport Preview")
                 box.prop(ssp, "stage_light_apply_ambient")
+                box.prop(ssp, "stage_light_drive_smash_viewport")
+                if ssp.stage_light_drive_smash_viewport:
+                    box.label(text="Rotate / tint lights to update Smash Viewport.")
                 active = context.view_layer.objects.active
                 if active is not None and active.get("sub_stage_light_node"):
                     box.label(text=f"Selected: {active.get('sub_stage_light_node')}")

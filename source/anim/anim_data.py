@@ -108,6 +108,11 @@ def sync_sap_action_depsgraph_handler(scene, depsgraph):
     This catches more events including action changes.
     """
     sync_sap_action_handler(scene)
+    try:
+        from .import_anim import sync_anim_importer_to_active
+        sync_anim_importer_to_active(bpy.context)
+    except Exception:
+        pass
     screen = getattr(bpy.context, 'screen', None)
     if screen is not None and getattr(screen, 'is_animation_playing', False):
         return
@@ -144,6 +149,11 @@ def action_change_msgbus_callback(*args):
             sync_sap_action_handler(scene)
     except Exception as e:
         # Silently handle context errors
+        pass
+    try:
+        from ..extras.smash_viewport import invalidate_animation_state
+        invalidate_animation_state()
+    except Exception:
         pass
 
 # Subscribe to action changes via msgbus

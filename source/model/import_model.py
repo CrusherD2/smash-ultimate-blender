@@ -1,5 +1,6 @@
 import os
 import os.path
+import re
 import bpy
 import mathutils
 import sqlite3
@@ -10,7 +11,7 @@ import numpy as np
 
 from ...dependencies import ssbh_data_py
 from pathlib import Path
-from bpy.props import StringProperty, BoolProperty
+from bpy.props import StringProperty, BoolProperty, EnumProperty
 from bpy.types import Panel, Operator, EditBone
 from bpy_extras import image_utils
 from mathutils import Matrix
@@ -85,11 +86,148 @@ def _add_model_folder_to_list(ssp, model_folder_path: str, display_name: str) ->
     model_item = ssp.model_import_models.add()
     model_item.name = display_name
     model_item.path = model_folder_path
+    model_item.fallback_path = model_folder_path
     model_item.files.clear()
+    model_item.alts.clear()
+    alt = model_item.alts.add()
+    alt.name = os.path.basename(model_folder_path)
+    alt.path = model_folder_path
     for file_name in files:
         file_item = model_item.files.add()
         file_item.name = file_name
     return True
+
+
+_C_SLOT = re.compile(r"^c\d+$", re.IGNORECASE)
+
+
+def _folder_has_any_model_files(folder: str) -> bool:
+    if not folder or not os.path.isdir(folder):
+        return False
+    try:
+        return any(_is_model_file(name) for name in os.listdir(folder))
+    except OSError:
+        return False
+
+
+def _list_body_alts(body_folder: str) -> list[tuple[str, str]]:
+    alts = []
+    try:
+        names = os.listdir(body_folder)
+    except OSError:
+        return alts
+    for name in names:
+        path = os.path.join(body_folder, name)
+        if os.path.isdir(path) and _C_SLOT.match(name) and _folder_has_any_model_files(path):
+            alts.append((name.lower(), path))
+    alts.sort(key=lambda item: item[0])
+    return alts
+
+
+def _first_complete_alt(alts: list[tuple[str, str]]) -> str:
+    for _name, path in alts:
+        if _is_importable_model_folder(path):
+            return path
+    return alts[0][1] if alts else ""
+
+
+def _fighter_dirs(directory: str) -> list[str]:
+    if not directory or not os.path.isdir(directory):
+        return []
+    body = os.path.join(directory, "model", "body")
+    if os.path.isdir(body):
+        return [directory]
+    roots = [directory]
+    nested = os.path.join(directory, "fighter")
+    if os.path.isdir(nested):
+        roots.append(nested)
+    found = []
+    seen = set()
+    for root in roots:
+        try:
+            names = os.listdir(root)
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(root, name)
+            if not os.path.isdir(path):
+                continue
+            if os.path.isdir(os.path.join(path, "model", "body")):
+                key = os.path.normcase(os.path.normpath(path))
+                if key not in seen:
+                    seen.add(key)
+                    found.append(path)
+    found.sort()
+    return found
+
+
+def populate_mods_directory_models(ssp, directory: str) -> int:
+    fighters = _fighter_dirs(directory)
+    if fighters:
+        ssp.model_import_models.clear()
+        count = 0
+        for fighter_dir in fighters:
+            body = os.path.join(fighter_dir, "model", "body")
+            alts = _list_body_alts(body)
+            if not alts:
+                continue
+            fallback = _first_complete_alt(alts)
+            item = ssp.model_import_models.add()
+            item.name = os.path.basename(fighter_dir)
+            item.path = alts[0][1]
+            item.fallback_path = fallback
+            item.files.clear()
+            item.alts.clear()
+            for alt_name, alt_path in alts:
+                alt = item.alts.add()
+                alt.name = alt_name
+                alt.path = alt_path
+            try:
+                files = [name for name in os.listdir(item.path) if _is_model_file(name)]
+            except OSError:
+                files = []
+            if not files and fallback:
+                try:
+                    files = [name for name in os.listdir(fallback) if _is_model_file(name)]
+                except OSError:
+                    files = []
+            for file_name in files:
+                file_item = item.files.add()
+                file_item.name = file_name
+            count += 1
+        if count:
+            first = ssp.model_import_models[0]
+            files = [entry.name for entry in first.files]
+            _assign_model_file_names(ssp, files)
+        return count
+
+    ssp.model_import_models.clear()
+    count = 0
+    for root, dirs, files in os.walk(directory):
+        for dir_name in dirs:
+            body_folder_path = os.path.join(root, dir_name, "body")
+            if os.path.exists(body_folder_path):
+                for sub_dir_name in os.listdir(body_folder_path):
+                    model_folder_path = os.path.join(body_folder_path, sub_dir_name)
+                    if os.path.isdir(model_folder_path):
+                        model_files = [file for file in os.listdir(model_folder_path) if _is_model_file(file)]
+                        if model_files:
+                            character_name = os.path.basename(
+                                os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(model_folder_path)))))
+                            )
+                            model_item = ssp.model_import_models.add()
+                            model_item.name = character_name
+                            model_item.path = model_folder_path
+                            model_item.fallback_path = model_folder_path
+                            model_item.alts.clear()
+                            alt = model_item.alts.add()
+                            alt.name = os.path.basename(model_folder_path)
+                            alt.path = model_folder_path
+                            _assign_model_file_names(ssp, model_files)
+                            count += 1
+                            break
+                break
+    return count
 
 
 def _assign_model_file_names(ssp, model_files: list[str]) -> None:
@@ -110,31 +248,6 @@ def _folder_has_model_files(folder: str) -> bool:
     if not folder or not os.path.isdir(folder):
         return False
     return _is_importable_model_folder(folder)
-
-
-def populate_mods_directory_models(ssp, directory: str) -> int:
-    ssp.model_import_models.clear()
-    count = 0
-    for root, dirs, files in os.walk(directory):
-        for dir_name in dirs:
-            body_folder_path = os.path.join(root, dir_name, "body")
-            if os.path.exists(body_folder_path):
-                for sub_dir_name in os.listdir(body_folder_path):
-                    model_folder_path = os.path.join(body_folder_path, sub_dir_name)
-                    if os.path.isdir(model_folder_path):
-                        model_files = [file for file in os.listdir(model_folder_path) if _is_model_file(file)]
-                        if model_files:
-                            character_name = os.path.basename(
-                                os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(model_folder_path)))))
-                            )
-                            model_item = ssp.model_import_models.add()
-                            model_item.name = character_name
-                            model_item.path = model_folder_path
-                            _assign_model_file_names(ssp, model_files)
-                            count += 1
-                            break
-                break
-    return count
 
 
 def populate_individual_model(ssp, directory: str) -> int:
@@ -331,12 +444,54 @@ class SUB_UL_model_import_list(bpy.types.UIList):
         # Return empty lists to use default filtering
         return [], []
 
+
+def _color_slot_items(self, context):
+    ssp = getattr(context.scene, "sub_scene_properties", None)
+    if ssp is None or not ssp.model_import_models:
+        return [("c00", "c00", "")]
+    index = min(max(ssp.model_import_models_index, 0), len(ssp.model_import_models) - 1)
+    item = ssp.model_import_models[index]
+    alts = getattr(item, "alts", None)
+    if alts:
+        items = [(alt.name, alt.name.upper(), alt.path) for alt in alts if alt.name]
+        if items:
+            return items
+    name = os.path.basename(item.path) or "c00"
+    return [(name, name.upper(), item.path)]
+
+
+def _resolve_model_path(folder: Path, fallback: Path, filename: str, suffix: str) -> Path:
+    if filename:
+        primary = folder / filename
+        if primary.exists():
+            return primary
+        if fallback:
+            alt = fallback / filename
+            if alt.exists():
+                return alt
+    for source in (folder, fallback):
+        if source is None or not source.exists():
+            continue
+        try:
+            for name in os.listdir(source):
+                if name.lower().endswith(suffix):
+                    return source / name
+        except OSError:
+            continue
+    return folder / (filename or f"model{suffix}")
+
+
 class SUB_OP_import_selected_model(bpy.types.Operator):
     bl_idname = 'sub.import_selected_model'
     bl_label = 'Import Selected Model'
     bl_options = {'UNDO'}
 
     confirm_message: StringProperty(default="")
+    color: EnumProperty(
+        name="Color",
+        description="Costume slot to import",
+        items=_color_slot_items,
+    )
 
     @classmethod
     def description(cls, _context, properties):
@@ -345,7 +500,13 @@ class SUB_OP_import_selected_model(bpy.types.Operator):
 
     def invoke(self, context, event):
         ssp: SubSceneProperties = context.scene.sub_scene_properties
+        if not ssp.model_import_models:
+            return {'CANCELLED'}
         selected_model = ssp.model_import_models[ssp.model_import_models_index]
+        alts = list(getattr(selected_model, "alts", []))
+        if len(alts) > 1:
+            self.color = alts[0].name
+            return context.window_manager.invoke_props_dialog(self)
         nuhlpb = getattr(ssp, 'model_import_nuhlpb_file_name', '')
         folder = selected_model.path
         missing = (not nuhlpb) or (not os.path.exists(os.path.join(folder, nuhlpb)))
@@ -354,11 +515,32 @@ class SUB_OP_import_selected_model(bpy.types.Operator):
             return context.window_manager.invoke_confirm(self, event)
         return self.execute(context)
 
+    def draw(self, context):
+        self.layout.prop(self, "color")
+
     def execute(self, context):
         ssp: SubSceneProperties = context.scene.sub_scene_properties
         selected_model = ssp.model_import_models[ssp.model_import_models_index]
-        ssp.model_import_folder_path = selected_model.path
-        model_files = [file_name for file_name in os.listdir(selected_model.path) if _is_model_file(file_name)]
+        folder = selected_model.path
+        alts = list(getattr(selected_model, "alts", []))
+        if alts and self.color:
+            for alt in alts:
+                if alt.name == self.color:
+                    folder = alt.path
+                    break
+        ssp.model_import_folder_path = folder
+        fallback = getattr(selected_model, "fallback_path", "") or ""
+        ssp["sub_model_import_fallback"] = fallback
+        model_files = []
+        try:
+            model_files = [file_name for file_name in os.listdir(folder) if _is_model_file(file_name)]
+        except OSError:
+            model_files = []
+        if not model_files and fallback and os.path.isdir(fallback):
+            try:
+                model_files = [file_name for file_name in os.listdir(fallback) if _is_model_file(file_name)]
+            except OSError:
+                model_files = []
         _assign_model_file_names(ssp, model_files)
         start = time.time()
 
@@ -397,11 +579,19 @@ class SUB_OP_select_individual_model(Operator):
 def import_model(operator: bpy.types.Operator, context: bpy.types.Context):
     ssp: SubSceneProperties = context.scene.sub_scene_properties
     dir = Path(ssp.model_import_folder_path)
-    numdlb_name = dir / ssp.model_import_numdlb_file_name
-    numshb_name = dir / ssp.model_import_numshb_file_name
-    nusktb_name = dir / ssp.model_import_nusktb_file_name
-    numatb_name = dir / ssp.model_import_numatb_file_name
-    nuhlpb_name = dir / ssp.model_import_nuhlpb_file_name if ssp.model_import_nuhlpb_file_name != '' else ''
+    fallback_raw = ssp.get("sub_model_import_fallback", "") or ""
+    fallback = Path(fallback_raw) if fallback_raw else dir
+    numdlb_name = _resolve_model_path(dir, fallback, ssp.model_import_numdlb_file_name, ".numdlb")
+    numshb_name = _resolve_model_path(dir, fallback, ssp.model_import_numshb_file_name, ".numshb")
+    nusktb_name = _resolve_model_path(dir, fallback, ssp.model_import_nusktb_file_name, ".nusktb")
+    numatb_name = _resolve_model_path(dir, fallback, ssp.model_import_numatb_file_name, ".numatb")
+    nuhlpb_name = None
+    if ssp.model_import_nuhlpb_file_name or fallback_raw:
+        candidate = _resolve_model_path(
+            dir, fallback, ssp.model_import_nuhlpb_file_name, ".nuhlpb"
+        )
+        if candidate.exists() and candidate.is_file():
+            nuhlpb_name = candidate
 
     print(f'NUMDLB file: {numdlb_name}')
     print(f'NUMSHB file: {numshb_name}')
@@ -422,9 +612,9 @@ def import_model(operator: bpy.types.Operator, context: bpy.types.Context):
     if not numatb_name.exists():
         operator.report({'ERROR'}, f'NUMATB file not found: {numatb_name}')
         return {'CANCELLED'}
-    if nuhlpb_name and not nuhlpb_name.exists():
+    if nuhlpb_name is not None and not nuhlpb_name.exists():
         operator.report({'WARNING'}, f'NUHLPB file not found: {nuhlpb_name}. Continuing without helper bones.')
-        nuhlpb_name = ''
+        nuhlpb_name = None
 
     start = time.time()
     ssbh_model = ssbh_data_py.modl_data.read_modl(str(numdlb_name)) if numdlb_name != '' else None
@@ -457,7 +647,7 @@ def import_model(operator: bpy.types.Operator, context: bpy.types.Context):
         except Exception as e:
             operator.report({'ERROR'}, f'Failed to import .NUMDLB, .NUMATB, or .NUMSHB; Error="{e}" ; Traceback=\n{traceback.format_exc()}')
 
-    if nuhlpb_name != '' and armature is not None:
+    if nuhlpb_name is not None and armature is not None:
         try:
             read_nuhlpb_data(nuhlpb_name, armature)
         except Exception as e:
@@ -467,8 +657,19 @@ def import_model(operator: bpy.types.Operator, context: bpy.types.Context):
         
     bpy.ops.object.mode_set(mode='OBJECT', toggle=False)
 
-    # Store the model path for animation importing
+    # Store the model path for animation importing and Smash Viewport
     ssp.last_imported_model_path = str(dir)
+    try:
+        ssp.last_model_folder = str(dir)
+    except Exception:
+        pass
+    if armature is not None:
+        try:
+            armature["sub_smash_model_folder"] = str(dir)
+            if armature.data is not None:
+                armature.data["sub_smash_model_folder"] = str(dir)
+        except Exception:
+            pass
 
     if armature is not None:
         try:
@@ -594,6 +795,13 @@ def import_model(operator: bpy.types.Operator, context: bpy.types.Context):
         refresh_raw_animation_import_list(ssp)
     except Exception:
         pass
+
+    if armature is not None:
+        try:
+            from ..anim.import_anim import bind_anim_folder_to_armature
+            bind_anim_folder_to_armature(armature, ssp.animation_import_folder_path)
+        except Exception:
+            pass
 
     # Auto-store predefined idle animations if they exist
     if len(ssp.animation_import_files) > 0:

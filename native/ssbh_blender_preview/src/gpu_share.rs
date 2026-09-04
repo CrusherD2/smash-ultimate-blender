@@ -90,6 +90,7 @@ struct GlFns {
     get_uniform_location: unsafe extern "system" fn(u32, *const i8) -> i32,
     uniform1i: unsafe extern "system" fn(i32, i32),
     uniform1f: unsafe extern "system" fn(i32, f32),
+    uniform3f: unsafe extern "system" fn(i32, f32, f32, f32),
     draw_arrays: unsafe extern "system" fn(u32, i32, i32),
     viewport: unsafe extern "system" fn(i32, i32, i32, i32),
     scissor: unsafe extern "system" fn(i32, i32, i32, i32),
@@ -127,6 +128,7 @@ struct GlBlit {
     tex_loc: i32,
     depth_loc: i32,
     cover_loc: i32,
+    clear_loc: i32,
 }
 
 pub struct GpuShare {
@@ -436,6 +438,7 @@ impl GpuShare {
         dest_h: u32,
         wait_and_copy: bool,
         cover_grid: bool,
+        clear_rgb: [f32; 3],
     ) -> Result<(), String> {
         self.ensure_gl()?;
         if wait_and_copy {
@@ -449,7 +452,7 @@ impl GpuShare {
                 self.copy_shared_to_gl();
             }
         }
-        unsafe { self.present_gl_inner(dest_w, dest_h, cover_grid) }
+        unsafe { self.present_gl_inner(dest_w, dest_h, cover_grid, clear_rgb) }
     }
 
     pub fn ensure_gl(&mut self) -> Result<(), String> {
@@ -466,6 +469,7 @@ impl GpuShare {
         dest_w: u32,
         dest_h: u32,
         cover_grid: bool,
+        clear_rgb: [f32; 3],
     ) -> Result<(), String> {
         let gl = self
             .gl
@@ -483,13 +487,13 @@ impl GpuShare {
                 return Err("wglDXLockObjectsNV failed".into());
             }
             restore_gl_target(gl.fns, &saved);
-            let result = draw_textured_quad(gl, cover_grid);
+            let result = draw_textured_quad(gl, cover_grid, clear_rgb);
             let _ = unlock(gl.dx_device, 1, &mut handle);
             restore_gl_target(gl.fns, &saved);
             result
         } else {
             restore_gl_target(gl.fns, &saved);
-            let result = draw_textured_quad(gl, cover_grid);
+            let result = draw_textured_quad(gl, cover_grid, clear_rgb);
             restore_gl_target(gl.fns, &saved);
             result
         }
@@ -673,6 +677,7 @@ unsafe fn load_gl_fns() -> Result<GlFns, String> {
         get_uniform_location: load_fn("glGetUniformLocation")?,
         uniform1i: load_fn("glUniform1i")?,
         uniform1f: load_fn("glUniform1f")?,
+        uniform3f: load_fn("glUniform3f")?,
         draw_arrays: load_fn("glDrawArrays")?,
         viewport: load_fn("glViewport")?,
         scissor: load_fn("glScissor")?,
@@ -714,9 +719,11 @@ unsafe fn finish_gl_blit(
     let tex_name = CString::new("u_tex").unwrap();
     let depth_name = CString::new("u_depth").unwrap();
     let cover_name = CString::new("u_cover").unwrap();
+    let clear_name = CString::new("u_clear").unwrap();
     let tex_loc = (fns.get_uniform_location)(program, tex_name.as_ptr());
     let depth_loc = (fns.get_uniform_location)(program, depth_name.as_ptr());
     let cover_loc = (fns.get_uniform_location)(program, cover_name.as_ptr());
+    let clear_loc = (fns.get_uniform_location)(program, clear_name.as_ptr());
     let (wgl_lock, wgl_unlock) = if uses_wgl {
         (
             Some(load_fn("wglDXLockObjectsNV")?),
@@ -742,6 +749,7 @@ unsafe fn finish_gl_blit(
         tex_loc,
         depth_loc,
         cover_loc,
+        clear_loc,
     })
 }
 
@@ -759,18 +767,23 @@ unsafe fn compile_shader(fns: &GlFns, kind: u32, src: &[u8]) -> Result<u32, Stri
 }
 
 fn fragment_src(rect: bool) -> Vec<u8> {
-    // Paint Smash including the clear color (black background must stay black).
-    // Do not discard luma: that punched holes in dark pixels and showed Blender's
-    // grey theme through. Clear pixels write far-Z so the floor grid can overlay;
-    // opaque Smash writes near-Z so Workbench meshes cannot show through.
-    let body = "void main(){ vec4 t=texture(u_tex,UV); float lum=max(t.r,max(t.g,t.b)); bool is_clear=t.a<0.05||lum<0.003; vec3 rgb=t.rgb/max(t.a,0.05); if(is_clear){ o_color=vec4(t.rgb,1.0); gl_FragDepth=mix(1.0-u_depth,u_depth,step(0.5,u_cover)); }else{ o_color=vec4(rgb,1.0); gl_FragDepth=u_depth; } }\n";
+    // Empty Smash clear stays discarded so Blender's backdrop remains.
+    // Material/texture alpha is kept. Visible pixels write near depth so
+    // the floor cannot draw through the body.
+    let body = "void main(){\n\
+vec4 t=texture(u_tex,UV);\n\
+if(t.a<0.001) discard;\n\
+vec3 rgb=t.rgb/max(t.a,0.001);\n\
+o_color=vec4(rgb,1.0);\n\
+gl_FragDepth=u_depth;\n\
+}\n";
     let mut src = if rect {
         format!(
-            "#version 330\nuniform sampler2DRect u_tex;\nuniform float u_depth;\nuniform float u_cover;\nin vec2 v_uv;\nout vec4 o_color;\n#define UV (v_uv*vec2(textureSize(u_tex)))\n{body}"
+            "#version 330\nuniform sampler2DRect u_tex;\nuniform float u_depth;\nuniform float u_cover;\nuniform vec3 u_clear;\nin vec2 v_uv;\nout vec4 o_color;\n#define UV (v_uv*vec2(textureSize(u_tex)))\n{body}"
         )
     } else {
         format!(
-            "#version 330\nuniform sampler2D u_tex;\nuniform float u_depth;\nuniform float u_cover;\nin vec2 v_uv;\nout vec4 o_color;\n#define UV v_uv\n{body}"
+            "#version 330\nuniform sampler2D u_tex;\nuniform float u_depth;\nuniform float u_cover;\nuniform vec3 u_clear;\nin vec2 v_uv;\nout vec4 o_color;\n#define UV v_uv\n{body}"
         )
     };
     src.push('\0');
@@ -881,7 +894,11 @@ struct GlTarget {
     read_fbo: i32,
 }
 
-unsafe fn draw_textured_quad(blit: &GlBlit, cover_grid: bool) -> Result<(), String> {
+unsafe fn draw_textured_quad(
+    blit: &GlBlit,
+    cover_grid: bool,
+    clear_rgb: [f32; 3],
+) -> Result<(), String> {
     let fns = blit.fns;
     const GL_CURRENT_PROGRAM: u32 = 0x8B8D;
     const GL_VERTEX_ARRAY_BINDING: u32 = 0x85B5;
@@ -903,6 +920,7 @@ unsafe fn draw_textured_quad(blit: &GlBlit, cover_grid: bool) -> Result<(), Stri
     const GL_ALWAYS: u32 = 0x0207;
     const GL_ONE: u32 = 1;
     const GL_ZERO: u32 = 0;
+    const GL_ONE_MINUS_SRC_ALPHA: u32 = 0x0303;
     const GL_SAMPLE_ALPHA_TO_COVERAGE: u32 = 0x809E;
     const GL_FRAMEBUFFER_SRGB: u32 = 0x8DB9;
 
@@ -952,7 +970,7 @@ unsafe fn draw_textured_quad(blit: &GlBlit, cover_grid: bool) -> Result<(), Stri
     );
     (fns.color_mask)(1, 1, 1, 1);
     (fns.disable)(GL_FRAMEBUFFER_SRGB);
-    (fns.disable)(GL_BLEND);
+    (fns.enable)(GL_BLEND);
     (fns.blend_func)(GL_ONE, GL_ZERO);
     (fns.blend_func_separate)(GL_ONE, GL_ZERO, GL_ONE, GL_ZERO);
     (fns.disable)(GL_SAMPLE_ALPHA_TO_COVERAGE);
@@ -970,6 +988,14 @@ unsafe fn draw_textured_quad(blit: &GlBlit, cover_grid: bool) -> Result<(), Stri
     }
     if blit.cover_loc >= 0 {
         (fns.uniform1f)(blit.cover_loc, if cover_grid { 1.0 } else { 0.0 });
+    }
+    if blit.clear_loc >= 0 {
+        (fns.uniform3f)(
+            blit.clear_loc,
+            clear_rgb[0],
+            clear_rgb[1],
+            clear_rgb[2],
+        );
     }
     (fns.bind_vertex_array)(blit.vao);
     (fns.draw_arrays)(GL_TRIANGLE_STRIP, 0, 4);

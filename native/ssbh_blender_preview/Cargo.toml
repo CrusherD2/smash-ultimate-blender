@@ -7,6 +7,12 @@ description = "ssbh_wgpu offscreen renderer for the Smash Ultimate Blender addon
 [lib]
 crate-type = ["cdylib"]
 
+[profile.release]
+# The viewport is a long-lived, frame-time-sensitive plugin. Cross-crate LTO
+# helps optimize the wrapper together with ssbh_wgpu without changing output.
+lto = "thin"
+codegen-units = 1
+
 [dependencies]
 # Clone or junction ScanMountGoat/ssbh_wgpu (or your SSBH Editor vendor copy)
 # into native/vendor/ssbh_wgpu. See native/README.md.

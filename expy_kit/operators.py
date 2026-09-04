@@ -1520,7 +1520,7 @@ class ConstrainToArmature(bpy.types.Operator):
         ('Object', "Object", "Constrain root to object")
     ],
         name="Constrain Root",
-        default='None')
+        default='Bone')
 
     loc_constraints: BoolProperty(name="Copy Location",
                                   description="Use Location Constraint when binding",
@@ -1576,7 +1576,7 @@ class ConstrainToArmature(bpy.types.Operator):
 
     root_cp_rot_x: BoolProperty(name="Root Copy Rot X", description="Copy Root X Rotation", default=True)
     root_cp_rot_y: BoolProperty(name="Root Copy Rot y", description="Copy Root Y Rotation", default=True)
-    root_cp_rot_z: BoolProperty(name="Root Copy Rot Z", description="Copy Root Z Rotation", default=False)
+    root_cp_rot_z: BoolProperty(name="Root Copy Rot Z", description="Copy Root Z Rotation", default=True)
 
     copy_scale: BoolProperty(name="Copy Scale", description="Copy Scale from motion bone", default=False)
 
@@ -2681,6 +2681,17 @@ def bake_one_constrained_action(
     source_action.name = f"{original_name}_old"
     baked_action.name = uniquify_action_name(_desired_baked_action_name(original_name))
     baked_action.use_fake_user = fake_user_new
+
+    # The bake pass assigns each source action to the driving armature while it
+    # evaluates the constraints. Without explicitly clearing that assignment,
+    # the final source action remains active after being renamed to ``_old``.
+    # Keep the backup datablock, but stop it from evaluating after the bake.
+    if (
+        action_armature != bake_armature
+        and action_armature.animation_data
+        and action_armature.animation_data.action == source_action
+    ):
+        assign_action(action_armature.animation_data, None)
     assign_action(bake_armature.animation_data, None)
 
     return baked_action

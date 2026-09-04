@@ -91,10 +91,16 @@ def register():
 class ModelImportFile(PropertyGroup):
     name: StringProperty()
 
+class ModelImportAlt(PropertyGroup):
+    name: StringProperty()
+    path: StringProperty()
+
 class ModelImportItem(PropertyGroup):
     name: StringProperty()
     path: StringProperty()
+    fallback_path: StringProperty()
     files: CollectionProperty(type=ModelImportFile)
+    alts: CollectionProperty(type=ModelImportAlt)
 
 class AnimationImportFile(PropertyGroup):
     name: StringProperty()
@@ -113,6 +119,7 @@ class IdlePoseItem(PropertyGroup):
     )
     
 bpy.utils.register_class(ModelImportFile)
+bpy.utils.register_class(ModelImportAlt)
 bpy.utils.register_class(ModelImportItem)
 bpy.utils.register_class(AnimationImportFile)
 
@@ -537,7 +544,7 @@ class SubSceneProperties(PropertyGroup):
     )
     smash_vp_bg_color: FloatVectorProperty(
         name="Background",
-        description="Smash Viewport background color",
+        description="3D View background while Smash Viewport is the render engine",
         subtype="COLOR",
         size=3,
         min=0.0,
@@ -695,6 +702,11 @@ class SubSceneProperties(PropertyGroup):
         description="Add an SH-like fill light and world so Smash EEVEE materials are not a black void",
         default=True,
         update=_update_stage_light_preview,
+    )
+    stage_light_drive_smash_viewport: BoolProperty(
+        name="Drive Smash Viewport",
+        description="Push Stage Tools light edits into Smash Viewport so you can tweak lighting there live",
+        default=True,
     )
     stage_shpc_expanded: BoolProperty(
         name="Ambient SH Expanded",

@@ -21,9 +21,11 @@ A custom render engine (`Smash Viewport`) that draws Smash shaders with the same
 ![Smash Viewport render settings](docs/readme/smash-viewport-settings.png)
 
 - **Background** — clear color for the Smash draw (default black)
-- **Stage Lights** — load a stage `light.nuanmb`
-- **Training Lights** — the default training-stage lighting
+- **Stage Lights** — load a stage `light.nuanmb` here, or import it in Stage Tools and edit the suns live
+- **Training Lights** — the default training-stage lighting (pauses Stage Tools live sync until you edit a light again)
 - Smash shaders are perspective. Numpad ortho views are matched with a pulled-back perspective so lighting still works
+- Non-Smash meshes (retarget sources, Jump Force, etc.) get a simple lit preview so they are not black silhouettes. Smash still comes from `ssbh_wgpu`
+- **Relink Smash Model Folder** — older `.blend` files never stored the `.numshb` path. Point it at the original model folder so Smash Viewport can load that fighter again
 
 Shipped native plugins (the addon updater installs these with the rest of the zip):
 
@@ -58,6 +60,8 @@ These are the pieces that are **not** in the main plugin, or are substantially d
 - Bones named `BL_*` are skipped on anim (and model) export so helper controls never ship in-game
 
 ### Animation Tools
+
+![Animation rig controls on Mario](docs/readme/animation-rig.png)
 
 - **Create Animation Rig** — control shapes on a `smush_blender_import` armature
   - Optional IK (hands, feet, poles), including extra arms such as `HandL2`
@@ -121,6 +125,7 @@ Expy Kit lives in the Ultimate tab (always listed; most operators want Pose Mode
 ### Stage Tools
 
 - Import/export stage `light.nuanmb`, viewport preview, edit intensity/color on selected lights
+- **Drive Smash Viewport** (on by default) — Import Light Nuanmb also loads that file in Smash Viewport. Rotate `LightStg0` / change intensity or color and Smash Viewport updates after a short delay. **Training Lights** or **Load Stage Lights** in Render Properties pause live sync until you edit a Stage Tools light again
 - Ambient SH `.shpcanim` import/export, intensity/tint, vertex-paint local ambient, bake multipliers
 
 ### Animation data and Blender 4 / 5

@@ -36,6 +36,105 @@ if TYPE_CHECKING:
     from ..model.material.sub_matl_data import SUB_PG_sub_matl_data
     from ..blender_property_extensions import SubSceneProperties
 
+ANIM_FOLDER_KEY = "sub_anim_import_folder"
+_last_anim_sync_ptr = 0
+
+
+def fill_animation_import_list(ssp, folder):
+    ssp.animation_import_files.clear()
+    if not folder or not os.path.isdir(folder):
+        ssp.animation_import_folder_path = folder or ""
+        return 0
+    ssp.animation_import_folder_path = folder
+    count = 0
+    try:
+        names = sorted(
+            name for name in os.listdir(folder) if name.endswith(".nuanmb")
+        )
+    except OSError:
+        return 0
+    for anim_file in names:
+        anim_item = ssp.animation_import_files.add()
+        anim_item.name = os.path.splitext(anim_file)[0]
+        anim_item.path = str(Path(folder) / anim_file)
+        count += 1
+    return count
+
+
+def bind_anim_folder_to_armature(armature, folder):
+    if armature is None or not folder:
+        return
+    try:
+        armature[ANIM_FOLDER_KEY] = folder
+        if armature.data is not None:
+            armature.data[ANIM_FOLDER_KEY] = folder
+    except Exception:
+        pass
+
+
+def anim_folder_for_armature(armature):
+    if armature is None:
+        return ""
+    folder = armature.get(ANIM_FOLDER_KEY, "") or ""
+    if folder:
+        return folder
+    data = getattr(armature, "data", None)
+    if data is not None:
+        folder = data.get(ANIM_FOLDER_KEY, "") or ""
+        if folder:
+            return folder
+    smash = armature.get("sub_smash_model_folder", "") or ""
+    if data is not None and not smash:
+        smash = data.get("sub_smash_model_folder", "") or ""
+    if smash:
+        motion = smash.replace("model", "motion")
+        if os.path.isdir(motion):
+            nuanmb = [name for name in os.listdir(motion) if name.endswith(".nuanmb")]
+            if nuanmb:
+                return motion
+            body = Path(motion) / "body" if os.path.basename(motion) != "body" else Path(motion)
+            if not str(body).endswith("body"):
+                fighter = Path(smash).parent.parent.parent
+                body = fighter / "motion" / "body"
+            if body.is_dir():
+                subs = [name for name in os.listdir(body) if os.path.isdir(body / name)]
+                if subs:
+                    return str(body / subs[0])
+    return ""
+
+
+def sync_anim_importer_to_active(context=None):
+    global _last_anim_sync_ptr
+    context = context or bpy.context
+    obj = getattr(context, "object", None)
+    if obj is None or getattr(obj, "type", "") != "ARMATURE":
+        return
+    try:
+        ptr = int(obj.as_pointer())
+    except Exception:
+        ptr = 0
+    if ptr == _last_anim_sync_ptr:
+        return
+    folder = anim_folder_for_armature(obj)
+    if not folder:
+        _last_anim_sync_ptr = ptr
+        return
+    ssp = getattr(getattr(context, "scene", None), "sub_scene_properties", None)
+    if ssp is None:
+        return
+    current = getattr(ssp, "animation_import_folder_path", "") or ""
+    if os.path.normcase(os.path.normpath(current)) == os.path.normcase(os.path.normpath(folder)):
+        _last_anim_sync_ptr = ptr
+        return
+    fill_animation_import_list(ssp, folder)
+    try:
+        from .raw_anim import refresh_raw_animation_import_list
+        refresh_raw_animation_import_list(ssp)
+    except Exception:
+        pass
+    _last_anim_sync_ptr = ptr
+
+
 def import_animation_file(
     context: bpy.types.Context,
     operator: bpy.types.Operator,
@@ -46,6 +145,16 @@ def import_animation_file(
     include_visibility: bool,
     first_frame: int,
 ) -> bool:
+    def refresh_smash_viewport():
+        # Action assignment can update Blender at the current frame without a
+        # frame-change event. Make the native Smash model consume that pose on
+        # its very next draw instead of waiting for playback to start.
+        try:
+            from ..extras.smash_viewport import invalidate_animation_state
+            invalidate_animation_state()
+        except Exception:
+            pass
+
     if filepath.lower().endswith(RAW_ANIM_EXTENSION):
         if obj.type != 'ARMATURE':
             operator.report({'ERROR'}, 'Raw animation import requires an armature.')
@@ -56,6 +165,8 @@ def import_animation_file(
         success = import_raw_animation(context, obj, filepath, operator)
         if context.mode != old_mode:
             bpy.ops.object.mode_set(mode=old_mode, toggle=False)
+        if success:
+            refresh_smash_viewport()
         return success
 
     if obj.type == 'ARMATURE':
@@ -75,6 +186,7 @@ def import_animation_file(
             bpy.ops.object.mode_set(mode=old_mode, toggle=False)
     else:
         import_camera_anim(operator, context, filepath, first_frame)
+    refresh_smash_viewport()
     return True
 
 
@@ -1545,6 +1657,9 @@ class SUB_OP_select_animation_folder(Operator):
             self.report({'ERROR'}, f'Animation directory not found: {anim_path}')
 
         refresh_raw_animation_import_list(ssp)
+        obj = getattr(context, "object", None)
+        if obj is not None and getattr(obj, "type", "") == "ARMATURE":
+            bind_anim_folder_to_armature(obj, ssp.animation_import_folder_path)
             
         return {'FINISHED'}
 
