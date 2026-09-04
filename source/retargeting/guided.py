@@ -348,9 +348,13 @@ def _invalidate_smash_viewport():
     """Make native model visibility/pose changes effective on the next draw."""
     try:
         from ..extras import smash_viewport
-        smash_viewport.invalidate_animation_state(redraw=True)
+        smash_viewport.on_retarget_bind_changed()
     except Exception:
-        pass
+        try:
+            from ..extras import smash_viewport
+            smash_viewport.invalidate_animation_state(redraw=True)
+        except Exception:
+            pass
 
 
 def iter_source_meshes(source):

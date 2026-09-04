@@ -1213,6 +1213,8 @@ def create_mesh(ssbh_model: ssbh_data_py.modl_data.ModlData, ssbh_mesh, ssbh_ske
 
         attach_armature_create_vertex_groups(mesh_obj, ssbh_skel, armature, ssbh_mesh_object)
         mesh_obj["numshb order"] = i
+        mesh_obj["numshb name"] = ssbh_mesh_object.name
+        mesh_obj["numshb subindex"] = int(ssbh_mesh_object.subindex)
         context.collection.objects.link(mesh_obj)
         created_meshes.append(mesh_obj)
     

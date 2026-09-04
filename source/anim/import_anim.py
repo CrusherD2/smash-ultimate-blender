@@ -1028,6 +1028,12 @@ def import_model_anim(context: bpy.types.Context, filepath: str,
 
     bone_action = bpy.data.actions.new(Path(filepath).name)
     sap_action = bpy.data.actions.new(f"{arma.name} {bone_action.name} SAP Data")
+    try:
+        bone_action["sub_anim_source_path"] = str(Path(filepath).resolve())
+        sap_action["sub_anim_source_path"] = str(Path(filepath).resolve())
+    except Exception:
+        bone_action["sub_anim_source_path"] = filepath
+        sap_action["sub_anim_source_path"] = filepath
     ensure_action_slot(bone_action, arma)
     ensure_action_slot(sap_action, arma.data)
     assign_action(arma.animation_data, bone_action)

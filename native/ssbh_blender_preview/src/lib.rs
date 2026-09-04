@@ -82,6 +82,9 @@ pub struct Preview {
     lighting_frame: f32,
     lighting_uploaded_frame: Option<f32>,
     clear_rgba: [f64; 4],
+    matl_overrides: HashMap<(usize, String), ssbh_data::matl_data::MatlEntryData>,
+    material_anim_path: String,
+    material_anim: Option<ssbh_data::anim_data::AnimData>,
 }
 
 fn set_error(msg: impl AsRef<str>) {
@@ -304,9 +307,9 @@ impl Preview {
             [0.0, 0.0, 0.0, 0.0],
             SURFACE_FORMAT,
         );
-        // Smash materials need Shaded. Bloom is off so whites do not clip in Blender.
+        // Match SSBH Editor: Shaded + bloom. Training lights already keep exposure in range.
         let mut settings = RenderSettings::default();
-        settings.render_bloom = false;
+        settings.render_bloom = true;
         renderer.update_render_settings(&queue, &settings);
         let output = create_output(&device, width, height);
         Ok(Self {
@@ -339,6 +342,9 @@ impl Preview {
             lighting_frame: 0.0,
             lighting_uploaded_frame: None,
             clear_rgba: [0.0, 0.0, 0.0, 0.0],
+            matl_overrides: HashMap::new(),
+            material_anim_path: String::new(),
+            material_anim: None,
         })
     }
 
@@ -439,6 +445,7 @@ impl Preview {
         self.models = vec![folder];
         self.primary_count = 1;
         self.loaded_path = path.to_string_lossy().into_owned();
+        self.matl_overrides.clear();
         Ok(())
     }
 
@@ -469,6 +476,7 @@ impl Preview {
         let keep = self.primary_count.min(self.models.len());
         self.models.truncate(keep);
         self.render_models.truncate(keep);
+        self.matl_overrides.retain(|(idx, _), _| *idx < keep);
     }
 
     fn set_camera(
@@ -565,62 +573,78 @@ impl Preview {
         }
     }
 
+    fn apply_material_anim(&mut self, path: &Path, frame: f32) -> Result<(), String> {
+        let path_str = path.to_string_lossy().into_owned();
+        if self.material_anim_path != path_str || self.material_anim.is_none() {
+            let data = ssbh_data::anim_data::AnimData::from_file(path)
+                .map_err(|e| format!("Failed to load material anim {}: {e}", path.display()))?;
+            self.material_anim = Some(data);
+            self.material_anim_path = path_str;
+        }
+        let Some(anim) = self.material_anim.as_ref() else {
+            return Ok(());
+        };
+        // Same path SSBH Editor uses: animate_materials then upload uniforms.
+        for (model_index, model) in self.models.iter().enumerate() {
+            let Some(matl) = model.find_matl() else {
+                continue;
+            };
+            let animated = ssbh_wgpu::animation::animate_materials(anim, frame, &matl.entries);
+            let Some(render_model) = self.render_models.get_mut(model_index) else {
+                continue;
+            };
+            for entry in &animated {
+                let key = (model_index, entry.material_label.clone());
+                self.matl_overrides.insert(key, entry.clone());
+                render_model.update_material_params(&self.queue, entry, &self.shared);
+            }
+        }
+        Ok(())
+    }
+
+    fn clear_material_anim(&mut self) {
+        self.material_anim = None;
+        self.material_anim_path.clear();
+        self.restore_material_params();
+    }
+
     fn set_custom_vectors(&mut self, labels: &[String], param: &str, values: &[f32]) {
+        let mut touched: HashMap<(usize, String), ssbh_data::matl_data::MatlEntryData> =
+            HashMap::new();
         for (i, label) in labels.iter().enumerate() {
             let Some(xyzw) = values.get(i * 4..i * 4 + 4) else {
                 break;
             };
-            let mut updates = Vec::new();
-            for model in &self.models {
+            for (model_index, model) in self.models.iter().enumerate() {
                 let Some(matl) = model.find_matl() else {
                     continue;
                 };
                 for entry in &matl.entries {
-                    if !labels_match(&entry.material_label, label) {
+                    // Prefer exact label match (same as SSBH Editor animate_materials).
+                    let exact = entry.material_label == *label;
+                    if !exact && !labels_match(&entry.material_label, label) {
                         continue;
                     }
-                    let mut cloned = entry.clone();
-                    let mut found = false;
-                    for vec_param in &mut cloned.vectors {
-                        if param_matches(vec_param.param_id, param) {
-                            vec_param.data =
-                                ssbh_data::Vector4::new(xyzw[0], xyzw[1], xyzw[2], xyzw[3]);
-                            found = true;
-                            break;
-                        }
-                    }
-                    if !found {
-                        for float_param in &mut cloned.floats {
-                            if param_matches(float_param.param_id, param) {
-                                float_param.data = xyzw[0];
-                                found = true;
-                                break;
-                            }
-                        }
-                    }
-                    if !found {
-                        for bool_param in &mut cloned.booleans {
-                            if param_matches(bool_param.param_id, param) {
-                                bool_param.data = xyzw[0] >= 0.5;
-                                found = true;
-                                break;
-                            }
-                        }
-                    }
-                    if found {
-                        updates.push(cloned);
+                    let key = (model_index, entry.material_label.clone());
+                    let cloned = self
+                        .matl_overrides
+                        .entry(key.clone())
+                        .or_insert_with(|| entry.clone());
+                    if apply_matl_param(cloned, param, xyzw) {
+                        touched.insert(key, cloned.clone());
                     }
                 }
             }
-            for render_model in &mut self.render_models {
-                for cloned in &updates {
-                    render_model.update_material_params(&self.queue, cloned, &self.shared);
-                }
+        }
+        for ((model_index, _), cloned) in touched {
+            if let Some(render_model) = self.render_models.get_mut(model_index) {
+                render_model.update_material_params(&self.queue, &cloned, &self.shared);
             }
         }
     }
 
     fn restore_material_params(&mut self) {
+        self.matl_overrides.clear();
         for (model, render_model) in self.models.iter().zip(self.render_models.iter_mut()) {
             let Some(matl) = model.find_matl() else {
                 continue;
@@ -1003,16 +1027,98 @@ fn trim_blender_suffix(name: &str) -> &str {
 }
 
 fn labels_match(entry: &str, want: &str) -> bool {
-    if entry == want {
+    let entry = trim_blender_suffix(entry);
+    let want = trim_blender_suffix(want);
+    if entry.eq_ignore_ascii_case(want) {
         return true;
     }
-    let want_trim = trim_blender_suffix(want);
-    let entry_trim = trim_blender_suffix(entry);
-    entry == want_trim || entry_trim == want || entry_trim == want_trim
+    let e2 = normalize_mat_label(entry);
+    let w2 = normalize_mat_label(want);
+    if e2 == w2 {
+        return true;
+    }
+    // Anim tracks are often "Hair" while the .numatb label is "NUB_Hair".
+    // Require a '_' boundary so "Hair" does not also hit "HHair".
+    if e2.len() >= 4 && w2.len() >= 4 {
+        if suffix_token(&e2, &w2) || suffix_token(&w2, &e2) {
+            return true;
+        }
+    }
+    false
+}
+
+fn suffix_token(full: &str, token: &str) -> bool {
+    if full.len() <= token.len() || !full.ends_with(token) {
+        return false;
+    }
+    full.as_bytes()[full.len() - token.len() - 1] == b'_'
+}
+
+fn normalize_mat_label(name: &str) -> String {
+    let trimmed = trim_blender_suffix(name);
+    let lower = trimmed.to_ascii_lowercase();
+    let mut s = strip_mat_prefix(&lower).to_string();
+    for suffix in ["_alp", "alp", "_srt"] {
+        if let Some(rest) = s.strip_suffix(suffix) {
+            if rest.len() >= 3 {
+                s = rest.to_string();
+                break;
+            }
+        }
+    }
+    // Smash mesh objects: HHair, HBody, HEyeL. Do not strip "Hair" → "air".
+    let bytes = trimmed.as_bytes();
+    if bytes.len() >= 2
+        && (bytes[0] == b'H' || bytes[0] == b'h')
+        && bytes[1].is_ascii_uppercase()
+        && s.starts_with('h')
+        && s.len() > 4
+    {
+        s = s[1..].to_string();
+    }
+    s
+}
+
+fn strip_mat_prefix(name: &str) -> &str {
+    for prefix in ["nub_", "nub", "alp_", "alp"] {
+        if let Some(rest) = name.strip_prefix(prefix) {
+            if !rest.is_empty() {
+                return rest;
+            }
+        }
+    }
+    name
+}
+
+fn apply_matl_param(
+    entry: &mut ssbh_data::matl_data::MatlEntryData,
+    param: &str,
+    xyzw: &[f32],
+) -> bool {
+    for vec_param in &mut entry.vectors {
+        if param_matches(vec_param.param_id, param) {
+            vec_param.data = ssbh_data::Vector4::new(xyzw[0], xyzw[1], xyzw[2], xyzw[3]);
+            return true;
+        }
+    }
+    for float_param in &mut entry.floats {
+        if param_matches(float_param.param_id, param) {
+            float_param.data = xyzw[0];
+            return true;
+        }
+    }
+    for bool_param in &mut entry.booleans {
+        if param_matches(bool_param.param_id, param) {
+            bool_param.data = xyzw[0] >= 0.5;
+            return true;
+        }
+    }
+    false
 }
 
 fn param_matches(id: ssbh_data::matl_data::ParamId, name: &str) -> bool {
-    format!("{id:?}") == name
+    // ssbh_wgpu animate_materials uses Display (to_string).
+    id.to_string() == name || format!("{id:?}") == name
 }
 
 fn catch<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
@@ -1265,6 +1371,31 @@ pub unsafe extern "C" fn ssbh_preview_set_mesh_visibility(
         let visibles = unsafe { std::slice::from_raw_parts(visibles, count as usize) };
         preview.set_mesh_visibility(&mesh_names, subindices, visibles);
         Ok(())
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ssbh_preview_apply_material_anim(
+    ptr: *mut Preview,
+    path: *const c_char,
+    frame: f32,
+) -> i32 {
+    clear_error();
+    let result = catch(|| {
+        let preview = unsafe { preview_mut(ptr)? };
+        if path.is_null() {
+            preview.clear_material_anim();
+            return Ok(());
+        }
+        let path = PathBuf::from(unsafe { c_str(path)? });
+        preview.apply_material_anim(&path, frame)
     });
     match result {
         Ok(()) => 0,

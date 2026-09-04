@@ -1600,6 +1600,7 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
             guided.hide_source_keep_target(context, driver, constrained)
         scene.expykit_guided_phase = 'DONE'
         scene.expykit_bind_is_active = False
+        guided._invalidate_smash_viewport()
 
 
 class ULTIMATE_PT_retarget_spine(ui.VIEW3D_PT_expy_retarget_spine):

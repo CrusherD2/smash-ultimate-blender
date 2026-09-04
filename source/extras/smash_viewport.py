@@ -26,6 +26,8 @@ _ANIM_RIG_FLAG = "sub_animation_rig"
 _EXTRA_BONE_PREFIX = "BL_"
 _MODEL_FOLDER_KEYS = ("sub_smash_model_folder", "smash_model_folder")
 _NUMSHB_ORDER = "numshb order"
+_NUMSHB_NAME = "numshb name"
+_NUMSHB_SUB = "numshb subindex"
 _TIMER_INTERVAL = 1.0 / 60.0
 _IK_BONE = re.compile(r"^(Foot|Hand|Knee|Arm)IK([LR])(\d*)$")
 
@@ -68,6 +70,8 @@ _saved_grids = {}
 _last_tick_key = None
 _last_pose_fp = None
 _last_pose_arm_fp = None
+_last_synced_arm_fp = None
+_mesh_sync_timer = False
 _last_vis_state = None
 _last_model_vis_state = None
 _last_cv31_state = None
@@ -107,8 +111,10 @@ _mod_show_saved = {}
 _in_mod_sync = False
 _saved_in_front = {}
 _saved_mesh_hide = {}
+_saved_mesh_select = {}
 _saved_mesh_display = {}
 _numshb_folder_cache = {}
+_numshb_object_cache = {}
 _primary_arm_obj = None
 _fill_batch = None
 _fill_batch_size = None
@@ -124,6 +130,7 @@ def _clear_shade_caches():
     _shade_mod_cache.clear()
     _smash_arm_cache.clear()
     _numshb_folder_cache.clear()
+    _numshb_object_cache.clear()
     _smash_arm_count = None
     _primary_arm_obj = None
     _fill_batch = None
@@ -145,8 +152,19 @@ def _clear_undo_object_caches():
     _shade_mod_cache.clear()
     _smash_arm_cache.clear()
     _numshb_folder_cache.clear()
+    _numshb_object_cache.clear()
     _smash_arm_count = None
     _primary_arm_obj = None
+
+
+def _drop_viewport_object_maps():
+    """Forget pointer-keyed viewport overrides. Undo replaces RNA pointers."""
+    global _mod_show_saved
+    _mod_show_saved = {}
+    _saved_mesh_hide.clear()
+    _saved_mesh_select.clear()
+    _saved_mesh_display.clear()
+    _saved_in_front.clear()
 
 
 def last_shader_error():
@@ -165,10 +183,12 @@ def invalidate_animation_state(redraw=True):
     be invalidated explicitly or the native model stays on the previous pose
     until playback advances by one frame.
     """
-    global _last_pose_fp, _last_pose_arm_fp, _last_vis_state, _last_model_vis_state, _last_cv31_state
+    global _last_pose_fp, _last_pose_arm_fp, _last_synced_arm_fp
+    global _last_vis_state, _last_model_vis_state, _last_cv31_state
     global _last_frame, _primary_arm_obj, _smash_arm_count, _extra_fp
     _last_pose_fp = None
     _last_pose_arm_fp = None
+    _last_synced_arm_fp = None
     _last_vis_state = None
     _last_model_vis_state = None
     _last_cv31_state = None
@@ -177,7 +197,15 @@ def invalidate_animation_state(redraw=True):
     _smash_arm_count = None
     _extra_fp = None
     if redraw and _viewport_enabled():
+        _schedule_mesh_draw_sync()
         _tag_preview_redraw()
+
+
+def on_retarget_bind_changed():
+    """Bind/unbind: refresh pose and extras without hiding either character."""
+    _heal_smash_file_viewport_state()
+    _clear_extra_models()
+    invalidate_animation_state(redraw=True)
 
 
 def _first_scene():
@@ -293,6 +321,13 @@ def _bind_lib(lib):
             c_char_p,
             POINTER(c_float),
             c_uint,
+        ]
+    if hasattr(lib, "ssbh_preview_apply_material_anim"):
+        lib.ssbh_preview_apply_material_anim.restype = c_int
+        lib.ssbh_preview_apply_material_anim.argtypes = [
+            c_void_p,
+            c_char_p,
+            c_float,
         ]
     lib.ssbh_preview_render.restype = c_int
     lib.ssbh_preview_render.argtypes = [
@@ -914,14 +949,9 @@ def _load_extra_folder(path, prefix=""):
 
 
 def _retarget_driver_suppressed(scene, arm):
-    """Do not draw the driver over the model receiving retarget constraints."""
-    if scene is None or arm is None:
-        return False
-    if not bool(getattr(scene, "expykit_bind_is_active", False)):
-        return False
-    constrained = getattr(scene, "expykit_bound_source", None)
-    driver = getattr(scene, "expykit_bound_target", None)
-    return bool(constrained is not None and driver is arm and constrained is not driver)
+    """Never hide a bound source/target. Both fighters must stay in the viewport."""
+    del scene, arm
+    return False
 
 
 def _gpu_model_visible(scene, arm, view_layer, space):
@@ -989,12 +1019,22 @@ def _folders_match(a, b):
 
 
 def _context_armature(scene=None):
-    ctx = bpy.context
-    vl = getattr(ctx, "view_layer", None)
-    objects = getattr(vl, "objects", None) if vl is not None else None
-    act = getattr(objects, "active", None) if objects is not None else None
+    """Active armature from the 3D View, not RenderEngine.view_draw's empty context."""
+    del scene
+    act = None
+    found = _find_preview_view()
+    if found is not None:
+        window = found[0]
+        vl = getattr(window, "view_layer", None) if window is not None else None
+        objects = getattr(vl, "objects", None) if vl is not None else None
+        act = getattr(objects, "active", None) if objects is not None else None
     if act is None:
-        act = getattr(ctx, "object", None)
+        ctx = bpy.context
+        vl = getattr(ctx, "view_layer", None)
+        objects = getattr(vl, "objects", None) if vl is not None else None
+        act = getattr(objects, "active", None) if objects is not None else None
+        if act is None:
+            act = getattr(ctx, "object", None)
     if act is not None and getattr(act, "type", "") == "ARMATURE":
         return act
     if act is not None and getattr(act, "type", "") == "MESH":
@@ -1015,11 +1055,7 @@ def _armature_matches_loaded_folder(arma, folder):
 
 
 def _primary_smash_armature(scene=None):
-    """Armature that poses the loaded .numshb.
-
-    Follow the character that has an Action so Smash shading matches playback.
-    Selection only wins when that armature is the one being animated.
-    """
+    """Armature that poses the loaded .numshb. Prefer the selected Smash character."""
     global _primary_arm_obj
     if scene is None:
         scene = getattr(bpy.context, "scene", None)
@@ -1040,42 +1076,43 @@ def _primary_smash_armature(scene=None):
         arm_folder = _folder_from_armature(arma)
         if folder and arm_folder and not _folders_match(arm_folder, folder):
             continue
-        if folder and not arm_folder:
-            continue
         matches.append(arma)
-    if not matches:
-        for arma in objects:
-            if getattr(arma, "type", "") == "ARMATURE" and _is_smash_armature(arma):
-                matches.append(arma)
-                break
     if not matches:
         _primary_arm_obj = None
         return None
-
-    def _has_action(arma):
-        ad = getattr(arma, "animation_data", None)
-        return bool(ad is not None and getattr(ad, "action", None) is not None)
-
+    bind_active = bool(scene is not None and getattr(scene, "expykit_bind_is_active", False))
+    constrained = getattr(scene, "expykit_bound_source", None) if bind_active else None
+    driver = getattr(scene, "expykit_bound_target", None) if bind_active else None
+    if constrained is not None:
+        for obj in matches:
+            if obj is constrained:
+                _primary_arm_obj = obj
+                return obj
     preferred = _context_armature(scene)
-    if preferred is not None:
+    if preferred is not None and preferred is not driver:
         for obj in matches:
             if obj is preferred or getattr(obj, "parent", None) is preferred:
-                preferred = obj
-                break
+                _primary_arm_obj = obj
+                return obj
             if _armature_constraint_targets(obj, preferred):
-                preferred = obj
-                break
-    animated = [arma for arma in matches if _has_action(arma)]
-    if preferred in animated:
-        chosen = preferred
-    elif animated:
-        chosen = animated[0]
-    elif preferred in matches:
-        chosen = preferred
-    else:
-        chosen = matches[0]
-    _primary_arm_obj = chosen
-    return chosen
+                _primary_arm_obj = obj
+                return obj
+        if preferred in matches:
+            _primary_arm_obj = preferred
+            return preferred
+    for arma in matches:
+        if arma is driver:
+            continue
+        ad = getattr(arma, "animation_data", None)
+        if ad is not None and getattr(ad, "action", None) is not None:
+            _primary_arm_obj = arma
+            return arma
+    _primary_arm_obj = matches[0]
+    for arma in matches:
+        if arma is not driver:
+            _primary_arm_obj = arma
+            return arma
+    return matches[0]
 
 
 def _is_primary_smash_armature(obj, scene=None):
@@ -1238,22 +1275,36 @@ def _gpu_covers_mesh(obj, arm):
         ptr = 0
     if ptr and ptr in _extra_mesh_map:
         return True
-    if _loaded_folder and _is_smash_mesh(obj):
-        return True
-    if arm is None:
-        return False
     try:
-        ap = int(arm.as_pointer())
+        ap = int(arm.as_pointer()) if arm is not None else 0
     except Exception:
         ap = 0
     if ap and ap in _extra_smash_arms:
         return True
-    return bool(_loaded_folder) and _is_primary_smash_armature(arm)
+    if _loaded_folder and _is_smash_mesh(obj):
+        return True
+    if _loaded_folder and arm is not None and _is_smash_armature(arm):
+        return True
+    return False
 
 
 def _gpu_covers_scene():
     """True when ssbh_wgpu is shading the Smash character this frame."""
     return bool(_loaded_folder) or bool(_extra_ok) or bool(_extra_gpu_order)
+
+
+def _gpu_pose_armature_ptrs(scene=None):
+    """Armatures whose pose is uploaded to ssbh_wgpu this frame."""
+    ptrs = set(_extra_gpu_order)
+    ptrs |= _extra_smash_arms
+    ptrs |= _extra_blender_smash
+    primary = _primary_smash_armature(scene)
+    if primary is not None:
+        try:
+            ptrs.add(int(primary.as_pointer()))
+        except Exception:
+            pass
+    return ptrs
 
 
 def _skip_extra_armature(obj):
@@ -1270,8 +1321,6 @@ def _skip_extra_armature(obj):
     if _folder_has_numshb(loaded):
         if _is_primary_smash_armature(obj):
             return True
-        # Same .numshb as the native preview: pose that model instead of
-        # spawning a second rest-pose copy (the black "shadow" after anim load).
         folder = _folder_from_armature(obj)
         if folder and _folders_match(folder, loaded):
             return True
@@ -1828,18 +1877,132 @@ def _set_bones(preview, depsgraph, context):
     )
 
 
-def _smash_mesh_keys(obj):
-    raw = obj.name or ""
-    match = re.match(r"^(.*)\.(\d{3})$", raw)
-    if match:
-        full, sub = match.group(1), int(match.group(2))
+def _smash_mesh_object_name(name):
+    """Numshb mesh object name. Strip Blender's .001 only, keep Shape/_VIS_ names."""
+    name = name or ""
+    match = re.match(r"^(.*)\.(\d{3})$", name)
+    return match.group(1) if match else name
+
+
+def _smash_true_name(name):
+    """Vis-track name: Blender suffix then Shape/_VIS_/_O_."""
+    return re.split(r"Shape|_VIS_|_O_", _smash_mesh_object_name(name))[0] or (name or "")
+
+
+def _custom_str(obj, key):
+    getter = getattr(obj, "get", None)
+    if getter is None:
+        return ""
+    value = getter(key, None)
+    return str(value) if value else ""
+
+
+def _numshb_objects(folder):
+    """(name, subindex) in file order — same index as import `numshb order`."""
+    folder = (folder or "").strip()
+    if not folder:
+        return []
+    key = os.path.normcase(os.path.normpath(folder))
+    cached = _numshb_object_cache.get(key)
+    if cached is not None:
+        return cached
+    names = []
+    path = os.path.join(folder, "model.numshb")
+    if not os.path.isfile(path):
+        try:
+            for name in os.listdir(folder):
+                if name.lower().endswith(".numshb"):
+                    path = os.path.join(folder, name)
+                    break
+        except Exception:
+            path = ""
+    if path and os.path.isfile(path):
+        try:
+            import ssbh_data_py
+            mesh = ssbh_data_py.mesh_data.read_mesh(path)
+            names = [
+                (obj.name or "", int(getattr(obj, "subindex", 0) or 0))
+                for obj in getattr(mesh, "objects", []) or []
+            ]
+        except Exception:
+            names = []
+    _numshb_object_cache[key] = names
+    return names
+
+
+def _mesh_model_folder(obj):
+    arm = getattr(obj, "parent", None)
+    if arm is None or getattr(arm, "type", "") != "ARMATURE":
+        try:
+            arm = obj.find_armature()
+        except Exception:
+            arm = None
+    folder = _folder_from_armature(arm) if arm is not None else ""
+    return folder or _loaded_folder
+
+
+def _smash_gpu_id(obj):
+    """Numshb (name, subindex). Prefer file order so Blender renames still match SSBH Editor."""
+    stored = _custom_str(obj, _NUMSHB_NAME)
+    stored_sub = getattr(obj, "get", lambda *_: None)(_NUMSHB_SUB, None)
+    if stored and stored_sub is not None:
+        try:
+            return _smash_mesh_object_name(stored), int(stored_sub)
+        except Exception:
+            pass
+    getter = getattr(obj, "get", None)
+    order = getter(_NUMSHB_ORDER, None) if getter is not None else None
+    if order is not None:
+        try:
+            index = int(order)
+        except Exception:
+            index = -1
+        entries = _numshb_objects(_mesh_model_folder(obj))
+        if 0 <= index < len(entries):
+            name, sub = entries[index]
+            return _smash_mesh_object_name(name), int(sub)
+    if stored:
+        return _smash_mesh_object_name(stored), 0
+    return _smash_mesh_object_name(getattr(obj, "name", "") or ""), 0
+
+
+def _smash_gpu_name(obj):
+    return _smash_gpu_id(obj)[0]
+
+
+def _local_numshb_subindex(obj):
+    """Numshb subindex among this armature's meshes. .001 on a 2nd import is not subindex 1."""
+    stored = getattr(obj, "get", lambda *_: None)(_NUMSHB_SUB, None)
+    if stored is not None:
+        try:
+            return int(stored)
+        except Exception:
+            pass
+    smash = _smash_gpu_name(obj)
+    if not smash:
+        return 0
+    arm = getattr(obj, "parent", None)
+    if arm is None or getattr(arm, "type", "") != "ARMATURE":
+        try:
+            arm = obj.find_armature()
+        except Exception:
+            arm = None
+    names = []
+    if arm is not None:
+        for mesh in _iter_armature_meshes(arm):
+            if _smash_gpu_name(mesh) == smash:
+                names.append(mesh.name or "")
     else:
-        full, sub = raw, 0
-    keys = [(full, sub)]
-    trimmed = re.split(r"Shape|_VIS_|_O_", full)[0]
-    if trimmed and trimmed != full:
-        keys.append((trimmed, sub))
-    return keys
+        names.append(obj.name or "")
+    names.sort()
+    try:
+        return names.index(obj.name or "")
+    except ValueError:
+        return 0
+
+
+def _smash_mesh_keys(obj):
+    return [_smash_gpu_id(obj)]
 
 
 def _mesh_hidden(obj, view_layer, space=None):
@@ -1867,10 +2030,11 @@ def _mesh_hidden(obj, view_layer, space=None):
     return False
 
 
-def _vis_track_map(arm):
+def _vis_track_map(arm, depsgraph=None):
     """Smash vis tracks are the source of hide_viewport drivers. Read them directly
     so playback does not evaluate hide_viewport on every expression mesh.
     """
+    arm = _evaluated_armature(arm, depsgraph) if depsgraph is not None else arm
     data = getattr(arm, "data", None)
     sap = getattr(data, "sub_anim_properties", None) if data is not None else None
     entries = getattr(sap, "vis_track_entries", None) if sap is not None else None
@@ -1902,17 +2066,17 @@ def _iter_armature_meshes(arm):
 
 
 def _gpu_mesh_hidden(obj, arm, tracks, view_layer, space):
+    """Follow Outliner / vis drivers on this object. Do not use other meshes' vis tracks."""
+    del tracks
     try:
         if obj.hide_get():
             return True
     except Exception:
         pass
+    if bool(getattr(obj, "hide_viewport", False)):
+        return True
     if arm is not None and not _object_visible(arm, view_layer, space):
         return True
-    if tracks:
-        true = re.split(r"Shape|_VIS_|_O_", obj.name or "")[0]
-        if true and true in tracks:
-            return not tracks[true]
     return False
 
 
@@ -1924,34 +2088,34 @@ def _collect_mesh_visibility(context, space=None):
     scene = getattr(context, "scene", None)
     if scene is None:
         return names, subindices, visibles
-    seen = set()
+    seen = {}
+
+    def add_vis(key_name, sub, vis):
+        if not key_name:
+            return
+        key = (key_name, int(sub))
+        prev = seen.get(key)
+        if prev is None:
+            seen[key] = vis
 
     def add_obj(obj, arm, tracks):
         try:
             ptr = int(obj.as_pointer())
         except Exception:
             ptr = id(obj)
-        if ptr in seen:
-            return
-        seen.add(ptr)
         raw = obj.name or ""
         if raw.startswith("SUB_WGT_"):
             return
         extra = _extra_mesh_map.get(ptr)
         hidden = _gpu_mesh_hidden(obj, arm, tracks, view_layer, space)
+        vis = 0 if hidden else 1
         if extra is not None:
-            names.append(extra[0])
-            subindices.append(extra[1])
-            visibles.append(0 if hidden else 1)
+            add_vis(extra[0], extra[1], vis)
             return
-        if not _is_smash_mesh(obj):
+        if not _is_smash_mesh(obj) and arm is None:
             return
         for key_name, sub in _smash_mesh_keys(obj):
-            if not key_name:
-                continue
-            names.append(key_name)
-            subindices.append(sub)
-            visibles.append(0 if hidden else 1)
+            add_vis(key_name, sub, vis)
 
     primary = _primary_smash_armature(scene)
     arms = []
@@ -1986,7 +2150,16 @@ def _collect_mesh_visibility(context, space=None):
                         arm = obj.find_armature()
                     except Exception:
                         arm = None
+                if arm is not None and not _object_visible(arm, view_layer, space):
+                    continue
                 add_obj(obj, arm, _vis_track_map(arm) if arm is not None else None)
+    names = []
+    subindices = []
+    visibles = []
+    for (key_name, sub), vis in seen.items():
+        names.append(key_name)
+        subindices.append(sub)
+        visibles.append(vis)
     return names, subindices, visibles
 
 
@@ -2029,8 +2202,42 @@ def _cv31_from_sap(sap, name):
     return (float(cv[0]), float(cv[1]), float(cv[2]), float(cv[3]))
 
 
-def _collect_material_params(context):
-    """SAP CustomVector / CustomFloat / CustomBool for every Smash armature."""
+def _material_track_labels(arm, track_name):
+    """Exact .numatb labels first. Only add NUB_/Alp prefixes, never invent H-mesh names."""
+    del arm
+    labels = []
+    seen = set()
+
+    def add(label):
+        label = (label or "").strip()
+        if not label or label in seen:
+            return
+        seen.add(label)
+        labels.append(label)
+
+    add(track_name)
+    raw = _smash_mesh_object_name(track_name)
+    add(raw)
+    if not raw.upper().startswith("NUB_") and not raw.upper().startswith("ALP_"):
+        add("NUB_" + raw)
+    return labels
+
+
+def _evaluated_armature(arm, depsgraph):
+    if arm is None or depsgraph is None:
+        return arm
+    try:
+        return arm.evaluated_get(depsgraph)
+    except Exception:
+        return arm
+
+
+def _collect_material_params(context, depsgraph=None):
+    """SAP CustomVector / CustomFloat / CustomBool for every Smash armature.
+
+    Reads the depsgraph-evaluated armature so material fcurves (hair SSJ colors)
+    match the current frame the same way bones do.
+    """
     scene = getattr(context, "scene", None)
     if scene is None:
         return []
@@ -2055,20 +2262,24 @@ def _collect_material_params(context):
     except Exception:
         pass
     for obj in arms:
-        sap = getattr(obj.data, "sub_anim_properties", None) if obj.data else None
+        eval_obj = _evaluated_armature(obj, depsgraph)
+        data = getattr(eval_obj, "data", None) or getattr(obj, "data", None)
+        sap = getattr(data, "sub_anim_properties", None) if data else None
         if sap is None:
             continue
         live_vals = None
-        pbone = obj.pose.bones.get(EYE_CTRL_BONE) if (live and obj.pose and EYE_CTRL_BONE) else None
+        pose = getattr(eval_obj, "pose", None) or getattr(obj, "pose", None)
+        pbone = pose.bones.get(EYE_CTRL_BONE) if (live and pose and EYE_CTRL_BONE) else None
         if pbone is not None and compute_cv31 is not None and ssp is not None:
             try:
-                live_vals = compute_cv31(obj, pbone, ssp)
+                live_vals = compute_cv31(eval_obj, pbone, ssp)
             except Exception:
                 live_vals = None
         for track in getattr(sap, "mat_tracks", []) or []:
             label = track.name or ""
             if not label:
                 continue
+            labels = _material_track_labels(obj, label)
             for prop in getattr(track, "properties", []) or []:
                 name = prop.name or ""
                 if not name:
@@ -2095,8 +2306,122 @@ def _collect_material_params(context):
                 else:
                     continue
                 bucket = by_param.setdefault(name, [])
-                bucket.append((label, xyzw))
+                # Prefer the exact anim node name once; aliases are fallback only.
+                bucket.append((labels[0], xyzw))
+                for alias in labels[1:]:
+                    bucket.append((alias, xyzw))
     return [(param, items) for param, items in by_param.items()]
+
+
+def _nuanmb_name_candidates(text):
+    """Action / UI names often embed the file, e.g. '… a00transformssjb.nuanmb SAP Data'."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    out = []
+    seen = set()
+
+    def add(name):
+        name = (name or "").strip()
+        if not name:
+            return
+        base = os.path.basename(name)
+        for cand in (name, base):
+            key = os.path.normcase(cand)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(cand)
+
+    add(text)
+    if not text.lower().endswith(".nuanmb"):
+        add(text + ".nuanmb")
+    for match in re.findall(r"[^\s/\\]+\.nuanmb", text, flags=re.IGNORECASE):
+        add(match)
+    return out
+
+
+def _material_anim_path(context, arm=None):
+    """Locate the .nuanmb that owns the current material tracks (SSBH Editor path).
+
+    Prefer the armature's playing action (and its stored import path). The Animation
+    Importer list selection is only a fallback — it often still highlights
+    transformbase while the Action Editor is on transformss/ssjb, which left hair
+    on the near-black CustomVector8 from base while Eye tracks still looked fine.
+    """
+    scene = getattr(context, "scene", None)
+    ssp = getattr(scene, "sub_scene_properties", None) if scene is not None else None
+    folder = ""
+    if ssp is not None:
+        folder = (getattr(ssp, "animation_import_folder_path", "") or "").strip()
+    if arm is None:
+        arm = _primary_smash_armature(scene)
+    action_names = []
+    for obj in (arm, getattr(arm, "data", None) if arm is not None else None):
+        if obj is None:
+            continue
+        ad = getattr(obj, "animation_data", None)
+        action = getattr(ad, "action", None) if ad is not None else None
+        if action is None:
+            continue
+        getter = getattr(action, "get", None)
+        stored = getter("sub_anim_source_path", "") if getter is not None else ""
+        if stored and os.path.isfile(stored):
+            return stored
+        action_names.extend(_nuanmb_name_candidates(action.name or ""))
+    list_names = []
+    if ssp is not None:
+        idx = int(getattr(ssp, "animation_import_files_index", -1) or -1)
+        files = getattr(ssp, "animation_import_files", None)
+        if files is not None and 0 <= idx < len(files):
+            list_names.extend(_nuanmb_name_candidates(getattr(files[idx], "name", "") or ""))
+    # Playing action first; importer highlight last.
+    names = action_names + [n for n in list_names if n not in action_names]
+    folders = []
+    if folder:
+        folders.append(folder)
+    if arm is not None:
+        model = _folder_from_armature(arm) or _loaded_folder
+        if model:
+            # model/body/c80 -> motion/body/c80
+            guess = model.replace(os.sep + "model" + os.sep, os.sep + "motion" + os.sep)
+            if guess != model:
+                folders.append(guess)
+            parent = os.path.dirname(model.rstrip("\\/"))
+            body = os.path.join(os.path.dirname(parent), "motion", "body")
+            if os.path.isdir(body):
+                for name in os.listdir(body):
+                    folders.append(os.path.join(body, name))
+    seen = set()
+    for fold in folders:
+        fold = os.path.normpath(fold)
+        key = os.path.normcase(fold)
+        if key in seen or not os.path.isdir(fold):
+            continue
+        seen.add(key)
+        for name in names:
+            path = os.path.join(fold, os.path.basename(name))
+            if os.path.isfile(path):
+                return path
+    return ""
+
+
+def _apply_material_anim_file(preview, context, frame):
+    """Drive GPU materials from the .nuanmb like SSBH Editor (not only Blender SAP)."""
+    apply = getattr(_lib, "ssbh_preview_apply_material_anim", None) if _lib else None
+    if apply is None:
+        return False
+    path = _material_anim_path(context)
+    if not path:
+        return False
+    # Anim tracks are authored from frame 0; Blender keys sit on scene.frame_start+.
+    scene = getattr(context, "scene", None)
+    start = float(getattr(scene, "frame_start", 1) or 1) if scene is not None else 1.0
+    anim_frame = max(0.0, float(frame) - start)
+    rc = apply(preview, path.encode("utf-8"), anim_frame)
+    if rc != 0:
+        return False
+    return True
 
 
 def _set_material_params(preview, batches):
@@ -2106,13 +2431,14 @@ def _set_material_params(preview, batches):
     if not batches:
         return setter(preview, None, b"CustomVector31", None, 0)
     global _cv_name_keep
+    kept = []
     for param, items in batches:
         names = [label for label, _xyzw in items]
         values = []
         for _label, xyzw in items:
             values.extend(xyzw)
         encoded = [n.encode("utf-8") for n in names]
-        _cv_name_keep = encoded
+        kept.append(encoded)
         name_arr = (c_char_p * len(encoded))(*encoded)
         val_arr = (c_float * len(values))(*values)
         rc = setter(
@@ -2123,7 +2449,9 @@ def _set_material_params(preview, batches):
             len(encoded),
         )
         if rc != 0:
+            _cv_name_keep = kept
             return rc
+    _cv_name_keep = kept
     return 0
 
 
@@ -2327,10 +2655,54 @@ def _use_rendered_shading():
                 pass
 
 
+def _is_smash_deform_mesh(obj, arm=None):
+    if _is_smash_mesh(obj):
+        return True
+    if arm is not None:
+        return _is_smash_armature(arm)
+    parent = getattr(obj, "parent", None)
+    if parent is not None and getattr(parent, "type", "") == "ARMATURE":
+        return _is_smash_armature(parent)
+    try:
+        return _is_smash_armature(obj.find_armature())
+    except Exception:
+        return False
+
+
+def _heal_smash_file_viewport_state():
+    """Turn armature deform back on for Smash meshes saved while Smash Viewport was active.
+
+    Modifier `show_viewport` and `display_type` are stored in the .blend. A file
+    saved with Smash Viewport on can reopen with every character mesh stuck in
+    rest pose (black T-pose) while the GPU overlay still follows the pose.
+    """
+    global _in_mod_sync
+    _in_mod_sync = True
+    try:
+        for obj in bpy.data.objects:
+            if getattr(obj, "type", "") != "MESH" or not _is_smash_deform_mesh(obj):
+                continue
+            for mod in getattr(obj, "modifiers", []) or []:
+                if getattr(mod, "type", "") != "ARMATURE":
+                    continue
+                try:
+                    if not bool(mod.show_viewport):
+                        mod.show_viewport = True
+                except Exception:
+                    pass
+            try:
+                if obj.display_type in {"WIRE", "BOUNDS"}:
+                    obj.display_type = "TEXTURED"
+            except Exception:
+                pass
+    finally:
+        _in_mod_sync = False
+
+
 def _restore_gpu_mesh_draw():
-    """Put hide_viewport / display_type back when Smash Viewport turns off."""
-    global _saved_mesh_hide, _saved_mesh_display, _in_mod_sync
-    if not _saved_mesh_hide and not _saved_mesh_display:
+    """Put hide_get / hide_select / display_type back when Smash Viewport turns off."""
+    global _saved_mesh_hide, _saved_mesh_select, _saved_mesh_display, _in_mod_sync
+    if not _saved_mesh_hide and not _saved_mesh_select and not _saved_mesh_display:
         return
     _in_mod_sync = True
     try:
@@ -2344,8 +2716,16 @@ def _restore_gpu_mesh_draw():
             hidden = _saved_mesh_hide.pop(ptr, None)
             if hidden is not None:
                 try:
-                    if bool(obj.hide_viewport) != bool(hidden):
-                        obj.hide_viewport = bool(hidden)
+                    if bool(obj.hide_get()) != bool(hidden):
+                        obj.hide_set(bool(hidden))
+                except Exception:
+                    pass
+            selectable = _saved_mesh_select.pop(ptr, None)
+            if selectable is not None:
+                try:
+                    want_hide_select = not bool(selectable)
+                    if bool(obj.hide_select) != want_hide_select:
+                        obj.hide_select = want_hide_select
                 except Exception:
                     pass
             display = _saved_mesh_display.pop(ptr, None)
@@ -2356,14 +2736,19 @@ def _restore_gpu_mesh_draw():
                 except Exception:
                     pass
         _saved_mesh_hide.clear()
+        _saved_mesh_select.clear()
         _saved_mesh_display.clear()
     finally:
         _in_mod_sync = False
 
 
-def _apply_gpu_mesh_draw(obj, arm, view_layer, space):
-    """Hide duplicate Smash Blender bodies. Keep the posed copy as wire so it stays clickable."""
-    global _saved_mesh_hide, _saved_mesh_display
+def _apply_gpu_mesh_draw(obj, arm, gpu_ptrs):
+    """Undo leftover WIRE/hide flags. Do not hide Smash meshes here.
+
+    Hide_set on GPU-covered meshes removed hair/vis meshes and the bind source.
+    """
+    global _saved_mesh_hide, _saved_mesh_select, _saved_mesh_display
+    del arm, gpu_ptrs
     try:
         ptr = int(obj.as_pointer())
     except Exception:
@@ -2371,35 +2756,23 @@ def _apply_gpu_mesh_draw(obj, arm, view_layer, space):
     name = getattr(obj, "name", "") or ""
     if name.startswith("SUB_WGT_"):
         return
-    covered = _gpu_covers_mesh(obj, arm)
-    primary = bool(arm is not None and _is_primary_smash_armature(arm))
-    duplicate = bool(
-        covered
-        and arm is not None
-        and not primary
-        and _is_smash_armature(arm)
-    )
     if ptr not in _saved_mesh_hide:
-        _saved_mesh_hide[ptr] = bool(getattr(obj, "hide_viewport", False))
+        _saved_mesh_hide[ptr] = False
+    if ptr not in _saved_mesh_select:
+        _saved_mesh_select[ptr] = True
     if ptr not in _saved_mesh_display:
         try:
-            _saved_mesh_display[ptr] = str(obj.display_type)
+            display = str(obj.display_type)
         except Exception:
-            _saved_mesh_display[ptr] = "TEXTURED"
-    want_hide = bool(_saved_mesh_hide[ptr] or duplicate)
+            display = "TEXTURED"
+        if display in {"WIRE", "BOUNDS"}:
+            display = "TEXTURED"
+        _saved_mesh_display[ptr] = display
     try:
-        if bool(obj.hide_viewport) != want_hide:
-            obj.hide_viewport = want_hide
+        if obj.display_type in {"WIRE", "BOUNDS"}:
+            obj.display_type = _saved_mesh_display.get(ptr) or "TEXTURED"
     except Exception:
         pass
-    display = _saved_mesh_display.get(ptr)
-    want_display = "WIRE" if (covered and primary and not want_hide) else display
-    if want_display and not want_hide:
-        try:
-            if obj.display_type != want_display:
-                obj.display_type = want_display
-        except Exception:
-            pass
 
 
 def _undo_old_mesh_filter():
@@ -2436,11 +2809,32 @@ def _restore_armature_mod_viewport():
         _mod_show_saved = {}
 
 
-def _sync_armature_mod_viewport(context=None):
-    """Turn off viewport armature deform for characters Smash Viewport will not draw.
+def _schedule_mesh_draw_sync():
+    """Apply hide/wire/modifier overrides outside view_draw so Ctrl+Z stays valid."""
+    global _mesh_sync_timer
+    if _mesh_sync_timer:
+        return
 
-    Jump Force / folder-less files never hit ssbh_wgpu. Blender still CPU-skins
-    every mesh with an armature modifier, including Outliner-hidden ones.
+    def _run():
+        global _mesh_sync_timer
+        _mesh_sync_timer = False
+        if _viewport_enabled():
+            _sync_armature_mod_viewport()
+        return None
+
+    try:
+        bpy.app.timers.register(_run, first_interval=0.0)
+        _mesh_sync_timer = True
+    except Exception:
+        _sync_armature_mod_viewport()
+
+
+def _sync_armature_mod_viewport(context=None):
+    """CPU-skin every Smash mesh that is still drawn; skip deform only when hidden.
+
+    Turning the armature modifier off while the mesh stays visible is what leaves
+    a black T-pose next to the GPU character. Hidden meshes (Outliner eye, vis
+    tracks, GPU duplicates) skip deform so playback stays cheap.
     """
     global _mod_show_saved, _in_mod_sync
     if _in_mod_sync or _ignore_update:
@@ -2455,7 +2849,7 @@ def _sync_armature_mod_viewport(context=None):
     objects = getattr(scene, "objects", None)
     if not objects:
         return
-    allowed = _lambert_preview_armatures(context, view_layer, space)
+    gpu_ptrs = _gpu_pose_armature_ptrs(scene)
     _in_mod_sync = True
     try:
         for obj in objects:
@@ -2463,43 +2857,39 @@ def _sync_armature_mod_viewport(context=None):
                 continue
             name = obj.name or ""
             arm = None
-            if name.startswith("SUB_WGT_"):
-                draw = False
-            else:
-                try:
-                    arm = getattr(obj, "parent", None)
-                    if arm is None or getattr(arm, "type", "") != "ARMATURE":
-                        arm = _mesh_armature(obj)
-                except Exception:
-                    arm = None
-                draw = True
-                if name.startswith("SUB_WGT_"):
-                    draw = False
-                elif _gpu_covers_mesh(obj, arm):
-                    # Keep the posed Smash copy pickable; skip CPU skin on the
-                    # other import so it does not draw as a black rest-pose body.
-                    draw = bool(arm is None or _is_primary_smash_armature(arm))
-                elif arm is not None and arm not in allowed:
-                    draw = False
-                elif _mesh_hidden(obj, view_layer, space):
-                    draw = False
+            try:
+                arm = getattr(obj, "parent", None)
+                if arm is None or getattr(arm, "type", "") != "ARMATURE":
+                    arm = _mesh_armature(obj)
+            except Exception:
+                arm = None
+            if not name.startswith("SUB_WGT_"):
+                _apply_gpu_mesh_draw(obj, arm, gpu_ptrs)
             try:
                 ptr = int(obj.as_pointer())
             except Exception:
                 continue
+            if name.startswith("SUB_WGT_"):
+                draw = False
+            elif _mesh_hidden(obj, view_layer, space):
+                draw = False
+            else:
+                draw = True
             for mod in getattr(obj, "modifiers", []) or []:
                 if getattr(mod, "type", "") != "ARMATURE":
                     continue
                 key = (ptr, mod.name)
                 if key not in _mod_show_saved:
-                    _mod_show_saved[key] = bool(getattr(mod, "show_viewport", True))
+                    if _is_smash_deform_mesh(obj, arm):
+                        _mod_show_saved[key] = True
+                    else:
+                        _mod_show_saved[key] = bool(getattr(mod, "show_viewport", True))
                 want = bool(_mod_show_saved[key] and draw)
                 try:
                     if bool(mod.show_viewport) != want:
                         mod.show_viewport = want
                 except Exception:
                     pass
-            _apply_gpu_mesh_draw(obj, arm, view_layer, space)
     finally:
         _in_mod_sync = False
 
@@ -2588,6 +2978,7 @@ def _set_overlay_grids_visible(_visible=True):
 
 
 def _enable_smash_viewport(scene):
+    _heal_smash_file_viewport_state()
     _sync_bg_picker_from_blender(scene)
     load_native_library()
     _ensure_preview()
@@ -2721,7 +3112,7 @@ def _camera_key(rv3d, width, height, scale):
 
 def _prepare_preview(context=None, depsgraph=None):
     global _last_status, _last_error, _pixel_size, _last_tick_key
-    global _last_pose_fp, _last_pose_arm_fp, _last_vis_state, _last_cv31_state
+    global _last_pose_fp, _last_pose_arm_fp, _last_synced_arm_fp, _last_vis_state, _last_cv31_state
     global _last_cam_key, _last_frame
     context = context or bpy.context
     scene = getattr(context, "scene", None)
@@ -2815,8 +3206,9 @@ def _prepare_preview(context=None, depsgraph=None):
         pose_arm_fp = int(pose_arm.as_pointer()) if pose_arm is not None else 0
     except Exception:
         pose_arm_fp = 0
-    if pose_arm_fp != _last_pose_arm_fp:
-        _sync_armature_mod_viewport(context)
+    if not camera_only and pose_arm_fp != _last_synced_arm_fp:
+        _last_synced_arm_fp = pose_arm_fp
+        _schedule_mesh_draw_sync()
     # Blender may ask the render engine to draw several times for one timeline
     # frame. Dirty handlers below cover pose edits and Action changes, so avoid
     # rescanning armatures/material tracks on every duplicate playback redraw.
@@ -2839,24 +3231,30 @@ def _prepare_preview(context=None, depsgraph=None):
             needs_gpu = True
     if need_vis_mat:
         vis_names, vis_subs, vis_vals = _collect_mesh_visibility(context, space)
-        vis_state = tuple(vis_vals)
+        vis_state = tuple(zip(vis_names, vis_subs, vis_vals))
         if vis_state != _last_vis_state:
             if _set_mesh_visibility_data(preview, vis_names, vis_subs, vis_vals) != 0:
                 _last_error = _native_error() or "visibility failed"
                 return None
             _last_vis_state = vis_state
             needs_gpu = True
-        cv_batches = _collect_material_params(context)
+        cv_batches = _collect_material_params(context, depsgraph)
         cv_state = tuple(
             (param, tuple((label, tuple(round(v, 5) for v in xyzw)) for label, xyzw in items))
             for param, items in cv_batches
         )
-        if cv_state != _last_cv31_state:
-            if cv_batches or _last_cv31_state is not None:
-                if _set_material_params(preview, cv_batches) != 0:
-                    _last_error = _native_error() or "materials failed"
-                    return None
-            _last_cv31_state = cv_state
+        anim_path = _material_anim_path(context)
+        mat_state = (anim_path, round(frame, 4), cv_state)
+        if mat_state != _last_cv31_state:
+            applied = False
+            if anim_path:
+                applied = _apply_material_anim_file(preview, context, frame)
+            if not applied:
+                if cv_batches or _last_cv31_state is not None:
+                    if _set_material_params(preview, cv_batches) != 0:
+                        _last_error = _native_error() or "materials failed"
+                        return None
+            _last_cv31_state = mat_state
             needs_gpu = True
     _apply_viewport_look(preview, scene)
     if frame_changed:
@@ -3010,11 +3408,27 @@ def _on_scene_redraw(*args):
             pose_dirty = True
             channels_dirty = True
             continue
-        if isinstance(updated, bpy.types.Object) and getattr(updated, "type", "") == "ARMATURE":
-            pose_dirty = True
-            # Eye-look material vectors can be derived directly from a pose
-            # bone, so object-level pose updates may also affect materials.
-            channels_dirty = True
+        if isinstance(updated, bpy.types.Object):
+            obj_type = getattr(updated, "type", "")
+            if obj_type == "ARMATURE":
+                pose_dirty = True
+                channels_dirty = True
+            elif obj_type == "MESH":
+                if getattr(update, "is_updated_transform", False):
+                    pose_dirty = True
+                else:
+                    playing = False
+                    try:
+                        playing = bool(
+                            getattr(getattr(bpy.context, "screen", None), "is_animation_playing", False)
+                        )
+                    except Exception:
+                        playing = False
+                    # Vis drivers spam mesh updates every frame. Playback already
+                    # refreshes vis on frame change; only dirty when paused.
+                    if not playing:
+                        channels_dirty = True
+            continue
     if not pose_dirty and not channels_dirty:
         return
     global _last_pose_fp, _last_vis_state, _last_cv31_state
@@ -3902,7 +4316,20 @@ def _armature_pose_key(arm):
     parts = [count]
     try:
         wt = arm.matrix_world.translation
-        parts.append((round(wt.x, 3), round(wt.y, 3), round(wt.z, 3)))
+        wq = arm.matrix_world.to_quaternion()
+        ws = arm.matrix_world.to_scale()
+        parts.append((
+            round(wt.x, 4),
+            round(wt.y, 4),
+            round(wt.z, 4),
+            round(wq.x, 4),
+            round(wq.y, 4),
+            round(wq.z, 4),
+            round(wq.w, 4),
+            round(ws.x, 4),
+            round(ws.y, 4),
+            round(ws.z, 4),
+        ))
     except Exception:
         pass
     for name in ("Trans", "Rot", "Hip"):
@@ -4669,6 +5096,9 @@ class RENDER_PT_smash_viewport(bpy.types.Panel):
             layout.label(text="Model: " + os.path.basename(folder.rstrip("\\/")))
         elif _scene_has_smash_model(context.scene) or _has_extra_candidates(context.scene):
             layout.label(text="No .numshb linked — using Smash engine defaults")
+        mat_anim = _material_anim_path(context)
+        if mat_anim:
+            layout.label(text="Mat anim: " + os.path.basename(mat_anim))
         layout.operator(
             SUB_OP_smash_vp_shade_setup.bl_idname,
             text="Reload Smash Model",
@@ -4729,20 +5159,18 @@ def _resume_if_enabled():
 
 @persistent
 def _on_undo_redo(_dummy):
-    """Refresh evaluated state after undo while keeping native GPU data resident."""
+    """Refresh pose, extras, and viewport overrides after Blender rebuilds IDs."""
     global _reload_after_undo, _gpu_failed
-    global _last_pose_fp, _last_vis_state, _last_model_vis_state, _last_cv31_state
     if _ignore_update:
         return
     scene = _first_scene()
     if scene is None or not _viewport_enabled(scene):
         return
     _gpu_failed = False
+    _drop_viewport_object_maps()
     _clear_undo_object_caches()
-    _last_pose_fp = None
-    _last_vis_state = None
-    _last_model_vis_state = None
-    _last_cv31_state = None
+    _clear_extra_models()
+    invalidate_animation_state(redraw=False)
     if _smash_arm_fp(scene) != _loaded_arm_fp:
         shutdown_preview()
         try:
@@ -4751,12 +5179,49 @@ def _on_undo_redo(_dummy):
             pass
         return
     _reload_after_undo = True
+    try:
+        bpy.app.timers.register(_after_undo_viewport_refresh, first_interval=0.0)
+    except Exception:
+        _after_undo_viewport_refresh()
     _tag_preview_redraw()
+
+
+def _after_undo_viewport_refresh():
+    global _reload_after_undo
+    scene = _first_scene()
+    if scene is None or not _viewport_enabled(scene):
+        return None
+    _heal_smash_file_viewport_state()
+    _sync_armature_mod_viewport()
+    invalidate_animation_state(redraw=True)
+    _reload_after_undo = False
+    return None
+
+
+@persistent
+def _save_pre(_dummy):
+    """Do not write Smash Viewport's temporary hide/wire/modifier flags into the .blend."""
+    global _ignore_update
+    if _ignore_update:
+        return
+    _ignore_update = True
+    try:
+        _restore_armature_mod_viewport()
+    finally:
+        _ignore_update = False
+
+
+@persistent
+def _save_post(_dummy):
+    scene = _first_scene()
+    if scene is not None and _viewport_enabled(scene):
+        _sync_armature_mod_viewport()
 
 
 @persistent
 def _load_post(_dummy):
     shutdown_preview()
+    _heal_smash_file_viewport_state()
     _subscribe_engine()
     _clear_shade_caches()
     _resume_if_enabled()
@@ -4855,6 +5320,10 @@ def register():
     _patch_output_panels(True)
     if _load_post not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(_load_post)
+    if _save_pre not in bpy.app.handlers.save_pre:
+        bpy.app.handlers.save_pre.append(_save_pre)
+    if _save_post not in bpy.app.handlers.save_post:
+        bpy.app.handlers.save_post.append(_save_post)
     for coll in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
         if _on_undo_redo not in coll:
             coll.append(_on_undo_redo)
@@ -4875,6 +5344,14 @@ def unregister():
         pass
     try:
         bpy.app.handlers.load_post.remove(_load_post)
+    except Exception:
+        pass
+    try:
+        bpy.app.handlers.save_pre.remove(_save_pre)
+    except Exception:
+        pass
+    try:
+        bpy.app.handlers.save_post.remove(_save_post)
     except Exception:
         pass
     for coll in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
