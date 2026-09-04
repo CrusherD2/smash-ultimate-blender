@@ -1407,6 +1407,8 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
             from ...expy_kit import bone_utils
             
             for to_bake in context.selected_objects:
+                if getattr(to_bake, "type", None) != "ARMATURE":
+                    continue
                 trg_ob = self._get_trg_ob(to_bake)
                 if not trg_ob:
                     continue
@@ -1462,7 +1464,12 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
     def _get_trg_ob(self, ob):
         """Get target object from constrained bones"""
         from ...expy_kit import bone_utils
-        
+
+        # Bake dialog iterates context.selected_objects; meshes like Hair.001
+        # are often selected and have no pose data.
+        if ob is None or getattr(ob, "type", None) != "ARMATURE" or getattr(ob, "pose", None) is None:
+            return None
+
         for pb in bone_utils.get_constrained_controls(armature_object=ob, use_deform=not self.exclude_deform):
             for constr in pb.constraints:
                 try:

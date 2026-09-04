@@ -2076,6 +2076,51 @@ def _gpu_mesh_hidden(obj, arm, tracks, view_layer, space):
     return _mesh_hidden(obj, view_layer, space)
 
 
+def _iter_folder_smash_armatures(scene):
+    """Primary, same-folder retarget duplicates, and GPU extras.
+
+    Same-folder copies are skipped as extras (one GPU model), but their Blender
+    mesh hide state still drives shared numshb visibility ids.
+    """
+    seen = set()
+
+    def _take(arm):
+        if arm is None or getattr(arm, "type", "") != "ARMATURE":
+            return None
+        try:
+            key = int(arm.as_pointer())
+        except Exception:
+            key = id(arm)
+        if key in seen:
+            return None
+        seen.add(key)
+        return arm
+
+    primary = _primary_smash_armature(scene)
+    arm = _take(primary)
+    if arm is not None:
+        yield arm
+    folder = _loaded_folder or _model_folder(scene)
+    objects = getattr(scene, "objects", None) if scene is not None else None
+    if objects and _folder_has_numshb(folder):
+        for obj in objects:
+            if getattr(obj, "type", "") != "ARMATURE" or not _is_smash_armature(obj):
+                continue
+            arm_folder = _folder_from_armature(obj)
+            if arm_folder and _folders_match(arm_folder, folder):
+                arm = _take(obj)
+                if arm is not None:
+                    yield arm
+    try:
+        from .smash_vp_extra import iter_extra_armatures
+        for obj in iter_extra_armatures(scene, _skip_extra_armature):
+            arm = _take(obj)
+            if arm is not None:
+                yield arm
+    except Exception:
+        pass
+
+
 def _collect_mesh_visibility(context, space=None):
     names = []
     subindices = []
@@ -2093,6 +2138,10 @@ def _collect_mesh_visibility(context, space=None):
         prev = seen.get(key)
         if prev is None:
             seen[key] = vis
+        else:
+            # Shared GPU mesh ids: a hidden retarget driver must not hide the
+            # same mesh on the visible fighter after bake.
+            seen[key] = 1 if (prev or vis) else 0
 
     def add_obj(obj, arm, tracks):
         try:
@@ -2113,18 +2162,7 @@ def _collect_mesh_visibility(context, space=None):
         for key_name, sub in _smash_mesh_keys(obj):
             add_vis(key_name, sub, vis)
 
-    primary = _primary_smash_armature(scene)
-    arms = []
-    if primary is not None:
-        arms.append(primary)
-    try:
-        from .smash_vp_extra import iter_extra_armatures
-        for arm in iter_extra_armatures(scene, _skip_extra_armature):
-            if arm is not primary:
-                arms.append(arm)
-    except Exception:
-        pass
-    for arm in arms:
+    for arm in _iter_folder_smash_armatures(scene):
         tracks = _vis_track_map(arm)
         for obj in _iter_armature_meshes(arm):
             add_obj(obj, arm, tracks)
@@ -2288,17 +2326,7 @@ def _collect_material_params(context, depsgraph=None):
     ssp = getattr(scene, "sub_scene_properties", None)
     live = bool(ssp is not None and getattr(ssp, "eye_look_live_preview", False))
     by_param = {}
-    arms = []
-    primary = _primary_smash_armature(scene)
-    if primary is not None:
-        arms.append(primary)
-    try:
-        from .smash_vp_extra import iter_extra_armatures
-        for arm in iter_extra_armatures(scene, _skip_extra_armature):
-            if arm is not primary:
-                arms.append(arm)
-    except Exception:
-        pass
+    arms = list(_iter_folder_smash_armatures(scene))
     for obj in arms:
         eval_obj = _evaluated_armature(obj, depsgraph)
         data = getattr(eval_obj, "data", None) or getattr(obj, "data", None)
@@ -3287,14 +3315,18 @@ def _prepare_preview(context=None, depsgraph=None):
         anim_path = _material_anim_path(context)
         mat_state = (anim_path, round(frame, 4), cv_state)
         if mat_state != _last_cv31_state:
-            applied = False
+            # File anim matches SSBH Editor; SAP overlays keep Blender-evaluated
+            # hair/eye CustomVectors after retarget bake relinks.
             if anim_path:
-                applied = _apply_material_anim_file(preview, context, frame)
-            if not applied:
-                if cv_batches or _last_cv31_state is not None:
-                    if _set_material_params(preview, cv_batches) != 0:
-                        _last_error = _native_error() or "materials failed"
-                        return None
+                _apply_material_anim_file(preview, context, frame)
+            if cv_batches:
+                if _set_material_params(preview, cv_batches) != 0:
+                    _last_error = _native_error() or "materials failed"
+                    return None
+            elif not anim_path and _last_cv31_state is not None:
+                if _set_material_params(preview, []) != 0:
+                    _last_error = _native_error() or "materials failed"
+                    return None
             _last_cv31_state = mat_state
             needs_gpu = True
     _apply_viewport_look(preview, scene)
@@ -5338,8 +5370,16 @@ def _patch_output_panels(enable):
     global _patched_output_panels
     if enable:
         _patched_output_panels = []
+        # Only touch Panel types. Walking every bpy.types name on 4.2 can
+        # force-construct broken third-party RNA (e.g. PSA_UL_*) and raise
+        # metaclass conflicts during addon register.
         for name in dir(bpy.types):
-            cls = getattr(bpy.types, name, None)
+            if "_PT_" not in name:
+                continue
+            try:
+                cls = getattr(bpy.types, name, None)
+            except Exception:
+                continue
             if not _is_output_compat_panel(cls):
                 continue
             if _compat_engines_add(cls, ENGINE_ID):
