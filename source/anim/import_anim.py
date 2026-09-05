@@ -23,7 +23,6 @@ from .raw_anim import (
     RAW_ANIM_EXTENSION,
     import_raw_animation,
     is_fighter_motion_body_path,
-    motion_path_to_rawanims_path,
     refresh_raw_animation_import_list,
     schedule_raw_animation_list_refresh,
     get_raw_anim_import_directory,
@@ -528,6 +527,54 @@ class SUB_OP_browse_raw_animation_folder(Operator):
         return {'FINISHED'}
 
 
+class SUB_OP_import_raw_anim_file(Operator, ImportHelper):
+    bl_idname = 'sub.import_raw_anim_file'
+    bl_label = 'Import Raw Animation File'
+    bl_description = 'Import a single .rawanim onto the selected armature'
+    bl_options = {'UNDO'}
+
+    filter_glob: StringProperty(default='*.rawanim', options={'HIDDEN'})
+    filename_ext = '.rawanim'
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return obj is not None and obj.type == 'ARMATURE' and obj.select_get()
+
+    def invoke(self, context, event):
+        ssp = context.scene.sub_scene_properties
+        folder = get_raw_anim_import_directory(ssp)
+        if folder and os.path.isdir(folder):
+            self.filepath = os.path.join(folder, '')
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        obj = context.active_object
+        filepath = self.filepath
+        if not filepath or not os.path.isfile(filepath):
+            self.report({'ERROR'}, 'No raw animation file selected.')
+            return {'CANCELLED'}
+        if not filepath.lower().endswith(RAW_ANIM_EXTENSION):
+            self.report({'ERROR'}, 'Selected file is not a .rawanim.')
+            return {'CANCELLED'}
+        use_keyframe_insert_auto = context.scene.tool_settings.use_keyframe_insert_auto
+        context.scene.tool_settings.use_keyframe_insert_auto = False
+        try:
+            ok = import_animation_file(
+                context, self, obj, filepath, True, False, False, 1
+            )
+        finally:
+            context.scene.tool_settings.use_keyframe_insert_auto = use_keyframe_insert_auto
+        if not ok:
+            return {'CANCELLED'}
+        folder = os.path.dirname(filepath)
+        if folder:
+            refresh_raw_animation_import_list(context.scene.sub_scene_properties, folder)
+        self.report({'INFO'}, f"Imported raw animation: {os.path.basename(filepath)}")
+        return {'FINISHED'}
+
+
 class SUB_OP_refresh_raw_animation_list(Operator):
     bl_idname = 'sub.refresh_raw_animation_list'
     bl_label = 'Refresh Raw Animation List'
@@ -692,61 +739,97 @@ class SUB_PT_import_anim(Panel):
                     row = box.row()
                     row.operator(SUB_OP_import_all_animations.bl_idname, text="Import All Animations")
 
-            if obj.type == 'ARMATURE':
-                if is_fighter_motion_body_path(ssp.animation_import_folder_path):
-                    expected_raw_folder = motion_path_to_rawanims_path(ssp.animation_import_folder_path)
-                    if expected_raw_folder and ssp.raw_animation_import_folder_path != expected_raw_folder:
-                        schedule_raw_animation_list_refresh(context)
 
-                raw_box = layout.box()
-                header_row = raw_box.row()
-                header_row.prop(
-                    ssp,
-                    "raw_animations_expanded",
-                    icon="TRIA_DOWN" if ssp.raw_animations_expanded else "TRIA_RIGHT",
-                    icon_only=True,
-                    emboss=False,
-                )
-                header_row.label(text="Raw Animations")
+class SUB_PT_raw_animations(Panel):
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Ultimate'
+    bl_label = 'Raw Animations'
+    bl_options = {'DEFAULT_CLOSED'}
 
-                if ssp.raw_animations_expanded:
-                    row = raw_box.row()
-                    row.operator(
-                        SUB_OP_browse_raw_animation_folder.bl_idname,
-                        icon='ZOOM_ALL',
-                        text='Browse Raw Animation Folder',
-                    )
-                    row.operator(SUB_OP_refresh_raw_animation_list.bl_idname, icon='FILE_REFRESH', text='')
+    @classmethod
+    def poll(cls, context):
+        return context.mode in {"POSE", "OBJECT"}
 
-                    display_raw_folder = get_raw_anim_import_directory(ssp)
-                    if display_raw_folder:
-                        row = raw_box.row()
-                        row.label(text=f"Folder: {display_raw_folder}")
+    def draw(self, context):
+        layout = self.layout
+        layout.use_property_split = False
+        ssp = context.scene.sub_scene_properties
+        obj = context.active_object
 
-                    if len(ssp.raw_animation_import_files) > 0:
-                        row = raw_box.row()
-                        row.template_list(
-                            "SUB_UL_raw_animation_import_list",
-                            "",
-                            ssp,
-                            "raw_animation_import_files",
-                            ssp,
-                            "raw_animation_import_files_index",
-                            rows=3,
-                        )
-                        row = raw_box.row()
-                        row.operator(
-                            SUB_OP_import_selected_raw_anim.bl_idname,
-                            text="Import Selected Raw Animation",
-                        )
-                        row = raw_box.row()
-                        row.operator(
-                            SUB_OP_import_all_raw_anims.bl_idname,
-                            text="Import All Raw Animations",
-                        )
-                    elif display_raw_folder:
-                        row = raw_box.row()
-                        row.label(text="No .rawanim files found in this folder.", icon='INFO')
+        help_box = layout.box()
+        help_box.label(text="What are Raw Animations?", icon='INFO')
+        col = help_box.column(align=True)
+        col.scale_y = 0.9
+        col.label(text="Sparse .rawanim files for animator round-trips.")
+        col.label(text="They keep pose/IK keys without baking every frame,")
+        col.label(text="unlike game .nuanmb exports.")
+
+        if obj is None or not obj.select_get() or obj.type != 'ARMATURE':
+            layout.label(text="Select an armature to import or export raw anims.")
+            return
+
+        if (
+            not ssp.raw_animation_import_folder_path
+            and is_fighter_motion_body_path(ssp.animation_import_folder_path)
+        ):
+            schedule_raw_animation_list_refresh(context)
+
+        import_box = layout.box()
+        import_box.label(text="Import", icon='IMPORT')
+
+        row = import_box.row()
+        row.operator(
+            SUB_OP_browse_raw_animation_folder.bl_idname,
+            icon='ZOOM_ALL',
+            text='Browse Raw Animation Folder',
+        )
+        row.operator(SUB_OP_refresh_raw_animation_list.bl_idname, icon='FILE_REFRESH', text='')
+
+        row = import_box.row()
+        row.operator(
+            SUB_OP_import_raw_anim_file.bl_idname,
+            icon='IMPORT',
+            text='Import Raw Animation File',
+        )
+
+        display_raw_folder = get_raw_anim_import_directory(ssp)
+        if display_raw_folder:
+            row = import_box.row()
+            row.label(text=f"Folder: {display_raw_folder}")
+
+        if len(ssp.raw_animation_import_files) > 0:
+            row = import_box.row()
+            row.template_list(
+                "SUB_UL_raw_animation_import_list",
+                "",
+                ssp,
+                "raw_animation_import_files",
+                ssp,
+                "raw_animation_import_files_index",
+                rows=3,
+            )
+            row = import_box.row()
+            row.operator(
+                SUB_OP_import_selected_raw_anim.bl_idname,
+                text="Import Selected Raw Animation",
+            )
+            row = import_box.row()
+            row.operator(
+                SUB_OP_import_all_raw_anims.bl_idname,
+                text="Import All Raw Animations",
+            )
+        elif display_raw_folder:
+            row = import_box.row()
+            row.label(text="No .rawanim files found in this folder.", icon='INFO')
+
+        export_box = layout.box()
+        export_box.label(text="Export", icon='EXPORT')
+        export_box.prop(ssp, "anim_include_raw_animation", text="Include Raw with .NUANMB Export")
+        row = export_box.row()
+        row.scale_y = 1.2
+        row.operator('sub.raw_anim_export', icon='EXPORT', text='Export Raw Animation')
+
 
 class SUB_OP_import_anim(Operator):
     bl_idname = 'sub.import_anim'

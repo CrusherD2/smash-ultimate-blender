@@ -15,6 +15,7 @@ import re
 import bpy
 
 from ..blender_compat import (
+    assign_action,
     id_type_for_id_data,
     slot_display_name,
     slot_id_type,
@@ -31,23 +32,48 @@ def _get_or_create_first_slot(action: bpy.types.Action, id_type: str = 'OBJECT',
         for slot in matches:
             if slot_display_name(slot) == slot_name:
                 return slot
+        return action.slots.new(id_type, name=slot_name)
+    # Prefer a named slot over Blender's generic / legacy placeholders so
+    # keyframes land on the same slot assign_action() binds to the ID.
     for slot in matches:
-        if slot_display_name(slot) != "Slot":
+        name = slot_display_name(slot)
+        if name not in {"Slot", "Legacy Slot", ""}:
             return slot
     if matches:
         return matches[0]
     return action.slots.new(id_type, name=slot_name or "Slot")
 
 
-def _get_or_create_channelbag(action: bpy.types.Action, id_type: str = 'OBJECT', ensure: bool = True):
+def _get_or_create_channelbag(
+    action: bpy.types.Action,
+    id_type: str = 'OBJECT',
+    ensure: bool = True,
+    slot_name: str | None = None,
+):
     if not ensure:
         if len(action.slots) == 0 or len(action.layers) == 0 or len(action.layers[0].strips) == 0:
             return None
-        slot = action.slots[0]
+        matches = [slot for slot in action.slots if slot_id_type(slot) == id_type]
+        slot = None
+        if slot_name:
+            for candidate in matches:
+                if slot_display_name(candidate) == slot_name:
+                    slot = candidate
+                    break
+        else:
+            for candidate in matches:
+                name = slot_display_name(candidate)
+                if name not in {"Slot", "Legacy Slot", ""}:
+                    slot = candidate
+                    break
+            if slot is None and matches:
+                slot = matches[0]
+        if slot is None:
+            slot = action.slots[0]
         strip = action.layers[0].strips[0]
         return strip.channelbag(slot, ensure=False)
 
-    slot = _get_or_create_first_slot(action, id_type)
+    slot = _get_or_create_first_slot(action, id_type, slot_name=slot_name)
 
     if len(action.layers) == 0:
         layer = action.layers.new("Layer")
@@ -620,7 +646,7 @@ def action_matches_id(action, armature_or_path_resolve):
     return action_matches_path_resolve(action, armature_or_path_resolve)
 
 
-def get_or_create_fcurves(action: bpy.types.Action, id_type: str = 'OBJECT'):
+def get_or_create_fcurves(action: bpy.types.Action, id_type: str = 'OBJECT', slot_name: str | None = None):
     """
     Like get_fcurves(), but ensures the layer/strip/slot/channelbag exist
     on Blender 5. On Blender 4 this is simply action.fcurves.
@@ -629,16 +655,80 @@ def get_or_create_fcurves(action: bpy.types.Action, id_type: str = 'OBJECT'):
         return []
     if uses_legacy_action_fcurves(action):
         return action.fcurves
-    channelbag = _get_or_create_channelbag(action, id_type, ensure=True)
+    channelbag = _get_or_create_channelbag(action, id_type, ensure=True, slot_name=slot_name)
     return channelbag.fcurves
 
 
-def new_fcurve(action: bpy.types.Action, data_path: str, index: int = 0, action_group: str = '', id_type: str = 'OBJECT') -> bpy.types.FCurve:
+def new_fcurve(
+    action: bpy.types.Action,
+    data_path: str,
+    index: int = 0,
+    action_group: str = '',
+    id_type: str = 'OBJECT',
+    slot_name: str | None = None,
+) -> bpy.types.FCurve:
     """Equivalent of the old `action.fcurves.new(...)`."""
     if uses_legacy_action_fcurves(action):
         return action.fcurves.new(data_path, index=index, action_group=action_group)
-    channelbag = _get_or_create_channelbag(action, id_type, ensure=True)
+    channelbag = _get_or_create_channelbag(action, id_type, ensure=True, slot_name=slot_name)
     return channelbag.fcurves.new(data_path, index=index, group_name=action_group)
+
+
+def ensure_fcurve_for_datablock(
+    action: bpy.types.Action,
+    id_data,
+    data_path: str,
+    index: int = 0,
+    action_group: str = '',
+    id_type: str | None = None,
+) -> bpy.types.FCurve:
+    """
+    Create/find an F-Curve bound to id_data's assigned action slot.
+
+    On Blender 5 this uses Action.fcurve_ensure_for_datablock so keys land on
+    the same slot the ID is evaluating, not a leftover Legacy Slot.
+    """
+    if action is None:
+        raise ValueError("action is required")
+    ensure = getattr(action, "fcurve_ensure_for_datablock", None)
+    if ensure is not None and id_data is not None:
+        # Action must already be assigned to id_data for this API.
+        anim = getattr(id_data, "animation_data", None)
+        if anim is not None and anim.action != action:
+            assign_action(anim, action)
+        return ensure(
+            datablock=id_data,
+            data_path=data_path,
+            index=index,
+            group_name=action_group,
+        )
+    if id_type is None:
+        id_type = id_type_for_id_data(id_data) if id_data is not None else "OBJECT"
+    slot_name = getattr(id_data, "name", None) if id_data is not None else None
+    return new_fcurve(
+        action,
+        data_path,
+        index=index,
+        action_group=action_group,
+        id_type=id_type,
+        slot_name=slot_name,
+    )
+
+
+def get_fcurves_for_assigned_slot(id_data) -> list:
+    """F-Curves from the channelbag currently driving id_data, if any."""
+    anim = getattr(id_data, "animation_data", None) if id_data is not None else None
+    if anim is None or anim.action is None:
+        return []
+    try:
+        from bpy_extras import anim_utils
+
+        channelbag = anim_utils.animdata_get_channelbag_for_assigned_slot(anim)
+        if channelbag is not None:
+            return list(channelbag.fcurves)
+    except Exception:
+        pass
+    return list(get_all_action_fcurves(anim.action, id_type=id_type_for_id_data(id_data)))
 
 
 def remove_fcurve(action: bpy.types.Action, fcurve: bpy.types.FCurve, id_type: str = 'OBJECT'):

@@ -472,18 +472,24 @@ class ULTIMATE_OT_map_bones_by_proximity(bpy.types.Operator):
         return ref and ref.type == 'ARMATURE' and ref != context.object
 
     def execute(self, context):
-        from .nearest_bone_mapper import map_bones_by_proximity
+        from .nearest_bone_mapper import (
+            _compute_proximity_threshold,
+            map_bones_by_proximity,
+        )
 
         target = context.object
         reference = context.scene.expykit_nearest_bone_ref
+        radius = getattr(context.scene, 'expykit_map_radius', 1.0)
 
         mapped_count, custom_count = map_bones_by_proximity(
-            reference, target, radius_scale=getattr(context.scene, 'expykit_map_radius', 1.0)
+            reference, target, radius_scale=radius
         )
         if mapped_count == 0 and custom_count == 0:
+            threshold = _compute_proximity_threshold(reference, target, radius_scale=radius)
             self.report(
                 {'WARNING'},
-                "No close bone pairs found. Make sure both armatures overlap in the viewport.",
+                f"No close bone pairs found (match distance {threshold:.3f}). "
+                "Raise Match Radius or make sure both armatures overlap.",
             )
             return {'CANCELLED'}
 
@@ -580,15 +586,56 @@ _ROOT_STAMP_ATTRS = (
 )
 
 
-def _apply_smash_root_defaults(op, scene=None):
+def _mapped_root_bone(armature):
+    """Root slot from an armature's retarget mapping, or '' if unset."""
+    if armature is None or getattr(armature, 'type', None) != 'ARMATURE':
+        return ""
+    try:
+        return (armature.data.expykit_retarget.root or "").strip()
+    except Exception:
+        return ""
+
+
+def _bind_reference_armature(context, scene=None, constrained=None):
+    """Armature constraints reference (Bind To) — not the one receiving constraints."""
+    scene = scene or getattr(context, 'scene', None)
+    bind_to = getattr(scene, 'expykit_bind_to', None) if scene is not None else None
+    if bind_to is not None and getattr(bind_to, 'type', None) == 'ARMATURE':
+        return bind_to
+    active = getattr(context, 'active_object', None)
+    if (
+        active is not None
+        and getattr(active, 'type', None) == 'ARMATURE'
+        and active is not constrained
+    ):
+        return active
+    return None
+
+
+def _sync_root_motion_from_reference(op, scene, reference):
+    """Force Root Animation bone from the Bind To mapping Root slot.
+
+    That armature is the one constraints point at (not the constrained model).
+    Always overwrite last-used operator values; leave empty when Root is unset.
+    """
+    bone = _mapped_root_bone(reference)
+    try:
+        op.root_motion_bone = bone
+    except Exception:
+        pass
+    if scene is not None and hasattr(scene, 'expykit_root_motion_bone'):
+        scene.expykit_root_motion_bone = bone
+    return bone
+
+
+def _apply_smash_root_defaults(op, scene=None, source=None):
     """The redo HUD reads operator RNA / last-used values, not the N-panel.
 
-    ExpyKit stored constrain_root as No Root. Smash bind needs Bone + Trans.
+    ExpyKit stored constrain_root as No Root. Smash bind needs Bone mode.
+    Root motion bone is handled by ``_sync_root_motion_from_reference``.
     """
+    del source
     uninitialized = getattr(op, 'constrain_root', 'None') in {'None', ''}
-    bone = 'Trans'
-    if scene is not None:
-        bone = getattr(scene, 'expykit_root_motion_bone', '') or 'Trans'
     if uninitialized:
         op.constrain_root = 'Bone'
         op.root_cp_loc_x = True
@@ -604,12 +651,6 @@ def _apply_smash_root_defaults(op, scene=None):
                 scene.expykit_root_cp_rot_z = True
             if hasattr(scene, 'expykit_root_use_loc_min_z'):
                 scene.expykit_root_use_loc_min_z = True
-            if hasattr(scene, 'expykit_root_motion_bone') and not scene.expykit_root_motion_bone:
-                scene.expykit_root_motion_bone = bone
-    if not getattr(op, 'root_motion_bone', ''):
-        op.root_motion_bone = bone
-        if scene is not None and hasattr(scene, 'expykit_root_motion_bone') and not scene.expykit_root_motion_bone:
-            scene.expykit_root_motion_bone = bone
 
 
 def _stamp_last_bind_props(context, op):
@@ -755,7 +796,7 @@ def draw_binded_settings_ui(layout, context, show_presets=True, explain=False):
     column.separator()
     row = column.row()
     row.label(text="Root Animation")
-    _bind_hint(column, explain, "Bone uses the Root from your preset (usually Trans) so the character keeps world movement.")
+    _bind_hint(column, explain, "Bone uses the Root slot from the Bind To mapping. Leave empty if Root is unset.")
     row = column.split(factor=_prop_indent, align=True)
     row.separator()
     row.prop(scene, 'expykit_constrain_root', text="")
@@ -839,6 +880,13 @@ class ULTIMATE_OT_constrain_to_armature(operators.ConstrainToArmature):
     """REPLACEMENT for ConstrainToArmature that uses scene properties.
     Same bl_idname as the original. Inherits bind helpers so execute can run."""
     from_scene: bpy.props.BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
+    # Prevent Blender from restoring a stale last-used "Trans" into the dialog.
+    root_motion_bone: bpy.props.StringProperty(
+        name="Root Motion",
+        description="Root bone from the Bind To armature mapping (constraints reference this model)",
+        default="",
+        options={'SKIP_SAVE'},
+    )
 
     @classmethod
     def poll(cls, context):
@@ -882,7 +930,8 @@ class ULTIMATE_OT_constrain_to_armature(operators.ConstrainToArmature):
         except:
             pass
 
-        source = next((ob for ob in context.selected_objects if ob != context.active_object), None)
+        constrained = next((ob for ob in context.selected_objects if ob != context.active_object), None)
+        reference = _bind_reference_armature(context, scene, constrained=constrained)
         first_bind = not bool(getattr(scene, 'expykit_bind_is_active', False))
         if first_bind:
             scene.expykit_constrain_root = 'Bone'
@@ -894,9 +943,14 @@ class ULTIMATE_OT_constrain_to_armature(operators.ConstrainToArmature):
             scene.expykit_root_cp_rot_z = True
             if hasattr(scene, 'expykit_root_use_loc_min_z'):
                 scene.expykit_root_use_loc_min_z = True
-        guided.apply_root_bind_defaults(scene, source, context.active_object)
+        # Root Animation bone = Bind To mapping Root (the armature constraints
+        # reference). Never the constrained model's Root / stale "Trans".
+        guided.apply_root_bind_defaults(
+            scene, constrained, reference, force_root_bone=True
+        )
         _copy_scene_to_operator(self, scene)
         _apply_smash_root_defaults(self, scene)
+        _sync_root_motion_from_reference(self, scene, reference)
         _stamp_last_bind_props(context, self)
 
         if self.force_dialog:
@@ -920,14 +974,19 @@ class ULTIMATE_OT_constrain_to_armature(operators.ConstrainToArmature):
     def execute(self, context):
         scene = context.scene
         rebind = bool(self.from_scene or getattr(guided, '_REBIND_BUSY', False))
+        source = next((ob for ob in context.selected_objects if ob != context.active_object), None)
+        target = getattr(scene, 'expykit_bind_to', None) or context.active_object
+        if not source or not target or getattr(source, 'type', None) != 'ARMATURE':
+            bound_source, bound_target = guided.bound_pair(scene)
+            if bound_source and bound_target:
+                source, target = bound_source, bound_target
         if rebind:
             _copy_scene_to_operator(self, scene)
         else:
             _apply_smash_root_defaults(self, scene)
+            _sync_root_motion_from_reference(self, scene, target)
         _stamp_last_bind_props(context, self)
 
-        source = next((ob for ob in context.selected_objects if ob != context.active_object), None)
-        target = getattr(scene, 'expykit_bind_to', None) or context.active_object
         if not source or not target or getattr(source, 'type', None) != 'ARMATURE':
             bound_source, bound_target = guided.bound_pair(scene)
             if bound_source and bound_target:
@@ -991,7 +1050,9 @@ class ULTIMATE_OT_bind_armatures(bpy.types.Operator):
         scene.expykit_root_cp_rot_z = True
         if hasattr(scene, 'expykit_root_use_loc_min_z'):
             scene.expykit_root_use_loc_min_z = True
-        guided.apply_root_bind_defaults(scene, source_armature, target_armature)
+        guided.apply_root_bind_defaults(
+            scene, source_armature, target_armature, force_root_bone=True
+        )
 
         if context.mode != 'POSE':
             if context.mode != 'OBJECT':
@@ -1075,7 +1136,7 @@ class ULTIMATE_OT_retargeting_help(bpy.types.Operator):
         col.label(text="   • Click 'Bind Armatures'")
         col.label(text="   • A panel will appear in the bottom-left viewport corner")
         col.label(text="   • Use it to: adjust time stretching, toggle constraints,")
-        col.label(text="     pick the Root Animation bone (e.g., 'Trans') for the armature,")
+        col.label(text="     pick the Root Animation bone from the Bind To Root mapping,")
         col.label(text="     set offsets at the top (e.g., 'Bone Offset',")
         col.label(text="     'Current Pose is Target Pose'), and preview in real-time")
         
@@ -1185,7 +1246,7 @@ class ULTIMATE_PT_expy_retarget(ui.VIEW3D_PT_expy_retarget):
         row.operator(ULTIMATE_OT_map_bones_by_proximity.bl_idname, text="Map by Proximity")
         box.prop(context.scene, 'expykit_map_radius', text="Match Radius", slider=True)
         box.label(
-            text="Lower radius is stricter. Raise it if bones are farther apart.",
+            text="Scales auto match distance. Raise if overlapping bones still miss.",
             icon='INFO',
         )
 

@@ -46,8 +46,9 @@ def expand_last_operator():
     tag_retargeting_redraw()
 
 
-def apply_root_bind_defaults(scene, source, target):
-    """Default Root Animation to Bone + preset root, with Z rotation and Min Z."""
+def apply_root_bind_defaults(scene, source, target, *, force_root_bone=False):
+    """Default Root Animation to Bone mode; motion bone from Bind To Root mapping."""
+    del source
     if getattr(scene, 'expykit_constrain_root', 'None') in {'None', ''}:
         scene.expykit_constrain_root = 'Bone'
         scene.expykit_root_cp_loc_x = True
@@ -59,24 +60,18 @@ def apply_root_bind_defaults(scene, source, target):
         if hasattr(scene, 'expykit_root_use_loc_min_z'):
             scene.expykit_root_use_loc_min_z = True
 
-    if scene.expykit_root_motion_bone:
-        return
+    # Root motion bone lives on Bind To (constraints reference this armature).
+    # Never invent "Trans" — leave empty when that Root slot is unset.
+    root_name = ""
+    if target is not None and getattr(target, 'type', None) == 'ARMATURE':
+        try:
+            root_name = (target.data.expykit_retarget.root or "").strip()
+        except Exception:
+            root_name = ""
 
-    candidates = []
-    if target and target.type == 'ARMATURE':
-        candidates.append(target.data.expykit_retarget.root or "")
-    if source and source.type == 'ARMATURE':
-        candidates.append(source.data.expykit_retarget.root or "")
-
-    bones = target.data.bones if target and target.type == 'ARMATURE' else None
-    for root_name in candidates:
-        if root_name and (bones is None or root_name in bones):
-            scene.expykit_root_motion_bone = root_name
-            return
-    for root_name in candidates:
-        if root_name:
-            scene.expykit_root_motion_bone = root_name
-            return
+    current = (getattr(scene, 'expykit_root_motion_bone', '') or "").strip()
+    if force_root_bone or not current:
+        scene.expykit_root_motion_bone = root_name
 
 
 def view3d_override(context):

@@ -2470,6 +2470,7 @@ class SUB_OP_anim_rig_toggle_ik_fk(Operator):
 
 _last_pose_tool_bone = None
 _pose_tool_msgbus = object()
+_pose_tool_busy = False
 
 
 def _tool_id_for_pose_bone(pose_bone):
@@ -2543,7 +2544,30 @@ def _set_local_orientation(context):
         pass
 
 
+def _file_browser_open(context):
+    """True while a file selector is open (browse folder/file)."""
+    wm = getattr(context, "window_manager", None)
+    if wm is None:
+        return False
+    try:
+        for window in wm.windows:
+            screen = getattr(window, "screen", None)
+            if screen is None:
+                continue
+            for area in screen.areas:
+                if area.type == "FILE_BROWSER":
+                    return True
+    except Exception:
+        pass
+    return False
+
+
 def _set_view3d_tool(context, tool_id):
+    global _pose_tool_busy
+    if _pose_tool_busy:
+        return False
+    if _file_browser_open(context):
+        return False
     window = context.window
     if window is None or window.screen is None:
         return False
@@ -2553,6 +2577,7 @@ def _set_view3d_tool(context, tool_id):
     region = next((item for item in area.regions if item.type == "WINDOW"), None)
     if region is None:
         return False
+    _pose_tool_busy = True
     try:
         with context.temp_override(
             window=window,
@@ -2575,10 +2600,14 @@ def _set_view3d_tool(context, tool_id):
             return True
         except Exception:
             return False
+    finally:
+        _pose_tool_busy = False
 
 
 def _apply_pose_tool(context):
     global _last_pose_tool_bone
+    if _pose_tool_busy or _file_browser_open(context):
+        return
     if getattr(context, "mode", None) != "POSE":
         _last_pose_tool_bone = None
         return
@@ -2613,7 +2642,7 @@ def _pose_tool_apply_soon():
 def _schedule_pose_tool():
     try:
         context = bpy.context
-        if context is not None:
+        if context is not None and not _pose_tool_busy and not _file_browser_open(context):
             _apply_pose_tool(context)
     except Exception:
         pass
@@ -2660,6 +2689,8 @@ def _pose_tool_depsgraph(_scene, _depsgraph):
     try:
         context = bpy.context
         if context is None or getattr(context, "mode", None) != "POSE":
+            return
+        if _pose_tool_busy or _file_browser_open(context):
             return
         pose_bone = _active_pose_bone(context)
         if pose_bone is None:
