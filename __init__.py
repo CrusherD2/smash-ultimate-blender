@@ -82,6 +82,10 @@ def register():
     from .source import retargeting
     retargeting.register()
 
+    # Panel presets last so all Ultimate panels exist for poll wrapping
+    from .source.extras import panel_presets
+    panel_presets.register()
+
     print('Loaded Smash Ultimate Blender Tools!')
 
 def unregister():
@@ -92,6 +96,10 @@ def unregister():
     from .source import new_classes_to_register
     from .source.model.material import texture
     from .source import swing
+
+    # Unregister panel presets first (restores original panel polls)
+    from .source.extras import panel_presets
+    panel_presets.unregister()
 
     # Unregister retargeting module first (expy_kit integration)
     from .source import retargeting

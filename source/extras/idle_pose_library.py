@@ -8,6 +8,8 @@ from ...dependencies import ssbh_data_py
 from ..anim.import_anim import get_hierarchy_order
 from .anim_flip import apply_smash_node_to_bone, collect_excluded_bone_names, mirror_smash_pose_data
 from .mirror_animation import rotate_hip_180
+from . import anim_layers_compat
+
 
 def get_predefined_poses():
     """Get list of predefined pose names"""
@@ -73,11 +75,16 @@ def apply_pose_with_options(context, pose_data_str, include_trans=True, mirrored
                 continue
             apply_smash_node_to_bone(bone, bone_to_node_data[bone])
         
-        # IMPORTANT: Keyframe ALL bones to prevent animation interference
-        # This ensures the pose is applied cleanly regardless of existing animation
-        print("=== KEYFRAMING ALL BONES ===")
+        additive_layer = anim_layers_compat.is_non_base_anim_layer(armature)
+        bones_to_key = list(bone_to_node_data.keys()) if additive_layer else list(armature.pose.bones)
+
+        # On upper Anim Layers, key absolute values under REPLACE first, then
+        # convert to ADD offsets so the base animation still plays underneath.
+        if additive_layer:
+            anim_layers_compat.prepare_absolute_keys_on_layer(armature)
+
         keyframed_count = 0
-        for bone in armature.pose.bones:
+        for bone in bones_to_key:
             bone.keyframe_insert(data_path="location", frame=current_frame, group=bone.name)
             
             if bone.rotation_mode == 'QUATERNION':
@@ -88,8 +95,14 @@ def apply_pose_with_options(context, pose_data_str, include_trans=True, mirrored
             bone.keyframe_insert(data_path="scale", frame=current_frame, group=bone.name)
             keyframed_count += 1
         
-        print(f"Keyframed {keyframed_count} bones to ensure clean pose application")
-        print("============================")
+        additive_note = ""
+        if additive_layer and bones_to_key:
+            keyed, err = anim_layers_compat.make_pose_additive_on_active_layer(
+                context, armature, bones_to_key
+            )
+            if err:
+                return {'CANCELLED'}, f"Idle pose applied but additive convert failed: {err}"
+            additive_note = f" (additive on layer {armature.als.layer_index}, Blend=Add, {keyed} bones)"
         
         # Update the view and ensure pose is fully applied before mirroring
         context.view_layer.update()
@@ -105,13 +118,20 @@ def apply_pose_with_options(context, pose_data_str, include_trans=True, mirrored
         
         # Apply 180 rotate if requested (after pose application and mirroring)
         if rotate_180 and armature.animation_data and armature.animation_data.action:
+            if additive_layer:
+                anim_layers_compat.prepare_absolute_keys_on_layer(armature)
             rotate_hip_180(armature, 'Y', only_active_frame=True, current_frame=current_frame)
+            # Re-convert after 180 so Hip stays additive on upper layers
+            if additive_layer and bones_to_key:
+                anim_layers_compat.make_pose_additive_on_active_layer(
+                    context, armature, bones_to_key
+                )
         
         # Update the view
         for area in context.screen.areas:
             area.tag_redraw()
         
-        return {'FINISHED'}, f"Applied idle pose to frame {current_frame}"
+        return {'FINISHED'}, f"Applied idle pose to frame {current_frame}{additive_note}"
         
     except Exception as e:
         return {'CANCELLED'}, f"Error applying idle pose: {str(e)}"

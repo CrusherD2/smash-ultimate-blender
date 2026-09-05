@@ -337,8 +337,7 @@ class SUB_PT_ultimate_exo_skel(Panel):
     
     @classmethod
     def poll(cls, context):
-        # Allow the panel in both object mode and edit mode
-        return context.mode in ['OBJECT', 'EDIT_ARMATURE']
+        return context.mode in {'OBJECT', 'EDIT_ARMATURE', 'POSE'}
     
     def draw(self, context):
         ssp: SubSceneProperties = context.scene.sub_scene_properties

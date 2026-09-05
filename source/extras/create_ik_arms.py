@@ -3,6 +3,7 @@ import mathutils
 from mathutils import Vector
 import math
 from . import fk_to_ik
+from . import anim_layers_compat
 from ..blender_compat import assign_bone_to_collection, ensure_bone_collection
 
 class SUB_OP_create_arm_ik_operator(bpy.types.Operator):
@@ -22,6 +23,10 @@ class SUB_OP_create_arm_ik_operator(bpy.types.Operator):
         return True  # Always show the button
 
     def execute(self, context):
+        with anim_layers_compat.anim_layers_paused():
+            return self._execute_ik_create(context)
+
+    def _execute_ik_create(self, context):
         armature_object = context.object
 
         if not armature_object or armature_object.type != 'ARMATURE':

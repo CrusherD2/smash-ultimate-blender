@@ -12,10 +12,13 @@ if TYPE_CHECKING:
 class SUB_PT_reimport_materials(Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_context = "objectmode"
     bl_category = 'Ultimate'
     bl_label = 'Material Re-Importer'
     bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return True
 
     def draw(self, context):
         ssp: SubSceneProperties = context.scene.sub_scene_properties

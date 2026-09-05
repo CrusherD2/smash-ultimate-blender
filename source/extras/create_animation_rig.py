@@ -87,6 +87,7 @@ _LEFT_COLOR = 'THEME03'
 _RIGHT_COLOR = 'THEME01'
 _IK_COLOR = 'THEME04'
 _CENTER_FALLBACK = 'THEME09'
+_TRANS_AIM_BONE = 'BL_TransAim'
 
 
 def canonical_bone_name(name):
@@ -351,6 +352,32 @@ def _crosshair_geometry(segments=32):
     return verts, edges
 
 
+def _trans_orient_geometry():
+    """Flat ground arrow showing Trans yaw (drawn red via BL_TransAim)."""
+    # Along +Z on the XZ plane — with world_flat this matches Smash forward (-Y).
+    verts = [
+        (0.0, 0.0, -0.15),
+        (0.0, 0.0, 1.65),
+        (0.0, 0.0, 1.65),
+        (0.32, 0.0, 1.22),
+        (0.0, 0.0, 1.65),
+        (-0.32, 0.0, 1.22),
+        # Parallel stroke so the line reads clearly at a distance
+        (0.05, 0.0, -0.15),
+        (0.05, 0.0, 1.45),
+        (-0.05, 0.0, -0.15),
+        (-0.05, 0.0, 1.45),
+    ]
+    edges = [
+        (0, 1),
+        (2, 3),
+        (4, 5),
+        (6, 7),
+        (8, 9),
+    ]
+    return verts, edges
+
+
 def _foot_geometry():
     verts, edges = _box_geometry(0.85, 1.35, 0.28)
     # Forward chevron so the animator can see which way the foot faces.
@@ -549,6 +576,7 @@ _WIDGET_BUILDERS = {
     'diamond': _diamond_geometry,
     'sphere': _sphere_geometry,
     'crosshair': _crosshair_geometry,
+    'trans_orient': _trans_orient_geometry,
     'foot': _foot_geometry,
     'slider': _slider_geometry,
     'square': lambda: _square_xz_geometry(1.0),
@@ -624,9 +652,52 @@ def _should_hide_bone(base_name):
     return base_name.endswith(('_eff', '_null', '_offset')) or base_name == 'Rot'
 
 
+def _ensure_trans_aim_bone(context, armature_obj):
+    """Visual-only red orientation arrow parented to Trans."""
+    if armature_obj.pose.bones.get(_TRANS_AIM_BONE) is not None:
+        return True
+
+    prev_mode = armature_obj.mode
+    _activate_armature(context, armature_obj)
+    bpy.ops.object.mode_set(mode='EDIT')
+    try:
+        armature = armature_obj.data
+        trans = (
+            _edit_bone(armature, 'Trans', '')
+            or next(
+                (b for b in armature.edit_bones if canonical_bone_name(b.name) == 'Trans'),
+                None,
+            )
+        )
+        if trans is None:
+            return False
+        if armature.edit_bones.get(_TRANS_AIM_BONE) is not None:
+            return True
+        aim = armature.edit_bones.new(_TRANS_AIM_BONE)
+        aim.head = trans.head.copy()
+        direction = trans.tail - trans.head
+        if direction.length < 1e-6:
+            direction = Vector((0.0, 1.0, 0.0))
+        else:
+            direction.normalize()
+        aim.tail = aim.head + direction * max(trans.length * 0.05, 0.001)
+        aim.roll = trans.roll
+        aim.parent = trans
+        aim.use_connect = False
+        aim.use_deform = False
+    finally:
+        try:
+            bpy.ops.object.mode_set(mode='POSE' if prev_mode == 'EDIT' else prev_mode)
+        except Exception:
+            bpy.ops.object.mode_set(mode='POSE')
+    return armature_obj.pose.bones.get(_TRANS_AIM_BONE) is not None
+
+
 def _classify_bone(base_name):
     if base_name == 'BL_EyeLook':
         return ('box', 'THEME03', 0.18, True)
+    if base_name == _TRANS_AIM_BONE:
+        return ('trans_orient', _RIGHT_COLOR, 0.55, False)
     if base_name.startswith('BL_') or _should_hide_bone(base_name):
         return None
 
@@ -725,6 +796,7 @@ def _restore_clutter(armature_obj):
 
 def _apply_shapes(context, armature_obj):
     char_scale = _estimate_character_scale(armature_obj)
+    _ensure_trans_aim_bone(context, armature_obj)
     widgets = {widget_id: _widget_object(context, widget_id) for widget_id in _WIDGET_BUILDERS}
     shaped = 0
     for pose_bone in armature_obj.pose.bones:
@@ -737,7 +809,7 @@ def _apply_shapes(context, armature_obj):
             mul = max(0.045, min(0.14, (length / max(char_scale, 1e-6)) * 0.45))
             classification = ('circle', _custom_bone_color(base), mul, True)
         widget_id, color, mul, center = classification
-        world_flat = canonical_bone_name(pose_bone.name) == 'Trans'
+        world_flat = base in {'Trans', _TRANS_AIM_BONE}
         scale = char_scale * mul
         if widget_id == 'bone_arrow':
             thickness = char_scale * mul
@@ -756,6 +828,18 @@ def _apply_shapes(context, armature_obj):
             armature_obj,
             world_flat,
         )
+        if base == _TRANS_AIM_BONE:
+            try:
+                pose_bone.bone.hide_select = True
+            except Exception:
+                pass
+            # Keep locked so animators do not key the helper by accident
+            try:
+                pose_bone.lock_location = (True, True, True)
+                pose_bone.lock_rotation = (True, True, True)
+                pose_bone.lock_scale = (True, True, True)
+            except Exception:
+                pass
         shaped += 1
     return shaped
 
@@ -1361,26 +1445,49 @@ def _ik_fk_chain_bones(armature_obj):
     return names
 
 
-def _ik_control_bone_names(armature_obj):
-    return [
-        bone.name for bone in armature_obj.pose.bones
-        if _IK_BONE.match(canonical_bone_name(bone.name))
-    ]
+def _ik_control_bone_names(armature_obj, limbs='BOTH'):
+    names = []
+    for bone in armature_obj.pose.bones:
+        match = _IK_BONE.match(canonical_bone_name(bone.name))
+        if match is None:
+            continue
+        part = match.group(1)
+        kind = 'ARMS' if part in {'Hand', 'Arm'} else 'LEGS'
+        if limbs != 'BOTH' and kind != limbs:
+            continue
+        names.append(bone.name)
+    return names
 
 
 _POSE_FCURVE_BONE = re.compile(r'^pose\.bones\[["\']([^"\']+)["\']')
+# Only location/rotation/scale — never constraint props (pole_angle, influence, …)
+_POSE_TRANSFORM_FCURVE = re.compile(
+    r'^pose\.bones\[["\']([^"\']+)["\']\]\.'
+    r'(location|rotation_quaternion|rotation_euler|rotation_axis_angle|scale)'
+    r'(?:$|\[)'
+)
 _HELD_FK_MUTE_KEY = "sub_ik_held_fk_fcurves"
 _HELD_IK_MUTE_KEY = "sub_ik_held_ik_fcurves"
-_IK_DRIVEN_FK_PARTS = {"Arm", "Leg", "Knee", "Hand", "Foot"}
+_IK_DRIVEN_FK_PARTS = {
+    # Shoulder is in the Arm IK chain (chain_count=2 on Arm) — must mute/bake with arms.
+    "Shoulder", "Arm", "Elbow", "Wrist", "Hand",
+    "Leg", "Knee", "Foot", "Heel", "Toe",
+}
+_IK_DRIVEN_FK_ARMS = {"Shoulder", "Arm", "Elbow", "Wrist", "Hand"}
 
 
-def _ik_driven_fk_bone_names(armature_obj):
+def _ik_driven_fk_bone_names(armature_obj, limbs='BOTH'):
     """Smash bones whose FK keys should rest while IK is solving."""
     names = []
     for pose_bone in armature_obj.pose.bones:
         match = _SIDE_BONE.match(canonical_bone_name(pose_bone.name))
-        if match and match.group(1) in _IK_DRIVEN_FK_PARTS:
-            names.append(pose_bone.name)
+        if not match or match.group(1) not in _IK_DRIVEN_FK_PARTS:
+            continue
+        part = match.group(1)
+        kind = 'ARMS' if part in _IK_DRIVEN_FK_ARMS else 'LEGS'
+        if limbs != 'BOTH' and kind != limbs:
+            continue
+        names.append(pose_bone.name)
     return names
 
 
@@ -1388,47 +1495,209 @@ def _fcurve_id(fcurve):
     return f"{fcurve.data_path}|{fcurve.array_index}"
 
 
-def _set_named_bone_fcurves_muted(armature_obj, bone_names, mute, held_key):
-    """Mute or restore fcurves for the given bones without deleting keys."""
-    animation_data = armature_obj.animation_data
-    action = getattr(animation_data, "action", None) if animation_data else None
-    if action is None:
+def _is_pose_transform_fcurve(data_path):
+    """True for bone transform channels only (not constraints like pole_angle)."""
+    return bool(_POSE_TRANSFORM_FCURVE.match(data_path or ""))
+
+
+def _iter_armature_actions(armature_obj):
+    """Active action plus every NLA strip action (Animation Layers inclusive)."""
+    actions = []
+    seen = set()
+    anim = getattr(armature_obj, "animation_data", None)
+    if anim is None:
+        return actions
+
+    def _take(action):
+        if action is None:
+            return
+        key = action.as_pointer()
+        if key in seen:
+            return
+        seen.add(key)
+        actions.append(action)
+
+    _take(getattr(anim, "action", None))
+    for track in getattr(anim, "nla_tracks", []) or []:
+        for strip in getattr(track, "strips", []) or []:
+            _take(getattr(strip, "action", None))
+    return actions
+
+
+def _bone_ik_fk_role(bone_name):
+    """Return ('fk'|'ik', 'ARMS'|'LEGS') or None for bones involved in the switch."""
+    base = canonical_bone_name(bone_name)
+    ik_match = _IK_BONE.match(base)
+    if ik_match:
+        part = ik_match.group(1)
+        return 'ik', ('ARMS' if part in {'Hand', 'Arm'} else 'LEGS')
+    fk_match = _SIDE_BONE.match(base)
+    if fk_match and fk_match.group(1) in _IK_DRIVEN_FK_PARTS:
+        part = fk_match.group(1)
+        return 'fk', ('ARMS' if part in _IK_DRIVEN_FK_ARMS else 'LEGS')
+    return None
+
+
+_IK_FK_APPLYING = False
+_IK_VIS_CACHE = {}
+_IK_FK_MUTE_SYNC_PAUSED = False
+# Frames for Switch IK/FK to ease sub_use_ik_* from old mode to new mode.
+IK_FK_BLEND_FRAMES = 5
+
+
+def pause_ik_fk_mute_sync(paused=True):
+    """Skip FK/IK mute sync (e.g. while FK→IK matching needs live FK evaluation)."""
+    global _IK_FK_MUTE_SYNC_PAUSED
+    _IK_FK_MUTE_SYNC_PAUSED = bool(paused)
+
+
+def _ik_switch_factor(props, name, default=0.0):
+    return float(getattr(props, name, default) or 0.0)
+
+
+def _ik_mode_bucket(factor):
+    """'fk', 'ik', or 'blend' — blend keeps both transform channels live."""
+    if factor <= 1e-4:
+        return 'fk'
+    if factor >= 1.0 - 1e-4:
+        return 'ik'
+    return 'blend'
+
+
+def _want_mute_ik_fk_channel(channel, factor):
+    """Mute inactive channel only when fully in that mode; never during blend."""
+    bucket = _ik_mode_bucket(factor)
+    if bucket == 'ik':
+        return channel == 'fk'
+    if bucket == 'fk':
+        return channel == 'ik'
+    return False
+
+
+def _sync_ik_fk_fcurve_mutes(armature_obj):
+    """Mute inactive FK/IK transform keys when fully in one mode.
+
+    During a partial blend (0 < sub_use_ik_* < 1) both channels stay unmuted so
+    constraint influence can interpolate between FK and IK. Constraint channels
+    (especially pole_angle) are never muted.
+    """
+    if _IK_FK_MUTE_SYNC_PAUSED:
         return
-    names = set(bone_names)
-    held = [str(item) for item in armature_obj.data.get(held_key, [])]
-    held_set = set(held)
-    fcurves = get_all_action_fcurves(action, id_type='OBJECT')
-    if mute:
-        for fcurve in fcurves:
-            match = _POSE_FCURVE_BONE.match(fcurve.data_path or "")
-            if match is None or match.group(1) not in names:
+    if armature_obj is None or getattr(armature_obj, "type", None) != "ARMATURE":
+        return
+    props = armature_obj.data
+    arms_f = _ik_switch_factor(props, "sub_use_ik_arms", 0.0)
+    legs_f = _ik_switch_factor(props, "sub_use_ik_legs", 0.0)
+    for action in _iter_armature_actions(armature_obj):
+        for fcurve in get_all_action_fcurves(action, id_type='OBJECT'):
+            path = fcurve.data_path or ""
+            match = _POSE_FCURVE_BONE.match(path)
+            if match is None:
                 continue
-            curve_id = _fcurve_id(fcurve)
-            if not fcurve.mute:
-                fcurve.mute = True
-                if curve_id not in held_set:
-                    held.append(curve_id)
-                    held_set.add(curve_id)
-        armature_obj.data[held_key] = held
+            role = _bone_ik_fk_role(match.group(1))
+            if role is None:
+                continue
+            # Never mute constraint / custom props (pole_angle, influence, …)
+            if not _is_pose_transform_fcurve(path):
+                if fcurve.mute:
+                    fcurve.mute = False
+                continue
+            channel, limbs = role
+            limb_f = arms_f if limbs == 'ARMS' else legs_f
+            want_mute = _want_mute_ik_fk_channel(channel, limb_f)
+            if bool(fcurve.mute) != want_mute:
+                fcurve.mute = want_mute
+
+
+def unmute_all_ik_fk_fcurves(armature_obj):
+    """Clear IK/FK mute state so bake can write and play FK keys."""
+    if armature_obj is None or getattr(armature_obj, "type", None) != "ARMATURE":
         return
-    for fcurve in fcurves:
-        if _fcurve_id(fcurve) in held_set:
-            fcurve.mute = False
-    if held_key in armature_obj.data:
-        del armature_obj.data[held_key]
+    for action in _iter_armature_actions(armature_obj):
+        for fcurve in get_all_action_fcurves(action, id_type='OBJECT'):
+            match = _POSE_FCURVE_BONE.match(fcurve.data_path or "")
+            if match is None:
+                continue
+            if _bone_ik_fk_role(match.group(1)) is None:
+                continue
+            if fcurve.mute:
+                fcurve.mute = False
+    for key in (_HELD_FK_MUTE_KEY, _HELD_IK_MUTE_KEY):
+        if key in armature_obj.data:
+            del armature_obj.data[key]
 
 
-def _set_ik_driven_fcurves_muted(armature_obj, mute):
-    """Mute limb FK curves while IK is on, without deleting the keys."""
+def _neutralize_fk_pose_for_ik(armature_obj, limbs='BOTH'):
+    """Clear residual FK pose so muted curves do not leave a stuck offset under IK."""
+    for name in _ik_driven_fk_bone_names(armature_obj, limbs=limbs):
+        pose_bone = armature_obj.pose.bones.get(name)
+        if pose_bone is None:
+            continue
+        try:
+            pose_bone.matrix_basis.identity()
+        except Exception:
+            pose_bone.location = (0.0, 0.0, 0.0)
+            pose_bone.scale = (1.0, 1.0, 1.0)
+            if pose_bone.rotation_mode == 'QUATERNION':
+                pose_bone.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+            elif pose_bone.rotation_mode == 'AXIS_ANGLE':
+                pose_bone.rotation_axis_angle = (0.0, 0.0, 1.0, 0.0)
+            else:
+                pose_bone.rotation_euler = (0.0, 0.0, 0.0)
+
+
+def _set_named_bone_fcurves_muted(armature_obj, bone_names, mute, held_key):
+    """Mute or unmute transform fcurves for the given bones (all actions / NLA strips).
+
+    Used temporarily by FK→IK matching; normal play uses `_sync_ik_fk_fcurve_mutes`.
+    Constraint channels (pole_angle) are never muted.
+    """
+    names = set(bone_names)
+    for action in _iter_armature_actions(armature_obj):
+        held = [str(item) for item in armature_obj.data.get(held_key, [])]
+        held_set = set(held)
+        fcurves = get_all_action_fcurves(action, id_type='OBJECT')
+        if mute:
+            for fcurve in fcurves:
+                path = fcurve.data_path or ""
+                match = _POSE_TRANSFORM_FCURVE.match(path)
+                if match is None or match.group(1) not in names:
+                    continue
+                curve_id = _fcurve_id(fcurve)
+                if not fcurve.mute:
+                    fcurve.mute = True
+                    if curve_id not in held_set:
+                        held.append(curve_id)
+                        held_set.add(curve_id)
+            armature_obj.data[held_key] = held
+        else:
+            for fcurve in fcurves:
+                path = fcurve.data_path or ""
+                match = _POSE_TRANSFORM_FCURVE.match(path)
+                if match is None or match.group(1) not in names:
+                    continue
+                fcurve.mute = False
+            if held_key in armature_obj.data:
+                del armature_obj.data[held_key]
+
+
+def _set_ik_driven_fcurves_muted(armature_obj, mute, limbs='BOTH'):
+    """Temporarily mute/unmute limb FK curves (FK→IK match), without deleting keys."""
     _set_named_bone_fcurves_muted(
-        armature_obj, _ik_driven_fk_bone_names(armature_obj), mute, _HELD_FK_MUTE_KEY
+        armature_obj,
+        _ik_driven_fk_bone_names(armature_obj, limbs=limbs),
+        mute,
+        _HELD_FK_MUTE_KEY,
     )
 
 
-def _set_ik_control_fcurves_muted(armature_obj, mute):
-    """Mute IK control curves while FK is on, without deleting the keys."""
+def _set_ik_control_fcurves_muted(armature_obj, mute, limbs='BOTH'):
+    """Temporarily mute/unmute IK control curves (FK→IK match), without deleting keys."""
     _set_named_bone_fcurves_muted(
-        armature_obj, _ik_control_bone_names(armature_obj), mute, _HELD_IK_MUTE_KEY
+        armature_obj,
+        _ik_control_bone_names(armature_obj, limbs=limbs),
+        mute,
+        _HELD_IK_MUTE_KEY,
     )
 
 
@@ -1506,9 +1775,6 @@ def _ensure_ik_influence_drivers(armature_obj):
             continue
         constraint.mute = False
         _ensure_constraint_influence_driver(armature_obj, pose_bone, constraint, prop_name)
-    if armature_obj.data.get(_HELD_FK_MUTE_KEY) or armature_obj.data.get(_HELD_IK_MUTE_KEY):
-        _set_ik_driven_fcurves_muted(armature_obj, False)
-        _set_ik_control_fcurves_muted(armature_obj, False)
 
 
 def _remove_ik_influence_drivers(armature_obj):
@@ -1533,25 +1799,31 @@ def _set_limb_ik_constraints(armature_obj, enabled, limbs='BOTH'):
         constraint.influence = influence
 
 
-_IK_FK_APPLYING = False
-_IK_VIS_CACHE = {}
-
-
 def _apply_ik_fk_state(armature_obj, enabled, limbs='BOTH'):
-    """Apply IK vs FK from the keyable switch. Both sets of keys keep evaluating."""
+    """Apply IK vs FK: constraints, visibility, and mute the inactive key channel."""
     _set_limb_ik_constraints(armature_obj, enabled, limbs=limbs)
-    _set_ik_bone_visibility(armature_obj, enabled, limbs=limbs)
     props = armature_obj.data
-    _IK_VIS_CACHE[armature_obj.name] = (
-        float(getattr(props, "sub_use_ik_arms", 1.0 if enabled else 0.0) or 0.0) > 0.001,
-        float(getattr(props, "sub_use_ik_legs", 1.0 if enabled else 0.0) or 0.0) > 0.001,
-    )
+    arms_f = _ik_switch_factor(props, "sub_use_ik_arms", 1.0 if enabled else 0.0)
+    legs_f = _ik_switch_factor(props, "sub_use_ik_legs", 1.0 if enabled else 0.0)
+    if limbs in ('BOTH', 'ARMS'):
+        _set_ik_bone_visibility(armature_obj, arms_f > 1e-4, 'ARMS')
+    if limbs in ('BOTH', 'LEGS'):
+        _set_ik_bone_visibility(armature_obj, legs_f > 1e-4, 'LEGS')
+    arms_bucket = _ik_mode_bucket(arms_f)
+    legs_bucket = _ik_mode_bucket(legs_f)
+    _IK_VIS_CACHE[armature_obj.name] = (arms_bucket, legs_bucket)
+    # Only clear residual FK once fully in IK — never mid-blend.
+    if limbs in ('BOTH', 'ARMS') and arms_bucket == 'ik':
+        _neutralize_fk_pose_for_ik(armature_obj, limbs='ARMS')
+    if limbs in ('BOTH', 'LEGS') and legs_bucket == 'ik':
+        _neutralize_fk_pose_for_ik(armature_obj, limbs='LEGS')
+    _sync_ik_fk_fcurve_mutes(armature_obj)
     armature_obj.update_tag()
 
 
 @persistent
 def _sync_ik_fk_visibility(scene, depsgraph=None):
-    """Hide or show IK controls when the keyed switch changes during playback."""
+    """Sync IK visibility and FK/IK fcurve mutes when the keyed switch changes."""
     cache = _IK_VIS_CACHE
     for obj in scene.objects:
         if obj.type != 'ARMATURE':
@@ -1559,16 +1831,36 @@ def _sync_ik_fk_visibility(scene, depsgraph=None):
         data = obj.data
         if not data.get(ARMATURE_FLAG):
             continue
-        arms = float(getattr(data, "sub_use_ik_arms", 1.0) or 0.0) > 0.001
-        legs = float(getattr(data, "sub_use_ik_legs", 1.0) or 0.0) > 0.001
+        arms_f = _ik_switch_factor(data, "sub_use_ik_arms", 1.0)
+        legs_f = _ik_switch_factor(data, "sub_use_ik_legs", 1.0)
+        arms_bucket = _ik_mode_bucket(arms_f)
+        legs_bucket = _ik_mode_bucket(legs_f)
         key = obj.name
-        if cache.get(key) == (arms, legs):
+        state = (arms_bucket, legs_bucket)
+        if cache.get(key) == state:
+            # One-time heal: older mute sync silenced pole_angle on FK bones
+            if not data.get("sub_ik_fk_mute_healed"):
+                if not _IK_FK_MUTE_SYNC_PAUSED:
+                    _sync_ik_fk_fcurve_mutes(obj)
+                data["sub_ik_fk_mute_healed"] = True
             continue
+        prev = cache.get(key)
         if key not in cache:
             _ensure_ik_influence_drivers(obj)
-        cache[key] = (arms, legs)
-        _set_ik_bone_visibility(obj, arms, 'ARMS')
-        _set_ik_bone_visibility(obj, legs, 'LEGS')
+        cache[key] = state
+        _set_ik_bone_visibility(obj, arms_f > 1e-4, 'ARMS')
+        _set_ik_bone_visibility(obj, legs_f > 1e-4, 'LEGS')
+        if _IK_FK_MUTE_SYNC_PAUSED:
+            continue
+        # Neutralize only when entering full IK (not when entering blend).
+        if prev is None or prev[0] != arms_bucket:
+            if arms_bucket == 'ik':
+                _neutralize_fk_pose_for_ik(obj, limbs='ARMS')
+        if prev is None or prev[1] != legs_bucket:
+            if legs_bucket == 'ik':
+                _neutralize_fk_pose_for_ik(obj, limbs='LEGS')
+        _sync_ik_fk_fcurve_mutes(obj)
+        data["sub_ik_fk_mute_healed"] = True
 
 
 def _object_for_armature_data(armature_data, context=None):
@@ -1774,7 +2066,11 @@ def _bool_switch_fcurve(armature_obj, data_path):
 
 
 def _set_bool_switch_key(fcurve, frame, value):
-    value = 1.0 if value else 0.0
+    value = float(value)
+    if value >= 0.5:
+        value = 1.0
+    else:
+        value = 0.0
     existing = None
     for keyframe in fcurve.keyframe_points:
         if abs(keyframe.co[0] - frame) < 0.001:
@@ -1793,20 +2089,52 @@ def _set_bool_switch_key(fcurve, frame, value):
     if existing is None:
         return
     existing.co[1] = value
-    existing.interpolation = 'BEZIER'
-    existing.handle_left_type = 'FREE'
-    existing.handle_right_type = 'FREE'
+    # Linear so influence eases evenly across the blend span.
+    existing.interpolation = 'LINEAR'
+    existing.handle_left_type = 'AUTO'
+    existing.handle_right_type = 'AUTO'
     try:
         existing.type = 'GENERATED' if value >= 0.5 else 'BREAKDOWN'
     except (AttributeError, TypeError, RuntimeError):
         pass
 
 
-def _key_bool_prop(armature_obj, data_path, frame, old_value=None, new_value=None):
+def _clear_switch_keys_between(fcurve, start_frame, end_frame):
+    """Remove keys strictly between blend start/end so the ease is clean."""
+    if fcurve is None or end_frame <= start_frame:
+        return
+    to_remove = []
+    for keyframe in fcurve.keyframe_points:
+        x = keyframe.co[0]
+        if start_frame + 0.001 < x < end_frame - 0.001:
+            to_remove.append(keyframe)
+    for keyframe in reversed(to_remove):
+        try:
+            fcurve.keyframe_points.remove(keyframe)
+        except (AttributeError, TypeError, RuntimeError):
+            pass
+
+
+def _key_bool_prop(armature_obj, data_path, frame, old_value=None, new_value=None, blend_frames=None):
+    """Key old mode at frame and new mode at frame+blend so influence interpolates."""
     if new_value is None:
         new_value = float(getattr(armature_obj.data, data_path) or 0.0) >= 0.5
+    if old_value is None:
+        old_value = not bool(new_value)
+    if blend_frames is None:
+        blend_frames = IK_FK_BLEND_FRAMES
+    blend_frames = max(1, int(blend_frames))
+    old_f = 1.0 if old_value else 0.0
+    new_f = 1.0 if new_value else 0.0
     action, fcurve = _bool_switch_fcurve(armature_obj, data_path)
-    _set_bool_switch_key(fcurve, frame, new_value)
+    start = float(frame)
+    end = float(frame + blend_frames)
+    if abs(old_f - new_f) < 1e-6:
+        _set_bool_switch_key(fcurve, start, new_f)
+    else:
+        _clear_switch_keys_between(fcurve, start, end)
+        _set_bool_switch_key(fcurve, start, old_f)
+        _set_bool_switch_key(fcurve, end, new_f)
     try:
         fcurve.update()
     except Exception:
@@ -1832,6 +2160,44 @@ def _key_use_ik(armature_obj, frame, limbs='BOTH', old_arms=None, old_legs=None,
             old_value=old_legs,
             new_value=enabled,
         )
+
+
+def _match_ik_to_fk_for_blend(armature_obj, context, limbs='BOTH'):
+    """Snap IK controls + pole_angle to the current FK pose at this frame.
+
+    Needed when blending FK→IK so influence eases toward a matching IK solution
+    (same knee/elbow bend plane) instead of a stale IK pose.
+    """
+    if armature_obj is None:
+        return
+    helper = fk_to_ik.SUB_OP_fk_to_ik_transfer.__new__(fk_to_ik.SUB_OP_fk_to_ik_transfer)
+    helper.cleanup_mode = limbs
+    helper.entire_animation = False
+    helper.auto_keyframe = True
+    helper.custom_leg_bone_l = "LegL"
+    helper.custom_knee_bone_l = "KneeL"
+    helper.custom_foot_bone_l = "FootL"
+    helper.custom_leg_bone_r = "LegR"
+    helper.custom_knee_bone_r = "KneeR"
+    helper.custom_foot_bone_r = "FootR"
+    helper._knee_pole_signs = {}
+    helper._arm_pole_signs = {}
+    was_paused = _IK_FK_MUTE_SYNC_PAUSED
+    prev_active = getattr(context.view_layer.objects, "active", None)
+    pause_ik_fk_mute_sync(True)
+    try:
+        # Live FK evaluation while measuring targets / bend planes.
+        unmute_all_ik_fk_fcurves(armature_obj)
+        context.view_layer.objects.active = armature_obj
+        context.view_layer.update()
+        helper.process_frame(context)
+    finally:
+        if prev_active is not None:
+            try:
+                context.view_layer.objects.active = prev_active
+            except (ReferenceError, RuntimeError):
+                pass
+        pause_ik_fk_mute_sync(was_paused)
 
 
 def _activate_armature(context, armature_obj):
@@ -1863,41 +2229,37 @@ def _key_pose_from_matrix(pose_bone, matrix, frame):
 
 def bake_ik_visual_keys(context, armature_obj):
     """Bake IK-driven limb bones to visual keys, then mute the IK constraints."""
-    names = _ik_fk_chain_bones(armature_obj)
-    constraints = list(_iter_limb_ik_constraints(armature_obj))
-    if not names or not constraints:
+    from .apply_ik_animation import (
+        bake_ik_driven_fk_visual,
+        collect_fk_bone_names,
+        present_ik_limbs,
+    )
+
+    limbs = present_ik_limbs(armature_obj)
+    if not limbs:
         return 0
-    scene = context.scene
-    start, end = int(scene.frame_start), int(scene.frame_end)
-    original = scene.frame_current
-    frames = []
-    keyed = 0
+    names = collect_fk_bone_names(armature_obj, limbs=limbs)
+    if not names or not list(_iter_limb_ik_constraints(armature_obj, limbs=limbs)):
+        return 0
+    pause_ik_fk_mute_sync(True)
     try:
-        for frame in range(start, end + 1):
-            scene.frame_set(frame)
-            context.view_layer.update()
-            visuals = {}
-            for name in names:
-                pose_bone = armature_obj.pose.bones.get(name)
-                if pose_bone is not None:
-                    visuals[name] = pose_bone.matrix.copy()
-            frames.append(visuals)
-        for _pose_bone, constraint in constraints:
+        keyed = bake_ik_driven_fk_visual(
+            context,
+            armature_obj,
+            names,
+            context.scene.frame_start,
+            context.scene.frame_end,
+            limbs=limbs,
+            clear_constraints=False,
+        )
+        for _pose_bone, constraint in _iter_limb_ik_constraints(armature_obj, limbs=limbs):
             constraint.mute = True
             constraint.influence = 0.0
-        context.view_layer.update()
-        for frame, visuals in zip(range(start, end + 1), frames):
-            scene.frame_set(frame)
-            for name, matrix in visuals.items():
-                pose_bone = armature_obj.pose.bones.get(name)
-                if pose_bone is None:
-                    continue
-                _key_pose_from_matrix(pose_bone, matrix, frame)
-                keyed += 1
+        unmute_all_ik_fk_fcurves(armature_obj)
+        _set_ik_bone_visibility(armature_obj, False, limbs=limbs)
+        return keyed
     finally:
-        scene.frame_set(original)
-        _set_ik_bone_visibility(armature_obj, False)
-    return keyed
+        pause_ik_fk_mute_sync(False)
 
 
 def _remove_ik_fk_switch_keys(armature_obj):
@@ -1942,6 +2304,20 @@ def strip_animation_rig(context, armature_obj):
         if hasattr(pose_bone, 'use_custom_shape_bone_size'):
             pose_bone.use_custom_shape_bone_size = True
         cleared += 1
+
+    if armature_obj.data.bones.get(_TRANS_AIM_BONE) is not None:
+        prev_mode = armature_obj.mode
+        _activate_armature(context, armature_obj)
+        bpy.ops.object.mode_set(mode='EDIT')
+        try:
+            aim = armature_obj.data.edit_bones.get(_TRANS_AIM_BONE)
+            if aim is not None:
+                armature_obj.data.edit_bones.remove(aim)
+        finally:
+            try:
+                bpy.ops.object.mode_set(mode='POSE' if prev_mode == 'EDIT' else prev_mode)
+            except Exception:
+                bpy.ops.object.mode_set(mode='POSE')
 
     _restore_clutter(armature_obj)
     if ARMATURE_FLAG in armature_obj.data:
@@ -2200,6 +2576,7 @@ class SUB_OP_create_animation_rig(Operator):
             if self.setup_eye_look:
                 from . import eye_rig
                 if ssp is not None:
+                    ssp.eye_look_mode = 'OFFSET'
                     ssp.eye_look_pupil_from_scale = self.eye_pupil_from_scale
                     if self.eye_measure_from_mesh:
                         centre = eye_rig.eye_uv_centre(armature_obj)
@@ -2438,6 +2815,7 @@ class SUB_OP_anim_rig_toggle_ik_fk(Operator):
         return armature is not None and armature_has_ik(armature)
 
     def execute(self, context):
+        global _IK_FK_APPLYING
         armature_obj = find_target_armature(context)
         if armature_obj is None:
             self.report({'ERROR'}, "Select a Smash Ultimate armature.")
@@ -2451,20 +2829,52 @@ class SUB_OP_anim_rig_toggle_ik_fk(Operator):
         else:
             enable_ik = not armature_ik_is_enabled(armature_obj, self.limbs)
         props = _ik_fk_props(armature_obj)
-        old_arms = float(props.sub_use_ik_arms or 0.0) > 0.5
-        old_legs = float(props.sub_use_ik_legs or 0.0) > 0.5
-        _set_ik_enabled(context, armature_obj, enable_ik, limbs=self.limbs)
+        old_arms = _ik_switch_factor(props, "sub_use_ik_arms") > 0.5
+        old_legs = _ik_switch_factor(props, "sub_use_ik_legs") > 0.5
+        frame = context.scene.frame_current
+        end_frame = frame + IK_FK_BLEND_FRAMES
+
+        # Align IK targets + poles to the current FK bend before influence rises,
+        # so knees/elbows do not flip when IK starts contributing.
+        if enable_ik:
+            _match_ik_to_fk_for_blend(armature_obj, context, limbs=self.limbs)
+
         _key_use_ik(
             armature_obj,
-            context.scene.frame_current,
+            frame,
             limbs=self.limbs,
             old_arms=old_arms,
             old_legs=old_legs,
             enabled=enable_ik,
         )
+
+        # Stay at the blend start (old mode) on this frame; playback eases to new.
+        _activate_armature(context, armature_obj)
+        if context.mode != 'POSE':
+            bpy.ops.object.mode_set(mode='POSE')
+        _IK_FK_APPLYING = True
+        try:
+            if self.limbs in {'ARMS', 'BOTH'}:
+                props.sub_use_ik_arms = 1.0 if old_arms else 0.0
+            if self.limbs in {'LEGS', 'BOTH'}:
+                props.sub_use_ik_legs = 1.0 if old_legs else 0.0
+            props.sub_use_ik = 1.0 if (
+                _ik_switch_factor(props, "sub_use_ik_arms") > 0.5
+                and _ik_switch_factor(props, "sub_use_ik_legs") > 0.5
+            ) else 0.0
+            _ensure_ik_influence_drivers(armature_obj)
+            start_enabled = armature_ik_is_enabled(armature_obj, self.limbs)
+            _apply_ik_fk_state(armature_obj, start_enabled, limbs=self.limbs)
+        finally:
+            _IK_FK_APPLYING = False
+        context.view_layer.update()
+
         label = {'ARMS': 'arms', 'LEGS': 'legs', 'BOTH': 'arms and legs'}[self.limbs]
         mode = "IK" if enable_ik else "FK"
-        self.report({'INFO'}, f"Blending {label} to {mode} by frame {context.scene.frame_current}.")
+        self.report(
+            {'INFO'},
+            f"Blending {label} to {mode} from frame {frame} to {end_frame}.",
+        )
         return {'FINISHED'}
 
 
@@ -2474,6 +2884,11 @@ _pose_tool_busy = False
 
 
 def _tool_id_for_pose_bone(pose_bone):
+    """Prefer select-box for normal bones; only special controls force a tool.
+
+    Auto-switching every widget bone to Rotate stole Select Box and broke
+    click-drag multi-select in Pose Mode.
+    """
     from .eye_rig import EYE_CTRL_BONE, EYE_OPT_INVERT_X, EYE_OPT_INVERT_Y
     from .finger_sliders import is_finger_pad_bone, is_finger_slider_bone, is_thumb_slider_bone
     name = canonical_bone_name(pose_bone.name)
@@ -2485,9 +2900,7 @@ def _tool_id_for_pose_bone(pose_bone):
         return "builtin.transform"
     if name == EYE_CTRL_BONE:
         return "builtin.move"
-    widget = pose_bone.custom_shape
-    if widget is not None and widget.name.startswith(WIDGET_PREFIX):
-        return "builtin.rotate"
+    # Normal Smash bones keep whatever tool the user has (usually Select Box)
     return None
 
 
@@ -2615,6 +3028,10 @@ def _apply_pose_tool(context):
         return
     pose_bone = _active_pose_bone(context)
     if pose_bone is None:
+        # Nothing selected — restore Select Box so click-drag multi-select works
+        if _last_pose_tool_bone != ("", ""):
+            _set_view3d_tool(context, "builtin.select_box")
+            _last_pose_tool_bone = ("", "")
         return
     key = (pose_bone.id_data.as_pointer(), pose_bone.name)
     if key == _last_pose_tool_bone:
@@ -2694,6 +3111,8 @@ def _pose_tool_depsgraph(_scene, _depsgraph):
             return
         pose_bone = _active_pose_bone(context)
         if pose_bone is None:
+            if _last_pose_tool_bone != ("", ""):
+                _schedule_pose_tool()
             return
         key = (pose_bone.id_data.as_pointer(), pose_bone.name)
         if key == _last_pose_tool_bone:

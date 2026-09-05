@@ -429,6 +429,16 @@ class SubSceneProperties(PropertyGroup):
         description="Whether the IK Tools section is expanded",
         default=False
     )
+    anim_layers_panel_expanded: BoolProperty(
+        name="Animation Layers Expanded",
+        description="Whether the Animation Layers section in Ultimate Anim Tools is expanded",
+        default=True
+    )
+    misc_anim_stuff_expanded: BoolProperty(
+        name="Misc Anim Stuff Expanded",
+        description="Whether the Misc Anim Stuff section is expanded",
+        default=False
+    )
     bulk_ik_expanded: BoolProperty(
         name="Bulk IK Expanded",
         description="Whether the Bulk IK section is expanded",
@@ -616,7 +626,7 @@ class SubSceneProperties(PropertyGroup):
             ("OFFSET", "Flat Offset (2D)",
              "Map the control's sideways and vertical offset straight onto the eye UVs"),
         ],
-        default="LOOK_AT",
+        default="OFFSET",
     )
     eye_look_gain: FloatProperty(
         name="Gain",

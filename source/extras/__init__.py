@@ -23,6 +23,8 @@ from . import unstack_uvs
 from . import rename_utils
 from . import fk_to_ik
 from . import bulk_ik
+from . import anim_layers_compat
+from . import anim_rig_extras
 from . import user_poses
 
 # Import reset_animation module and ensure it's properly registered

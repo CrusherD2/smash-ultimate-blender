@@ -6,6 +6,7 @@ from mathutils import Vector
 
 from ..blender_compat import assign_action, assign_bone_to_collection, ensure_bone_collection
 from ..anim.fcurve_compat import collect_actions_for_armatures
+from . import anim_layers_compat
 from .apply_ik_animation import (
     bake_action_visual,
     collect_fk_bone_names,
@@ -49,6 +50,12 @@ def _leg_ik_exists(armature_data):
 
 
 def ensure_leg_ik_rig(armature_object, bone_names):
+    """Create foot/knee IK bones and constraints using custom FK bone names."""
+    with anim_layers_compat.anim_layers_paused():
+        return _ensure_leg_ik_rig_impl(armature_object, bone_names)
+
+
+def _ensure_leg_ik_rig_impl(armature_object, bone_names):
     """Create foot/knee IK bones and constraints using custom FK bone names."""
     if _leg_ik_exists(armature_object.data):
         return True

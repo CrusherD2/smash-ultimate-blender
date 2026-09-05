@@ -5,6 +5,7 @@ from mathutils import Vector
 
 from ..anim.fcurve_compat import find_fcurve, get_fcurves, new_fcurve, remove_fcurve
 from ..blender_compat import assign_action
+from . import anim_layers_compat
 
 _DUP_SUFFIX = re.compile(r'(?:\.\d{3})+$')
 _ARM_FK = re.compile(r'^Arm([LR])(\d*)$')
@@ -180,12 +181,12 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
     )
 
     cleanup_mode: bpy.props.EnumProperty(
-        name="Cleanup Mode",
-        description="Which original FK bones can have leftover mocap frames removed",
+        name="Limbs",
+        description="Which limbs to match and switch to IK (arms and legs stay independent)",
         items=(
-            ('LEGS', "Legs", "Offer knee/leg cleanup"),
-            ('ARMS', "Arms", "Offer arm cleanup"),
-            ('BOTH', "Arms and Legs", "Offer knee and arm cleanup"),
+            ('LEGS', "Legs", "Match and enable foot/knee IK only — arms stay on FK"),
+            ('ARMS', "Arms", "Match and enable hand/elbow IK only — legs stay on FK"),
+            ('BOTH', "Arms and Legs", "Match and enable IK on arms and legs"),
         ),
         default='LEGS',
         options={'SKIP_SAVE'},
@@ -257,6 +258,7 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
     def process_frame(self, context):
         armature_object = context.object
         transfer_count = 0
+        limbs = self.cleanup_mode
 
         constraint_states = {}
         for pose_bone in self._iter_ik_chain_bones(armature_object):
@@ -269,12 +271,12 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
         context.view_layer.update()
 
         original_fk_world_matrices = {}
-        leg_chains = list(self._iter_legs(armature_object))
+        leg_chains = list(self._iter_legs(armature_object)) if limbs in {'LEGS', 'BOTH'} else []
         for chain in leg_chains:
             original_fk_world_matrices[f"Foot{chain['id']}"] = (
                 armature_object.matrix_world @ chain['foot'].matrix
             )
-        arm_chains = list(iter_arm_fk_chains(armature_object))
+        arm_chains = list(iter_arm_fk_chains(armature_object)) if limbs in {'ARMS', 'BOTH'} else []
         for chain in arm_chains:
             original_fk_world_matrices[f"Hand{chain['id']}"] = (
                 armature_object.matrix_world @ chain['hand'].matrix
@@ -317,7 +319,8 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
             if hand_ik_bone not in bones_to_keyframe:
                 bones_to_keyframe.append(hand_ik_bone)
 
-        self._refine_arm_pole_angles(armature_object)
+        if limbs in {'ARMS', 'BOTH'}:
+            self._refine_arm_pole_angles(armature_object)
 
         if self._should_key():
             current_frame = context.scene.frame_current
@@ -416,18 +419,21 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
     def _iter_ik_chain_bones(self, armature_object):
         yielded = set()
         names = []
-        for chain in self._iter_legs(armature_object):
-            names.extend((
-                chain['leg'].name, chain['knee'].name, chain['foot'].name,
-                chain['foot_ik'].name, chain['knee_ik'].name,
-            ))
-        for chain in iter_arm_fk_chains(armature_object):
-            names.extend(
-                bone.name for bone in (
-                    chain['shoulder'], chain['arm'], chain['hand'],
-                    chain['hand_ik'], chain['arm_ik'],
-                ) if bone is not None
-            )
+        limbs = self.cleanup_mode
+        if limbs in {'LEGS', 'BOTH'}:
+            for chain in self._iter_legs(armature_object):
+                names.extend((
+                    chain['leg'].name, chain['knee'].name, chain['foot'].name,
+                    chain['foot_ik'].name, chain['knee_ik'].name,
+                ))
+        if limbs in {'ARMS', 'BOTH'}:
+            for chain in iter_arm_fk_chains(armature_object):
+                names.extend(
+                    bone.name for bone in (
+                        chain['shoulder'], chain['arm'], chain['hand'],
+                        chain['hand_ik'], chain['arm_ik'],
+                    ) if bone is not None
+                )
         for name in names:
             if name in yielded:
                 continue
@@ -505,39 +511,45 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
         )
 
     def _iter_pole_constraints(self, armature_object):
-        for chain in self._iter_legs(armature_object):
-            constraint = self._find_ik_constraint(chain['knee'])
-            if constraint is not None:
-                yield chain['knee'], constraint
-        for chain in iter_arm_fk_chains(armature_object):
-            constraint = self._find_ik_constraint(chain['arm'])
-            if constraint is not None:
-                yield chain['arm'], constraint
+        limbs = self.cleanup_mode
+        if limbs in {'LEGS', 'BOTH'}:
+            for chain in self._iter_legs(armature_object):
+                constraint = self._find_ik_constraint(chain['knee'])
+                if constraint is not None:
+                    yield chain['knee'], constraint
+        if limbs in {'ARMS', 'BOTH'}:
+            for chain in iter_arm_fk_chains(armature_object):
+                constraint = self._find_ik_constraint(chain['arm'])
+                if constraint is not None:
+                    yield chain['arm'], constraint
 
     def _apply_limb_pole_angles(self, armature_object):
-        """Zero all poles, sample once, then solve knees and arms independently."""
+        """Zero poles for the matched limbs, sample once, then solve independently."""
+        limbs = self.cleanup_mode
         knee_jobs = []
-        for chain in self._iter_legs(armature_object):
-            ik_constraint = self._find_ik_constraint(chain['knee'])
-            if ik_constraint is None:
-                continue
-            knee_jobs.append((chain, ik_constraint))
+        if limbs in {'LEGS', 'BOTH'}:
+            for chain in self._iter_legs(armature_object):
+                ik_constraint = self._find_ik_constraint(chain['knee'])
+                if ik_constraint is None:
+                    continue
+                knee_jobs.append((chain, ik_constraint))
 
         arm_jobs = []
-        for chain in iter_arm_fk_chains(armature_object):
-            arm_bone = chain['arm']
-            arm_ik_bone = chain['arm_ik']
-            shoulder_bone = chain['shoulder']
-            hand_bone = chain['hand']
-            ik_constraint = self._find_ik_constraint(arm_bone)
-            if not all([arm_bone, arm_ik_bone, hand_bone, ik_constraint]):
-                continue
-            if shoulder_bone is None:
-                ik_constraint.pole_angle = (
-                    math.radians(-90.0) if chain['side'] == 'L' else 0.0
-                )
-                continue
-            arm_jobs.append((chain, ik_constraint))
+        if limbs in {'ARMS', 'BOTH'}:
+            for chain in iter_arm_fk_chains(armature_object):
+                arm_bone = chain['arm']
+                arm_ik_bone = chain['arm_ik']
+                shoulder_bone = chain['shoulder']
+                hand_bone = chain['hand']
+                ik_constraint = self._find_ik_constraint(arm_bone)
+                if not all([arm_bone, arm_ik_bone, hand_bone, ik_constraint]):
+                    continue
+                if shoulder_bone is None:
+                    ik_constraint.pole_angle = (
+                        math.radians(-90.0) if chain['side'] == 'L' else 0.0
+                    )
+                    continue
+                arm_jobs.append((chain, ik_constraint))
 
         if not knee_jobs and not arm_jobs:
             return
@@ -769,12 +781,19 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
             fcurve.update()
 
     def execute(self, context):
+        # Pause Animation Layers during IK placement / many view_layer.update() calls
+        with anim_layers_compat.anim_layers_paused():
+            return self._execute_transfer(context)
+
+    def _execute_transfer(self, context):
         from .create_animation_rig import (
             find_target_armature,
             _activate_armature,
             _set_ik_control_fcurves_muted,
             _set_ik_driven_fcurves_muted,
             _set_ik_enabled,
+            _sync_ik_fk_fcurve_mutes,
+            pause_ik_fk_mute_sync,
         )
 
         armature_object = find_target_armature(context)
@@ -786,8 +805,25 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
         if context.mode != 'POSE':
             bpy.ops.object.mode_set(mode='POSE')
 
-        _set_ik_driven_fcurves_muted(armature_object, False)
-        _set_ik_control_fcurves_muted(armature_object, True)
+        pause_ik_fk_mute_sync(True)
+        try:
+            return self._execute_transfer_body(context, armature_object)
+        finally:
+            pause_ik_fk_mute_sync(False)
+            _sync_ik_fk_fcurve_mutes(armature_object)
+
+    def _execute_transfer_body(self, context, armature_object):
+        from .create_animation_rig import (
+            _set_ik_control_fcurves_muted,
+            _set_ik_driven_fcurves_muted,
+            _set_ik_enabled,
+            pause_ik_fk_mute_sync,
+        )
+
+        # Temporarily evaluate FK (unmute) and silence IK keys for matched limbs only
+        limbs = self.cleanup_mode
+        _set_ik_driven_fcurves_muted(armature_object, False, limbs=limbs)
+        _set_ik_control_fcurves_muted(armature_object, True, limbs=limbs)
 
         self._knee_pole_signs = {}
         self._arm_pole_signs = {}
@@ -836,7 +872,13 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
                 if self.reset_foot_bones:
                     self.reset_foot_bone_transforms(context)
 
-                _set_ik_enabled(context, armature_object, True)
+                pause_ik_fk_mute_sync(False)
+                _set_ik_enabled(context, armature_object, True, limbs=self.cleanup_mode)
+                try:
+                    from .anim_rig_extras import mark_ik_matched
+                    mark_ik_matched(armature_object, self.cleanup_mode)
+                except Exception:
+                    pass
                 self.report({'INFO'}, f"Successfully positioned IK controllers across {total_frames} frames")
                 return {'FINISHED'}
                 
@@ -844,7 +886,6 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
                 if self.show_progress:
                     context.window_manager.progress_end()
                 context.scene.frame_set(original_frame)
-                _set_ik_control_fcurves_muted(armature_object, False)
                 self.report({'ERROR'}, f"Error processing animation: {str(e)}")
                 return {'CANCELLED'}
         else:
@@ -852,10 +893,15 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
             transfer_count = self.process_frame(context)
             
             if transfer_count > 0:
-                _set_ik_enabled(context, armature_object, True)
+                pause_ik_fk_mute_sync(False)
+                _set_ik_enabled(context, armature_object, True, limbs=self.cleanup_mode)
+                try:
+                    from .anim_rig_extras import mark_ik_matched
+                    mark_ik_matched(armature_object, self.cleanup_mode)
+                except Exception:
+                    pass
                 self.report({'INFO'}, f"Successfully positioned {transfer_count} IK controllers")
             else:
-                _set_ik_control_fcurves_muted(armature_object, False)
                 self.report({'WARNING'}, "No IK controllers could be positioned")
                 
             return {'FINISHED'}
@@ -1001,6 +1047,7 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
     def draw(self, context):
         layout = self.layout
         layout.label(text="Match IK positions to FK bones?")
+        layout.prop(self, "cleanup_mode", text="Limbs")
         layout.prop(self, "entire_animation")
         
         # Only show auto keyframe option if entire animation is selected
