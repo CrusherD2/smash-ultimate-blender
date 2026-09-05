@@ -570,6 +570,10 @@ def apply_dopesheet_key_colors():
         'keyframe_jitter_sel': _EYE_COLOR_SEL,
     }
     for name, color in color_map.items():
+        current = _copy_theme_color(theme, name)
+        if current is not None and len(current) >= 3 and len(color) >= 3:
+            if all(abs(float(current[i]) - float(color[i])) < 1e-5 for i in range(3)):
+                continue
         _set_theme_color(theme, name, color)
 
 

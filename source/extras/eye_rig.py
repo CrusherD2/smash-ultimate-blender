@@ -881,8 +881,21 @@ def _solid_texture_viewport_open():
 
 
 def _shader_viewport_open():
+    """Material Preview only — not Rendered.
+
+    Live CV31/UV drivers write material sockets every depsgraph tick. That is
+    fine for Material shading, but it restarts EEVEE/Cycles sampling forever in
+    Rendered views. Bake/SAP keys still drive eyes during final renders.
+    """
     for shading in _iter_view3d_shading():
-        if shading.type in {'MATERIAL', 'RENDERED'}:
+        if shading.type == 'MATERIAL':
+            return True
+    return False
+
+
+def _rendered_viewport_open():
+    for shading in _iter_view3d_shading():
+        if shading.type == 'RENDERED':
             return True
     return False
 
@@ -1308,8 +1321,12 @@ def _ensure_uv_warp(mesh_obj, arma, side):
         mod.bone_to = ''
     except Exception:
         pass
-    mod.show_viewport = _solid_texture_viewport_open()
-    mod.show_render = False
+    # Avoid rewriting RNA when the flag is already correct (restarts viewport samples).
+    want_vp = _solid_texture_viewport_open()
+    if bool(getattr(mod, "show_viewport", False)) != bool(want_vp):
+        mod.show_viewport = want_vp
+    if bool(getattr(mod, "show_render", True)):
+        mod.show_render = False
     if hasattr(mod, 'show_in_editmode'):
         mod.show_in_editmode = False
     mesh_obj['sub_eye_warp'] = marker
@@ -1339,12 +1356,15 @@ def _ensure_eye_uv_warps(arma):
 def _set_eye_uv_warps_viewport(scene, enabled):
     if scene is None:
         return
+    enabled = bool(enabled)
     for arma in _iter_solid_eye_armatures(scene):
         for mesh_obj in eye_meshes(arma):
             mod = mesh_obj.modifiers.get(UV_WARP_NAME)
             if mod is not None and mod.type == 'UV_WARP':
-                mod.show_viewport = bool(enabled)
-                mod.show_render = False
+                if bool(getattr(mod, "show_viewport", False)) != enabled:
+                    mod.show_viewport = enabled
+                if bool(getattr(mod, "show_render", True)):
+                    mod.show_render = False
 
 
 def _remove_stale_uv_warps(arma):
@@ -1822,7 +1842,10 @@ def _prepare_live_preview(scene):
         return
     _register_eye_driver_namespace()
     _sync_preview_modes(scene)
-    _set_all_eye_cv31_drivers_for_preview(scene, True)
+    # Only keep live material drivers while Solid Texture / Material Preview
+    # needs them. Leaving them on during Rendered shading restarts sampling.
+    live_needed = bool(_solid_preview_engaged or _shader_preview_engaged)
+    _set_all_eye_cv31_drivers_for_preview(scene, live_needed)
 
 
 def _sync_preview_modes(scene):
@@ -1932,22 +1955,30 @@ def _solid_preview_timer():
     if not want:
         if _eye_preview_running:
             stop_eye_preview(scene)
-        return 0.5
+        return 1.0
     if scene is None:
-        return 0.5
+        return 1.0
+    solid_open = _solid_texture_viewport_open()
+    material_open = _shader_viewport_open()
+    rendered_open = _rendered_viewport_open()
+    # Rendered-only: tear down live drivers/UV warps so EEVEE/Cycles can finish.
+    if rendered_open and not solid_open and not material_open:
+        if _eye_preview_running or _solid_preview_engaged or _shader_preview_engaged:
+            stop_eye_preview(scene)
+        return 1.0
     idle_key = (
         _ssp_preview_key(ssp),
         _eye_content_key(scene),
-        _solid_texture_viewport_open(),
-        _shader_viewport_open(),
+        solid_open,
+        material_open,
     )
     if not _eye_preview_running or idle_key != _last_idle_preview_key:
         _last_idle_preview_key = idle_key
         _driver_pose_cache.clear()
         start_eye_preview(scene)
-        return 0.25
-    _sync_preview_modes(scene)
-    return 0.25
+        return 0.5
+    # Modes already match — do not re-touch materials/modifiers every tick.
+    return 0.5
 
 
 def _handle_eye_measure_toggle(arma, ssp):

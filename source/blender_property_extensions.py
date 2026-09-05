@@ -38,6 +38,14 @@ def _update_smash_vp_lighting(self, context):
         pass
 
 
+def _update_sap_auto_sync_enabled(self, context):
+    try:
+        from .anim.anim_data import set_sap_auto_sync_enabled
+        set_sap_auto_sync_enabled(bool(self.sap_auto_sync_enabled))
+    except Exception:
+        pass
+
+
 def poll_armature_object(_self, obj):
     return obj is not None and getattr(obj, 'type', None) == 'ARMATURE'
 
@@ -447,6 +455,15 @@ class SubSceneProperties(PropertyGroup):
         description="Also export a sparse .rawanim file alongside the .nuanmb export",
         default=False,
     )
+    sap_auto_sync_enabled: BoolProperty(
+        name="SAP Auto-Sync",
+        description=(
+            "Automatically keep visibility/material SAP actions matched to the bone action. "
+            "Turn off while using Rendered viewport shading if sampling restarts endlessly"
+        ),
+        default=True,
+        update=_update_sap_auto_sync_enabled,
+    )
     import_options_expanded: BoolProperty(
         name="Import Options Expanded",
         description="Whether the Import Options section is expanded",
@@ -562,9 +579,10 @@ class SubSceneProperties(PropertyGroup):
     eye_look_live_preview: BoolProperty(
         name="Live Preview",
         description=(
-            "Show eye look in Solid Texture and Material. Works with BL_EyeLook "
-            "and with imported EyeL/EyeR CustomVector31 anims. On by default. "
-            "Bake still has to run to create the keyframes export reads"
+            "Show eye look in Solid Texture and Material Preview. Does not run in "
+            "Rendered shading (that would restart EEVEE/Cycles sampling). Works with "
+            "BL_EyeLook and imported EyeL/EyeR CustomVector31 anims. Bake still has "
+            "to run to create the keyframes export reads"
         ),
         default=True,
         update=_update_eye_look_live_preview,

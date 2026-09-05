@@ -225,9 +225,8 @@ def _scene_wants_smash(scene):
     if scene is None:
         return False
     ssp = getattr(scene, "sub_scene_properties", None)
-    if ssp is not None and bool(getattr(ssp, "smash_viewport", False)):
-        return True
-    return _engine_is_smash(scene)
+    # Only the checkbox — a leftover SMASH_VIEWPORT engine must not auto-reenable.
+    return ssp is not None and bool(getattr(ssp, "smash_viewport", False))
 
 
 def _has_rendered_3d_view():
@@ -895,6 +894,17 @@ def _engine_is_smash(scene=None):
 
 
 def _viewport_enabled(scene=None):
+    """True only when Smash Viewport is intentionally active.
+
+    Requires the UI checkbox — a stuck SMASH_VIEWPORT engine alone must not
+    keep depsgraph handlers tagging Rendered views forever.
+    """
+    scene = scene or _first_scene()
+    if scene is None:
+        return False
+    ssp = getattr(scene, "sub_scene_properties", None)
+    if ssp is None or not bool(getattr(ssp, "smash_viewport", False)):
+        return False
     return _engine_is_smash(scene)
 
 
@@ -2649,15 +2659,16 @@ def _sync_checkbox(scene):
     ssp = getattr(scene, "sub_scene_properties", None)
     if ssp is None:
         return
-    want = _engine_is_smash(scene)
-    if bool(getattr(ssp, "smash_viewport", False)) == want:
+    # Prefer the checkbox as source of truth. If the engine was left on Smash
+    # while the checkbox is off, restore EEVEE/Cycles instead of flipping the UI.
+    want = bool(getattr(ssp, "smash_viewport", False))
+    is_smash = _engine_is_smash(scene)
+    if want == is_smash:
         return
-    _ignore_update = True
-    try:
-        ssp.smash_viewport = want
-    except Exception:
-        pass
-    _ignore_update = False
+    if want and not is_smash:
+        return
+    if not want and is_smash:
+        _restore_engine(scene)
 
 
 def _on_engine_changed():
@@ -3060,6 +3071,10 @@ def _enable_smash_viewport(scene):
 
 
 def _tag_preview_redraw():
+    # Never force-redraw when Smash Viewport is off — that restarts EEVEE/Cycles
+    # sampling in every Rendered 3D View.
+    if not _viewport_enabled():
+        return
     wm = getattr(bpy.context, "window_manager", None)
     if wm is None:
         return
@@ -3510,7 +3525,10 @@ def _on_scene_redraw(*args):
     if channels_dirty:
         _last_vis_state = None
         _last_cv31_state = None
-    _tag_preview_redraw()
+    # Do NOT tag_redraw here. Mesh-modifier sync writes from view_draw already
+    # fire depsgraph updates; tagging Rendered views turns that into an endless
+    # sample-restart / flicker loop. Frame change and Blender's own redraws
+    # are enough to refresh the Smash present.
 
 
 @persistent
@@ -3626,9 +3644,14 @@ def update_smash_viewport(self, context):
             )
         _enable_smash_viewport(scene)
         return
+    # Fully tear down so EEVEE/Cycles Rendered shading can finish sampling.
+    _stop_timer()
     if scene.render.engine == ENGINE_ID:
         _restore_engine(scene)
-    _stop_timer()
+    _restore_armature_mod_viewport()
+    _set_smash_bones_in_front(False)
+    _set_viewport_meshes_visible(True)
+    _restore_smash_color(scene)
     shutdown_preview()
 
 
@@ -5212,19 +5235,15 @@ def _resume_if_enabled():
         return 0.2 if _resume_attempts < 25 else None
     if _scene_wants_smash(scene):
         _enable_smash_viewport(scene)
-        ssp = getattr(scene, "sub_scene_properties", None)
-        if ssp is not None and not bool(getattr(ssp, "smash_viewport", False)):
-            _ignore_update = True
-            try:
-                ssp.smash_viewport = True
-            except Exception:
-                pass
-            _ignore_update = False
         if not _has_rendered_3d_view() and _resume_attempts < 25:
             _resume_attempts += 1
             return 0.2
         _resume_attempts = 0
         return None
+    # Checkbox off: make sure a leftover Smash engine cannot keep sampling busy.
+    if _engine_is_smash(scene):
+        _restore_engine(scene)
+    _stop_timer()
     _sync_checkbox(scene)
     _resume_attempts = 0
     return None
