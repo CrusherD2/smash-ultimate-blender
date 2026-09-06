@@ -38,56 +38,6 @@ _last_known_actions = {}
 # Global owner object for msgbus subscriptions
 _msgbus_owner = object()
 
-# Runtime switch for depsgraph/frame/timer SAP sync (UI: Ultimate Animation Data).
-_sap_auto_sync_enabled = True
-
-
-def is_sap_auto_sync_enabled() -> bool:
-    return bool(_sap_auto_sync_enabled)
-
-
-def _install_sap_auto_sync_handlers():
-    if sync_sap_action_handler not in bpy.app.handlers.frame_change_post:
-        bpy.app.handlers.frame_change_post.append(sync_sap_action_handler)
-    # Do not use depsgraph_update_post here. It fires continuously and is enough
-    # to keep EEVEE/Cycles Rendered sampling from ever finishing. Frame change,
-    # msgbus, and a slow timer are enough to catch action switches.
-    if sync_sap_action_depsgraph_handler in bpy.app.handlers.depsgraph_update_post:
-        bpy.app.handlers.depsgraph_update_post.remove(sync_sap_action_depsgraph_handler)
-    if not bpy.app.timers.is_registered(sync_sap_timer):
-        bpy.app.timers.register(sync_sap_timer, first_interval=0.5, persistent=True)
-    subscribe_to_action_changes()
-
-
-def _uninstall_sap_auto_sync_handlers():
-    if sync_sap_action_handler in bpy.app.handlers.frame_change_post:
-        bpy.app.handlers.frame_change_post.remove(sync_sap_action_handler)
-    if sync_sap_action_depsgraph_handler in bpy.app.handlers.depsgraph_update_post:
-        bpy.app.handlers.depsgraph_update_post.remove(sync_sap_action_depsgraph_handler)
-    if bpy.app.timers.is_registered(sync_sap_timer):
-        bpy.app.timers.unregister(sync_sap_timer)
-    unsubscribe_from_action_changes()
-
-
-def set_sap_auto_sync_enabled(enabled: bool) -> None:
-    """Enable or disable SAP auto-sync handlers/timers."""
-    global _sap_auto_sync_enabled
-    enabled = bool(enabled)
-    if enabled == _sap_auto_sync_enabled:
-        if enabled:
-            # Ensure handlers exist after addon reload without double-subscribe.
-            if sync_sap_action_handler not in bpy.app.handlers.frame_change_post:
-                _install_sap_auto_sync_handlers()
-        else:
-            _uninstall_sap_auto_sync_handlers()
-        return
-    _sap_auto_sync_enabled = enabled
-    if enabled:
-        _install_sap_auto_sync_handlers()
-    else:
-        _uninstall_sap_auto_sync_handlers()
-
-
 # Handler to sync SAP data action with bone animation action
 @bpy.app.handlers.persistent
 def sync_sap_action_handler(scene):
@@ -95,8 +45,6 @@ def sync_sap_action_handler(scene):
     Handler that automatically switches the SAP data action when the main action changes.
     This ensures that visibility and material animation data stays in sync with bone animation.
     """
-    if not _sap_auto_sync_enabled:
-        return
     global _last_known_actions
     
     for obj in bpy.data.objects:
@@ -159,17 +107,17 @@ def sync_sap_action_depsgraph_handler(scene, depsgraph):
     Alternative handler that runs on depsgraph updates.
     This catches more events including action changes.
     """
-    if not _sap_auto_sync_enabled:
-        return
     sync_sap_action_handler(scene)
     try:
         from .import_anim import sync_anim_importer_to_active
         sync_anim_importer_to_active(bpy.context)
     except Exception:
         pass
-    # Do NOT restyle visibility/eye F-Curves here. Writing RNA on every
-    # depsgraph update (theme colors, bone palette, keyframe types) creates a
-    # feedback loop that restarts EEVEE/Cycles viewport sampling forever.
+    screen = getattr(bpy.context, 'screen', None)
+    if screen is not None and getattr(screen, 'is_animation_playing', False):
+        return
+    if not bpy.app.timers.is_registered(_style_visibility_soon):
+        bpy.app.timers.register(_style_visibility_soon, first_interval=0.05)
 
 # Timer function for periodic checking
 def sync_sap_timer():
@@ -177,8 +125,6 @@ def sync_sap_timer():
     Timer function that runs periodically to check for action changes.
     This is a fallback method to ensure SAP actions stay synced.
     """
-    if not _sap_auto_sync_enabled:
-        return None
     try:
         # Check if we're in a valid context for modifying data
         if bpy.context.mode in {'OBJECT', 'POSE'}:
@@ -188,8 +134,8 @@ def sync_sap_timer():
         # Silently handle context errors
         pass
     
-    # Return the interval for the next call
-    return 0.5
+    # Return the interval for the next call (0.1 seconds)
+    return 0.1
 
 # Message bus callback for action changes
 def action_change_msgbus_callback(*args):
@@ -197,8 +143,6 @@ def action_change_msgbus_callback(*args):
     Callback function for msgbus that triggers when animation_data.action changes.
     This provides more direct detection of action changes in the UI.
     """
-    if not _sap_auto_sync_enabled:
-        return
     try:
         if bpy.context.mode in {'OBJECT', 'POSE'}:
             scene = bpy.context.scene
@@ -219,7 +163,6 @@ def subscribe_to_action_changes():
     This provides more direct detection of action switching in the UI.
     """
     try:
-        bpy.msgbus.clear_by_owner(_msgbus_owner)
         # Subscribe to changes in animation_data.action for all objects
         bpy.msgbus.subscribe_rna(
             key=(bpy.types.AnimData, "action"),
@@ -354,23 +297,24 @@ class SUB_PT_sub_smush_anim_data_main(Panel):
 
     def draw(self, context):
         layout = self.layout
-        ssp = context.scene.sub_scene_properties
+        arma = context.object
         
         # Show auto-sync status and manual control
         box = layout.box()
-        row = box.row(align=True)
-        row.prop(
-            ssp,
-            "sap_auto_sync_enabled",
-            text="SAP Auto-Sync",
-            toggle=True,
-            icon='CHECKMARK' if ssp.sap_auto_sync_enabled else 'PAUSE',
-        )
+        row = box.row()
+        
+        # Check if handlers are registered to show auto-sync status
+        handlers_active = (sync_sap_action_handler in bpy.app.handlers.frame_change_post and
+                          sync_sap_action_depsgraph_handler in bpy.app.handlers.depsgraph_update_post and
+                          bpy.app.timers.is_registered(sync_sap_timer))
+        
+        if handlers_active:
+            row.label(text="SAP Auto-Sync: Active", icon='CHECKMARK')
+        else:
+            row.label(text="SAP Auto-Sync: Inactive", icon='ERROR')
+            
+        # Manual sync button
         row.operator(SUB_OP_sync_sap_action.bl_idname, icon='FILE_REFRESH', text="Manual Sync")
-        if not ssp.sap_auto_sync_enabled:
-            col = box.column(align=True)
-            col.scale_y = 0.85
-            col.label(text="Off: use Manual Sync after switching actions.", icon='INFO')
         layout.operator("sub.face_picker_popup", text="Easy Facial Animation", icon="IMAGE_DATA")
 
 class SUB_PT_sub_smush_anim_data_vis_tracks(Panel):
@@ -1251,13 +1195,8 @@ def _style_visibility_soon():
             eye_bone = pose.bones.get('BL_EyeLook') if pose is not None else None
             if eye_bone is not None:
                 try:
-                    # Only write when needed — assigning the same palette every
-                    # call still dirties the depsgraph and restarts viewport samples.
-                    if getattr(eye_bone.color, "palette", None) != "THEME03":
-                        eye_bone.color.palette = "THEME03"
-                    bone = getattr(eye_bone, "bone", None)
-                    if bone is not None and getattr(bone.color, "palette", None) != "THEME03":
-                        bone.color.palette = "THEME03"
+                    eye_bone.color.palette = 'THEME03'
+                    eye_bone.bone.color.palette = 'THEME03'
                 except Exception:
                     pass
     except Exception:
@@ -1333,15 +1272,19 @@ def cleanup_sap_auto_sync():
 
 def register():
     """Register only handlers and timers - classes are registered separately"""
-    enabled = True
-    try:
-        scene = bpy.context.scene
-        ssp = getattr(scene, "sub_scene_properties", None)
-        if ssp is not None and hasattr(ssp, "sap_auto_sync_enabled"):
-            enabled = bool(ssp.sap_auto_sync_enabled)
-    except Exception:
-        enabled = True
-    set_sap_auto_sync_enabled(enabled)
+    # Register the SAP action sync handlers
+    if sync_sap_action_handler not in bpy.app.handlers.frame_change_post:
+        bpy.app.handlers.frame_change_post.append(sync_sap_action_handler)
+    
+    if sync_sap_action_depsgraph_handler not in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.append(sync_sap_action_depsgraph_handler)
+    
+    # Also register a timer for more frequent checking
+    if not bpy.app.timers.is_registered(sync_sap_timer):
+        bpy.app.timers.register(sync_sap_timer, first_interval=0.1, persistent=True)
+    
+    # Subscribe to action changes for direct detection
+    subscribe_to_action_changes()
     apply_dopesheet_key_colors()
     try:
         from .fcurve_compat import get_all_action_fcurves, is_ik_fk_fcurve, is_visibility_fcurve
@@ -1357,7 +1300,7 @@ def register():
                     fcurve.hide = False
     except Exception:
         pass
-    if enabled and not bpy.app.timers.is_registered(_style_visibility_soon):
+    if not bpy.app.timers.is_registered(_style_visibility_soon):
         bpy.app.timers.register(_style_visibility_soon, first_interval=0.2)
     
 
@@ -1371,9 +1314,16 @@ def register():
 
 def unregister():
     """Unregister only handlers and timers - classes are unregistered separately"""
-    set_sap_auto_sync_enabled(False)
+    # Unregister all SAP action sync handlers
+    if sync_sap_action_handler in bpy.app.handlers.frame_change_post:
+        bpy.app.handlers.frame_change_post.remove(sync_sap_action_handler)
+    
+    if sync_sap_action_depsgraph_handler in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(sync_sap_action_depsgraph_handler)
     
     # Unregister the timer
+    if bpy.app.timers.is_registered(sync_sap_timer):
+        bpy.app.timers.unregister(sync_sap_timer)
     if bpy.app.timers.is_registered(_style_visibility_soon):
         bpy.app.timers.unregister(_style_visibility_soon)
     
@@ -1381,6 +1331,8 @@ def unregister():
     global _last_known_actions
     _last_known_actions.clear()
     
+    # Unsubscribe from action changes
+    unsubscribe_from_action_changes()
     restore_dopesheet_key_colors()
     
 if __name__ == '__main__':

@@ -168,6 +168,11 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
     bl_label = "Position IK Controls"
     bl_options = {'REGISTER', 'UNDO'}
     
+    clean_animation: bpy.props.BoolProperty(
+        name="Clean animation", default=False,
+        description="Remove redundant FK and IK keys for the selected limbs (0.0001 channel tolerance)",
+    )
+
     entire_animation: bpy.props.BoolProperty(
         name="Entire Animation",
         description="Apply to the entire animation instead of just the current frame",
@@ -786,44 +791,40 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
             return self._execute_transfer(context)
 
     def _execute_transfer(self, context):
-        from .create_animation_rig import (
-            find_target_armature,
-            _activate_armature,
-            _set_ik_control_fcurves_muted,
-            _set_ik_driven_fcurves_muted,
-            _set_ik_enabled,
-            _sync_ik_fk_fcurve_mutes,
-            pause_ik_fk_mute_sync,
-        )
-
-        armature_object = find_target_armature(context)
-        if armature_object is None:
-            self.report({'ERROR'}, "Select a Smash Ultimate armature.")
+        from .create_animation_rig import find_target_armature, _activate_armature
+        from .ik_channels import match
+        obj = find_target_armature(context)
+        if obj is None:
             return {'CANCELLED'}
-
-        _activate_armature(context, armature_object)
+        _activate_armature(context, obj)
         if context.mode != 'POSE':
             bpy.ops.object.mode_set(mode='POSE')
-
-        pause_ik_fk_mute_sync(True)
         try:
-            return self._execute_transfer_body(context, armature_object)
-        finally:
-            pause_ik_fk_mute_sync(False)
-            _sync_ik_fk_fcurve_mutes(armature_object)
+            count = match(context, obj, self.cleanup_mode, self.entire_animation, self.auto_keyframe or not self.entire_animation, clean=self.clean_animation)
+        except Exception as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        self.report({'INFO'}, f"Matched {count} limb poses; switch keys preserved." if self.clean_animation else f"Matched {count} limb poses; FK keys and switch keys preserved.")
+        return {'FINISHED'}
 
     def _execute_transfer_body(self, context, armature_object):
         from .create_animation_rig import (
+            _clear_fk_rest_hold,
+            _iter_limb_ik_constraints,
             _set_ik_control_fcurves_muted,
             _set_ik_driven_fcurves_muted,
             _set_ik_enabled,
             pause_ik_fk_mute_sync,
         )
+        from . import anim_layers_compat
 
         # Temporarily evaluate FK (unmute) and silence IK keys for matched limbs only
         limbs = self.cleanup_mode
+        _clear_fk_rest_hold(armature_object)
         _set_ik_driven_fcurves_muted(armature_object, False, limbs=limbs)
         _set_ik_control_fcurves_muted(armature_object, True, limbs=limbs)
+        for _pb, constraint in _iter_limb_ik_constraints(armature_object, limbs=limbs):
+            constraint.mute = True
 
         self._knee_pole_signs = {}
         self._arm_pole_signs = {}
@@ -843,16 +844,17 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
                 context.window_manager.progress_begin(0, 100)
             
             try:
-                for frame_num in range(start_frame, end_frame + 1):
-                    if self.show_progress:
-                        progress = (frame_num - start_frame) / total_frames * 100
-                        context.window_manager.progress_update(progress)
-                    
-                    context.scene.frame_set(frame_num)
-                    total_transfers += self.process_frame(context)
+                with anim_layers_compat.bind_driving_action_for_bake(armature_object, context):
+                    for frame_num in range(start_frame, end_frame + 1):
+                        if self.show_progress:
+                            progress = (frame_num - start_frame) / total_frames * 100
+                            context.window_manager.progress_update(progress)
 
-                if self._collect_keys:
-                    self._flush_recorded_keys(armature_object)
+                        context.scene.frame_set(frame_num)
+                        total_transfers += self.process_frame(context)
+
+                    if self._collect_keys:
+                        self._flush_recorded_keys(armature_object)
                     
                 if self.show_progress:
                     context.window_manager.progress_end()
@@ -890,7 +892,12 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
                 return {'CANCELLED'}
         else:
             self._collect_keys = False
-            transfer_count = self.process_frame(context)
+            with anim_layers_compat.bind_driving_action_for_bake(armature_object, context):
+                try:
+                    context.scene.frame_set(context.scene.frame_current)
+                except Exception:
+                    context.view_layer.update()
+                transfer_count = self.process_frame(context)
             
             if transfer_count > 0:
                 pause_ik_fk_mute_sync(False)
@@ -1053,17 +1060,10 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
         # Only show auto keyframe option if entire animation is selected
         if self.entire_animation:
             layout.prop(self, "auto_keyframe")
-            show_reference = False
-            if self._should_remove_knee_frames():
-                layout.prop(self, "remove_knee_frames")
-                show_reference = show_reference or self.remove_knee_frames
-            if self._should_remove_arm_frames():
-                layout.prop(self, "remove_arm_frames")
-                show_reference = show_reference or self.remove_arm_frames
-            if show_reference:
-                layout.prop(self, "reference_frame")
-            if self._should_remove_knee_frames():
-                layout.prop(self, "reset_foot_bones")
+            layout.prop(self, "clean_animation")
+            if not self.clean_animation:
+                layout.label(text="FK keys are preserved; only IK channels are written.")
+
 
 def register():
     bpy.utils.register_class(SUB_OP_fk_to_ik_transfer)

@@ -69,26 +69,8 @@ def _bone_length(bone):
     return 0.0
 
 
-def _armature_world_extent(armature_obj):
-    """Rough world-space size of an armature from bone head positions."""
-    points = []
-    for bone in armature_obj.data.bones:
-        head = _bone_world_head(armature_obj, bone)
-        if head is not None:
-            points.append(head)
-    if len(points) < 2:
-        return 0.0
-    xs = [p.x for p in points]
-    ys = [p.y for p in points]
-    zs = [p.z for p in points]
-    dx = max(xs) - min(xs)
-    dy = max(ys) - min(ys)
-    dz = max(zs) - min(zs)
-    return max(dx, dy, dz)
-
-
 def _compute_proximity_threshold(reference_armature_obj, target_armature_obj, radius_scale=1.0):
-    """Return max head distance for a bone pair to count as a candidate match."""
+    """Return max distance for a bone pair to count as a candidate match."""
     lengths = []
     for armature_obj in (reference_armature_obj, target_armature_obj):
         for bone in armature_obj.data.bones:
@@ -96,29 +78,20 @@ def _compute_proximity_threshold(reference_armature_obj, target_armature_obj, ra
             if length > 1e-6:
                 lengths.append(length)
 
-    extent = max(
-        _armature_world_extent(reference_armature_obj),
-        _armature_world_extent(target_armature_obj),
-        0.0,
-    )
-
     if not lengths:
-        base = max(0.05, extent * 0.04)
+        base = 0.04
     else:
         lengths.sort()
         median = lengths[len(lengths) // 2]
-        # Scale with the skeleton. A hard 0.10m-style cap made Smash-sized
-        # overlapping armatures fail even when heads visually touch.
-        base = max(median * 0.65, extent * 0.035, 0.02)
-        if extent > 1e-6:
-            base = min(base, extent * 0.20)
+        # Tighter than a raw nearest-head grab so similar-looking bones win.
+        base = max(0.004, min(median * 0.85, 0.10))
 
     scale = max(0.1, float(radius_scale) if radius_scale else 1.0)
     return base * scale
 
 
 def _match_score(ref_armature, ref_bone, target_armature, target_bone, parent_map, max_distance):
-    """Lower is better. Gate on head distance; use mid/length/parent for ranking."""
+    """Lower is better. Combines midpoint, head, length, and parent consistency."""
     ref_head = _bone_world_head(ref_armature, ref_bone)
     trg_head = _bone_world_head(target_armature, target_bone)
     ref_mid = _bone_world_mid(ref_armature, ref_bone)
@@ -127,26 +100,23 @@ def _match_score(ref_armature, ref_bone, target_armature, target_bone, parent_ma
         return None
 
     head_dist = (trg_head - ref_head).length
-    # Users judge "touching" by heads. Different proportions make midpoints diverge
-    # even when heads sit on top of each other.
-    if head_dist > max_distance:
-        return None
-
     mid_dist = (trg_mid - ref_mid).length
-    dist = (head_dist * 0.80) + (mid_dist * 0.20)
+    dist = (head_dist * 0.65) + (mid_dist * 0.35)
+    if dist > max_distance:
+        return None
 
     ref_len = _bone_length(ref_bone)
     trg_len = _bone_length(target_bone)
     if ref_len > 1e-6 and trg_len > 1e-6:
         ratio = min(ref_len, trg_len) / max(ref_len, trg_len)
-        dist *= 1.0 + ((1.0 - ratio) * 0.45)
+        dist *= 1.0 + ((1.0 - ratio) * 0.75)
 
     if ref_bone.parent and ref_bone.parent.name in parent_map:
         expected = parent_map[ref_bone.parent.name]
         if target_bone.parent and target_bone.parent.name == expected:
             dist *= 0.45
         else:
-            dist *= 1.15
+            dist *= 1.25
 
     return dist
 
@@ -177,13 +147,8 @@ def _find_best_target(ref_armature, ref_bone, target_armature, used_bones, paren
 
     if not best_name:
         return ""
-    # Drop near-ties only when the winner is not already very close. Perfect
-    # overlaps used to lose every slot because helper/twist bones sat nearby.
-    if (
-        second_score is not None
-        and best_score > max_distance * 0.12
-        and second_score <= best_score * 1.08
-    ):
+    # Drop matches that are too close to a runner-up unless they are clearly nearer.
+    if second_score is not None and second_score <= best_score * 1.12:
         return ""
     return best_name
 

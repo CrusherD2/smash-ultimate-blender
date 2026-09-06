@@ -57,6 +57,9 @@ def _ik_constraint_chain_bone_names(armature_object, limbs="BOTH"):
 
 def collect_fk_bone_names(armature_object, leg_bone_map=None, limbs=None):
     """FK bones to bake/clear — only for limbs that actually have IK on the rig."""
+    if armature_object.data.get("sub_independent_ik"):
+        from .ik_channels import chains
+        return list(dict.fromkeys(n for _, names, _, _ in chains(armature_object, limbs or present_ik_limbs(armature_object) or 'BOTH') for n in names))
     from .create_animation_rig import _ik_driven_fk_bone_names, _ik_limb_kind
 
     if limbs is None:
@@ -202,26 +205,8 @@ def _key_pose_bone_visual(pose_bone, frame):
 
 
 def _bones_for_visual_bake(armature_object, fk_bone_names):
-    """Every non-IK pose bone — matches manual 'select all + key every frame'."""
-    ik_names = set(get_ik_bone_names(armature_object.data))
-    bones = []
-    for pose_bone in armature_object.pose.bones:
-        name = pose_bone.name
-        if name in ik_names:
-            continue
-        if skip_ik_visual_bake(name):
-            continue
-        bones.append(pose_bone)
-    # Ensure requested chain bones are included even if naming quirks skipped them
-    seen = {pb.name for pb in bones}
-    for name in fk_bone_names or []:
-        if name in seen or name in ik_names:
-            continue
-        pose_bone = armature_object.pose.bones.get(name)
-        if pose_bone is not None:
-            bones.append(pose_bone)
-            seen.add(name)
-    return bones
+    return [armature_object.pose.bones[n] for n in dict.fromkeys(fk_bone_names or [])
+            if n in armature_object.pose.bones and not skip_ik_visual_bake(n)]
 
 
 def bake_ik_driven_fk_visual(
@@ -239,6 +224,9 @@ def bake_ik_driven_fk_visual(
     then IK constraints are removed. Avoids matrix capture/replay, which drifted
     arms even when the viewport looked correct.
     """
+    if armature_object.data.get("sub_independent_ik"):
+        from .ik_channels import bake
+        return bake(context, armature_object, fk_bone_names, frame_start, frame_end, clear_constraints)
     from . import anim_layers_compat
     from .create_animation_rig import (
         _iter_limb_ik_constraints,
@@ -378,6 +366,9 @@ def remove_ik_fcurves_from_action(action, ik_bone_names):
 
 
 def delete_ik_bones_from_armature(armature_object):
+    if armature_object.data.get("sub_independent_ik"):
+        from .ik_channels import remove
+        return remove(bpy.context, armature_object)
     ik_bone_names = get_ik_bone_names(armature_object.data)
     if not ik_bone_names:
         return []
@@ -391,7 +382,7 @@ def delete_ik_bones_from_armature(armature_object):
     return ik_bone_names
 
 
-def bake_and_clean_current_action(context, armature_object, leg_bone_map=None, remove_ik_rig=True):
+def bake_and_clean_current_action(context, armature_object, leg_bone_map=None, remove_ik_rig=True, limbs=None):
     """Bake the viewport limb pose onto FK bones, then optionally strip the IK rig."""
     from . import anim_layers_compat
     from .create_animation_rig import (
@@ -402,9 +393,17 @@ def bake_and_clean_current_action(context, armature_object, leg_bone_map=None, r
         unmute_all_ik_fk_fcurves,
     )
 
-    limbs = present_ik_limbs(armature_object)
+    limbs = limbs or present_ik_limbs(armature_object)
     if not limbs:
         return 0, []
+
+    if armature_object.data.get('sub_independent_ik'):
+        from . import ik_channels
+        names = collect_fk_bone_names(armature_object, limbs=limbs)
+        start, end = _action_frame_range(armature_object, context.scene)
+        count = ik_channels.bake(context, armature_object, names, start, end)
+        removed = ik_channels.remove(context, armature_object, limbs) if remove_ik_rig else []
+        return count, removed
 
     ik_bone_names = get_ik_bone_names(armature_object.data)
     fk_bone_names = collect_fk_bone_names(
@@ -455,6 +454,11 @@ class SUB_OP_apply_ik_animation_operator(bpy.types.Operator):
     bl_label = "Apply IK Animation"
     bl_options = {"REGISTER", "UNDO"}
 
+    limbs: bpy.props.EnumProperty(name="Limbs", items=(('AUTO', "All present IK", ""), ('LEGS', "Legs only", ""), ('ARMS', "Arms only", ""), ('BOTH', "Arms and legs", "")), default='AUTO')
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
     def execute(self, context):
         armature_object = context.object
 
@@ -466,9 +470,10 @@ class SUB_OP_apply_ik_animation_operator(bpy.types.Operator):
             context,
             armature_object,
             remove_ik_rig=True,
+            limbs=None if self.limbs == 'AUTO' else self.limbs,
         )
 
-        if removed_fcurves:
+        if removed_fcurves and not armature_object.data.get("sub_independent_ik"):
             self.report({"INFO"}, f"Removed {removed_fcurves} IK keyframe channels.")
         self.report({"INFO"}, "Animation baked to original bones and IK bones removed.")
         return {"FINISHED"}

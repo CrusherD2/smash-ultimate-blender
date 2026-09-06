@@ -12,11 +12,11 @@ from .create_animation_rig import (
     ProgressCursor,
     _activate_armature,
     _ensure_extra_arm_ik,
-    _ensure_ik_influence_drivers,
     _ik_fk_props,
     apply_eye_look_shape,
     apply_eye_option_shapes,
     armature_has_ik,
+    finalize_ik_controls,
     find_target_armature,
 )
 from . import anim_layers_compat
@@ -25,110 +25,19 @@ from . import eye_rig
 from . import finger_sliders
 from . import fk_to_ik
 
-_IK_MATCHED_FLAG = "sub_ik_matched_limbs"
-_IK_MATCHED_DONE = "sub_ik_matched"
-
-
 def _current_anim_action(armature_obj):
-    """Active action for match tracking (Animation Layers aware)."""
-    if armature_obj is None:
-        return None
-    anim = getattr(armature_obj, "animation_data", None)
-    if anim is None:
-        return None
-
-    # Prefer the active Animation Layers strip when AL is on
-    try:
-        als = getattr(armature_obj, "als", None)
-        if als is not None and getattr(als, "turn_on", False):
-            index = int(getattr(als, "layer_index", 0) or 0)
-            tracks = getattr(anim, "nla_tracks", None)
-            if tracks and 0 <= index < len(tracks) and tracks[index].strips:
-                strip_action = tracks[index].strips[0].action
-                if strip_action is not None:
-                    return strip_action
-    except Exception:
-        pass
-
-    action = getattr(anim, "action", None)
-    if action is not None:
-        return action
-    return None
-
-
-def _actions_for_ik_match_mark(armature_obj):
-    """Actions that should receive the matched flag (active + AL strip)."""
-    actions = []
-    seen = set()
-
-    def _add(action):
-        if action is None:
-            return
-        key = action.as_pointer()
-        if key in seen:
-            return
-        seen.add(key)
-        actions.append(action)
-
-    _add(_current_anim_action(armature_obj))
-    anim = getattr(armature_obj, "animation_data", None)
-    if anim is not None:
-        _add(getattr(anim, "action", None))
-        try:
-            als = getattr(armature_obj, "als", None)
-            if als is not None and getattr(als, "turn_on", False):
-                index = int(getattr(als, "layer_index", 0) or 0)
-                tracks = getattr(anim, "nla_tracks", None)
-                if tracks and 0 <= index < len(tracks) and tracks[index].strips:
-                    _add(tracks[index].strips[0].action)
-        except Exception:
-            pass
-    return actions
-
-
-def _ik_matched_limbs(action):
-    if action is None:
-        return set()
-    raw = str(action.get(_IK_MATCHED_FLAG, "") or "")
-    return {part for part in raw.split("|") if part in {"ARMS", "LEGS"}}
+    """Track the action driving the viewport, including NLA-only actions."""
+    return anim_layers_compat.viewport_driving_action(armature_obj)[0]
 
 
 def mark_ik_matched(armature_obj, limbs="BOTH"):
-    """Record that Match IK finished for this action.
-
-    Sets a whole-action done flag so the Match button hides after a Legs-only
-    (or Arms-only) match — typical when both IK types exist on the rig.
-    """
-    actions = _actions_for_ik_match_mark(armature_obj)
-    if not actions:
-        return
-    for action in actions:
-        state = _ik_matched_limbs(action)
-        if limbs == "BOTH":
-            state.update({"ARMS", "LEGS"})
-        elif limbs in {"ARMS", "LEGS"}:
-            state.add(limbs)
-        action[_IK_MATCHED_FLAG] = "|".join(sorted(state))
-        action[_IK_MATCHED_DONE] = True
+    from .ik_channels import mark_matched
+    mark_matched(armature_obj, _current_anim_action(armature_obj), limbs)
 
 
 def animation_needs_ik_match(armature_obj):
-    """True when this action still needs Match IK."""
-    if armature_obj is None or not armature_has_ik(armature_obj):
-        return False
-    action = _current_anim_action(armature_obj)
-    # No action yet — still offer Match so the user can run it after loading anim
-    if action is None:
-        return True
-    if bool(action.get(_IK_MATCHED_DONE, False)):
-        return False
-    matched = _ik_matched_limbs(action)
-    # Legacy limb flags: hide once every present IK limb type was matched
-    if armature_has_ik(armature_obj, "ARMS") and "ARMS" not in matched:
-        return True
-    if armature_has_ik(armature_obj, "LEGS") and "LEGS" not in matched:
-        return True
-    return False
+    from .ik_channels import unmatched
+    return bool(armature_obj and unmatched(armature_obj, _current_anim_action(armature_obj)))
 
 
 def has_eye_look(armature_obj):
@@ -147,35 +56,37 @@ def _draw_ik_fk_switch_rows(layout, arm):
         return
     from .create_animation_rig import armature_ik_is_enabled
 
+    # Read the evaluated constraints: animated data properties on the original
+    # datablock can lag behind the pose currently displayed by the dependency graph.
+    evaluated = arm.evaluated_get(bpy.context.evaluated_depsgraph_get())
+
+    def ik_enabled(kind):
+        if arm.data.get("sub_independent_ik"):
+            from .ik_channels import outputs
+            influences = [con.influence for _, con, _ in outputs(evaluated, kind) if not con.mute]
+            if influences:
+                return max(influences) > 0.5
+        return armature_ik_is_enabled(evaluated, kind)
+
     has_arms = armature_has_ik(arm, "ARMS")
     has_legs = armature_has_ik(arm, "LEGS")
-    if has_arms:
+    for kind, label, present in (
+        ("ARMS", "Arms", has_arms),
+        ("LEGS", "Legs", has_legs),
+        ("BOTH", "Both", has_arms and has_legs),
+    ):
+        if not present:
+            continue
+        enable_ik = not ik_enabled(kind)
         row = layout.row(align=True)
-        row.label(text="Arms")
-        if armature_ik_is_enabled(arm, "ARMS"):
-            op = row.operator("sub.anim_rig_toggle_ik_fk", text="Switch to FK", icon="BONE_DATA")
-        else:
-            op = row.operator("sub.anim_rig_toggle_ik_fk", text="Switch to IK", icon="CON_KINEMATIC")
-        op.limbs = "ARMS"
-    if has_legs:
-        row = layout.row(align=True)
-        row.label(text="Legs")
-        if armature_ik_is_enabled(arm, "LEGS"):
-            op = row.operator("sub.anim_rig_toggle_ik_fk", text="Switch to FK", icon="BONE_DATA")
-        else:
-            op = row.operator("sub.anim_rig_toggle_ik_fk", text="Switch to IK", icon="CON_KINEMATIC")
-        op.limbs = "LEGS"
-    if has_arms and has_legs:
-        row = layout.row(align=True)
-        row.label(text="Both")
-        op = row.operator("sub.anim_rig_toggle_ik_fk", text="IK", icon="CON_KINEMATIC")
-        op.limbs = "BOTH"
+        row.label(text=label)
+        op = row.operator(
+            "sub.anim_rig_toggle_ik_fk",
+            text="Switch to IK" if enable_ik else "Switch to FK",
+        )
+        op.limbs = kind
         op.set_enabled = True
-        op.enable_ik = True
-        op = row.operator("sub.anim_rig_toggle_ik_fk", text="FK", icon="BONE_DATA")
-        op.limbs = "BOTH"
-        op.set_enabled = True
-        op.enable_ik = False
+        op.enable_ik = enable_ik
     if animation_needs_ik_match(arm):
         row = layout.row(align=True)
         row.operator(
@@ -278,10 +189,15 @@ class SUB_OP_anim_rig_add_ik(Operator):
 
     match_position: bpy.props.BoolProperty(name="Match IK to FK", default=True)
 
+    limbs: bpy.props.EnumProperty(name="Limbs", items=(('LEGS', "Legs", ""), ('ARMS', "Arms", ""), ('BOTH', "Arms and Legs", "")), default='BOTH')
+
     @classmethod
     def poll(cls, context):
         arm = find_target_armature(context)
         return arm is not None and not armature_has_ik(arm)
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
 
     def execute(self, context):
         arm = find_target_armature(context)
@@ -289,20 +205,16 @@ class SUB_OP_anim_rig_add_ik(Operator):
             return {"CANCELLED"}
         _activate_armature(context, arm)
         with anim_layers_compat.anim_layers_paused():
-            result = bpy.ops.sub.create_ik_bones("EXEC_DEFAULT", match_position=False)
+            from .ik_channels import create_controls
+            result = {"FINISHED"} if create_controls(context, arm, self.limbs) else {"CANCELLED"}
             if result != {"FINISHED"} and not armature_has_ik(arm):
                 self.report({"ERROR"}, "Could not create IK bones.")
                 return {"CANCELLED"}
             if context.mode != "POSE":
                 bpy.ops.object.mode_set(mode="POSE")
-            _ensure_extra_arm_ik(arm)
-            props = _ik_fk_props(arm)
-            props.sub_use_ik = True
-            props.sub_use_ik_arms = True
-            props.sub_use_ik_legs = True
-            _ensure_ik_influence_drivers(arm)
+            finalize_ik_controls(arm, context)
         if self.match_position:
-            fk_to_ik.invoke_position_match_dialog(cleanup_mode="BOTH")
+            fk_to_ik.invoke_position_match_dialog(cleanup_mode=self.limbs)
         self.report({"INFO"}, f"Added IK to {arm.name}.")
         return {"FINISHED"}
 
@@ -314,6 +226,11 @@ class SUB_OP_anim_rig_remove_ik(Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     bake: bpy.props.BoolProperty(name="Bake first", default=True, options={"SKIP_SAVE"})
+
+    limbs: bpy.props.EnumProperty(name="Limbs", items=(("BOTH", "All present IK", ""), ("LEGS", "Legs only", ""), ("ARMS", "Arms only", "")), default="BOTH")
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
 
     @classmethod
     def poll(cls, context):
@@ -330,10 +247,14 @@ class SUB_OP_anim_rig_remove_ik(Operator):
                 with ProgressCursor(context) as progress:
                     progress.update(0.15)
                     apply_ik_animation.bake_and_clean_current_action(
-                        context, arm, remove_ik_rig=True
+                        context, arm, remove_ik_rig=True, limbs=self.limbs
                     )
                     progress.update(1.0)
                 msg = "Baked and removed IK"
+            elif arm.data.get("sub_independent_ik"):
+                from .ik_channels import remove
+                remove(context, arm, self.limbs)
+                msg = "Removed IK (no bake)"
             else:
                 from .create_animation_rig import (
                     _remove_ik_influence_drivers,

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from ...dependencies import ssbh_data_py
 from .import_anim import get_hierarchy_order
-from .fcurve_compat import get_all_action_fcurves, get_fcurves, get_fcurves_for_assigned_slot
+from .fcurve_compat import get_all_action_fcurves, get_fcurves
 from .raw_anim import (
     ensure_fighter_raw_anim_directory,
     ensure_rawanim_filename,
@@ -233,6 +233,8 @@ class SUB_PT_export_anim(Panel):
                 row.label(text=f'The selected {obj.type.lower()} has no action!', icon='ERROR')
             else:
                 ssp = context.scene.sub_scene_properties
+                if obj.type == 'ARMATURE':
+                    layout.prop(ssp, "anim_include_raw_animation", text="Include Raw Animation")
                 row.operator(SUB_OP_anim_export.bl_idname, icon='EXPORT', text='Export Current Animation')
                 
                 # Add collapsible batch export section
@@ -263,6 +265,11 @@ class SUB_PT_export_anim(Panel):
                     row = box.row()
                     row.scale_y = 1.2
                     row.operator(SUB_OP_batch_export_anim.bl_idname, icon='EXPORT', text='Export Selected Actions')
+
+                if obj.type == 'ARMATURE':
+                    row = layout.row()
+                    row.scale_y = 1.2
+                    row.operator(SUB_OP_raw_anim_export.bl_idname, icon='EXPORT', text='Export Raw Animation')
         else:
             row.label(text=f'The selected {obj.type.lower()} is not an armature or a camera.')
 
@@ -625,11 +632,9 @@ def export_raw_animation_for_object(
         return False
 
     raw_filepath = ensure_rawanim_filepath(filepath)
-    action = obj.animation_data.action
-    assigned = get_fcurves_for_assigned_slot(obj)
     if not export_raw_animation(
         obj,
-        action,
+        obj.animation_data.action,
         raw_filepath,
         frame_start,
         frame_end,
@@ -637,12 +642,7 @@ def export_raw_animation_for_object(
     ):
         return False
 
-    curve_hint = len(assigned) if assigned else "all-slots"
-    operator.report(
-        {'INFO'},
-        f"Successfully exported raw animation to {os.path.basename(raw_filepath)} "
-        f"(source curves: {curve_hint})",
-    )
+    operator.report({'INFO'}, f"Successfully exported raw animation to {os.path.basename(raw_filepath)}")
     return True
 
 

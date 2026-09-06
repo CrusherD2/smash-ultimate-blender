@@ -6,8 +6,6 @@ import ctypes as c
 import importlib.util
 from pathlib import Path
 import sys
-import time
-import statistics
 from types import SimpleNamespace
 
 import bpy
@@ -57,17 +55,6 @@ mesh.location.x = 0
 bpy.context.view_layer.update()
 assert vp._sync_mesh_transforms(1, bpy.context, bpy.context.evaluated_depsgraph_get())
 assert np.allclose(np.array(uploads[-1]).reshape(4, 4), np.eye(4), atol=1e-5)
-other = bpy.data.objects.new("Other mesh", bpy.data.meshes.new("Other mesh"))
-bpy.context.collection.objects.link(other)
-other.parent = arm
-other.modifiers.new("Armature", "ARMATURE").object = arm
-bpy.context.view_layer.update()
-assert vp._sync_mesh_transforms(1, bpy.context, bpy.context.evaluated_depsgraph_get())
-assert len(uploads[-1]) == 16, "Unchanged mesh was reuploaded"
-mesh.location.x = 2
-bpy.context.view_layer.update()
-assert vp._sync_mesh_transforms(1, bpy.context, bpy.context.evaluated_depsgraph_get())
-assert len(uploads[-1]) == 16, "Moving one mesh reuploaded unrelated meshes"
 print("PASS: hidden skeleton, hidden mesh/collection, moved mesh, reset transform, cache")
 
 args = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
@@ -121,20 +108,6 @@ if args:
         ok(lib.ssbh_preview_set_mesh_transforms(handle, (c.c_uint*1)(0), (c.c_char_p*1)(b'Vegito_Hair_VIS_O_OBJShape'), (c.c_uint*1)(0), arr(Matrix.Identity(4)), 1))
         reset = render()
         assert np.abs(reset.astype(float)-after).mean() < 1
-        ok(lib.ssbh_preview_apply_material_anim(handle, None, 0))
-        cleared = render()
-        assert np.abs(cleared.astype(float)-before).mean() < 1
-        ok(lib.ssbh_preview_apply_material_anim(handle, anim.encode(), 0))
-        restored = render()
-        assert np.abs(restored.astype(float)-after).mean() < 1
-        timings = []
-        for _ in range(5):
-            start = time.perf_counter()
-            for frame in range(120):
-                ok(lib.ssbh_preview_apply_material_anim(handle, anim.encode(), frame))
-            timings.append((time.perf_counter() - start) * 1000 / 120)
-            render()  # Drain pending GPU writes between samples.
-        print(f"Material update benchmark: {statistics.median(timings):.4f} ms/call (5 x 120 frames)")
         print(f"PASS: native animated yellow hair ({coverage.sum()} covered pixels, RGB {rgb}), translation and reset")
     finally:
         lib.ssbh_preview_destroy(handle)

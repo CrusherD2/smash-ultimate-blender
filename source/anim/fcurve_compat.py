@@ -395,7 +395,7 @@ def style_ik_fk_fcurve(fcurve):
         return FK_KEYFRAME_TYPE, FK_HANDLE_TYPE
     _style_fcurve_keys(
         fcurve,
-        interpolation='BEZIER',
+        interpolation='LINEAR',
         key_type_for_value=_ik_fk_style,
     )
     apply_dopesheet_key_colors()

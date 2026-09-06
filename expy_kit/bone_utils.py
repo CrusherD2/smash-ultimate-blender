@@ -239,8 +239,6 @@ def remove_all_bone_constraints(ob):
 
 
 def get_constrained_controls(armature_object: bpy.types.Object, unselect=False, use_deform=False) -> list[bpy.types.PoseBone]:
-    if armature_object is None or getattr(armature_object, "pose", None) is None:
-        return
     for pb in armature_object.pose.bones:
         if pb.bone.use_deform and not use_deform:  # FIXME: ik controls might have use_deform just to be exported for games
             if unselect:
