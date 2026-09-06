@@ -2887,6 +2887,7 @@ class BakeConstrainedActions(bpy.types.Operator):
                     continue
 
                 use_retarget_clean = action_armature != bake_armature
+                first_baked = None
 
                 for action in list(actions_to_bake):
                     current_action += 1
@@ -2917,6 +2918,9 @@ class BakeConstrainedActions(bpy.types.Operator):
                     if baked_action is None:
                         self.report({'WARNING'}, f"failed to bake {original_name}")
                         continue
+
+                    if first_baked is None:
+                        first_baked = baked_action
 
                     clean_action_name = baked_action.name
                     print(
@@ -2985,6 +2989,13 @@ class BakeConstrainedActions(bpy.types.Operator):
                         continue
                     for constr in reversed(pbone.constraints):
                         pbone.constraints.remove(constr)
+
+                if first_baked is not None:
+                    try:
+                        from ..source.retargeting.fast_bake import load_baked_action
+                        load_baked_action(bake_armature, first_baked)
+                    except Exception:
+                        assign_action(bake_armature.animation_data, first_baked)
 
             if current_action:
                 self.report({'INFO'}, f"Bake Constrained completed - {current_action} actions baked")

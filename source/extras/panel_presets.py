@@ -27,6 +27,7 @@ _PANEL_META = (
     ("SUB_PT_export_anim", "Animation Exporter"),
     ("SUB_PT_animation_tools", "Animation Tools"),
     ("SUB_PT_model_tools", "Model Tools"),
+    ("SUB_PT_collection_presets", "Armature Collection Presets"),
     ("SUB_PT_misc_utilities", "Misc."),
     ("SUB_PT_face_picker", "Easy Facial Animation"),
     ("SUB_PT_retargeting_main", "Retargeting"),

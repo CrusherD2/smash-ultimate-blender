@@ -59,6 +59,14 @@ PENDING_UPDATE_COMMITS: list = []
 BRANCH_DOWNLOAD_URL: str = "https://github.com/CrusherD2/smash-ultimate-blender/archive/refs/heads/animation-workflow.zip"
 UPDATE_DOWNLOAD_PROGRESS: float = 0.0
 UPDATE_STATUS: str = "idle"  # idle, checking, downloading, installing, ready_to_restart
+LOCAL_VERSION_AHEAD: bool = False
+LOCAL_ADDON_VERSION: tuple = None
+REMOTE_ADDON_VERSION: tuple = None
+
+# Matches the bl_info version tuple in an addon __init__.py.
+_BL_INFO_VERSION_RE = re.compile(
+    r"""['"]version['"]\s*:\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)"""
+)
 
 def get_commit_file_path():
     """Get the path to store the current commit SHA"""
@@ -84,6 +92,50 @@ def save_current_commit_sha(sha):
             f.write(sha)
     except Exception as e:
         print(f"Smash_ultimate_blender: Error saving commit SHA: {e}")
+
+def get_local_addon_version():
+    """This install's bl_info version tuple, or None if it cannot be read."""
+    try:
+        from ...__init__ import bl_info
+        version = tuple(int(part) for part in bl_info["version"])
+        if len(version) == 3:
+            return version
+    except Exception as e:
+        print(f"Smash_ultimate_blender: Could not read local addon version: {e}")
+    return None
+
+
+def get_remote_addon_version(ref="animation-workflow"):
+    """bl_info version tuple published at `ref`, or None if it cannot be read."""
+    try:
+        url = f"https://raw.githubusercontent.com/CrusherD2/smash-ultimate-blender/{ref}/__init__.py"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        match = _BL_INFO_VERSION_RE.search(response.text)
+        if match:
+            return tuple(int(part) for part in match.groups())
+        print("Smash_ultimate_blender: No bl_info version found in the remote __init__.py")
+    except Exception as e:
+        print(f"Smash_ultimate_blender: Could not read remote addon version: {e}")
+    return None
+
+
+def local_version_is_ahead(ref="animation-workflow"):
+    """True only when this install's version is provably newer than `ref`.
+
+    A local build ahead of the branch is normally unreleased work, and offering
+    to "update" it would overwrite that with older code. Anything we cannot
+    determine (offline, unparsable bl_info) returns False so the usual commit
+    check still applies.
+    """
+    global LOCAL_ADDON_VERSION, REMOTE_ADDON_VERSION
+
+    LOCAL_ADDON_VERSION = get_local_addon_version()
+    REMOTE_ADDON_VERSION = get_remote_addon_version(ref)
+    if LOCAL_ADDON_VERSION is None or REMOTE_ADDON_VERSION is None:
+        return False
+    return LOCAL_ADDON_VERSION > REMOTE_ADDON_VERSION
+
 
 def get_commit_message_by_sha(sha):
     """Get commit message for a specific SHA"""
@@ -187,7 +239,7 @@ def check_for_newer_version():
     Check the animation-workflow branch for new commits.
     If there's a newer commit than what we have stored, mark update as available.
     """
-    global UPDATE_STATUS, UPDATE_AVAILABLE, LATEST_COMMIT_SHA, LATEST_COMMIT_MESSAGE, LATEST_COMMIT_DATE, CURRENT_COMMIT_SHA, CURRENT_COMMIT_MESSAGE, PENDING_UPDATE_COMMITS
+    global UPDATE_STATUS, UPDATE_AVAILABLE, LATEST_COMMIT_SHA, LATEST_COMMIT_MESSAGE, LATEST_COMMIT_DATE, CURRENT_COMMIT_SHA, CURRENT_COMMIT_MESSAGE, PENDING_UPDATE_COMMITS, LOCAL_VERSION_AHEAD
     
     UPDATE_STATUS = "checking"
     
@@ -230,12 +282,29 @@ def check_for_newer_version():
         CURRENT_COMMIT_MESSAGE = current_message
         
         # Check if we have a new commit
+        LOCAL_VERSION_AHEAD = False
         if current_sha is None:
             # First time running, store current commit and don't show update
             print("Smash_ultimate_blender: First time checking, storing current commit SHA")
             save_current_commit_sha(latest_sha)
             UPDATE_AVAILABLE = False
         elif current_sha != latest_sha:
+            # A local build newer than the branch is unreleased work. Never offer
+            # an "update" that would replace it with older code. Checked only
+            # here, so the extra request costs nothing when already up to date.
+            LOCAL_VERSION_AHEAD = local_version_is_ahead()
+            if LOCAL_VERSION_AHEAD:
+                local_text = ".".join(str(part) for part in LOCAL_ADDON_VERSION)
+                remote_text = ".".join(str(part) for part in REMOTE_ADDON_VERSION)
+                print(
+                    f"Smash_ultimate_blender: Installed version v{local_text} is newer "
+                    f"than v{remote_text} on animation-workflow; not offering an update."
+                )
+                PENDING_UPDATE_COMMITS = []
+                UPDATE_AVAILABLE = False
+                UPDATE_STATUS = "idle"
+                return
+
             # New commit available!
             print(f"Smash_ultimate_blender: New commit available!")
             print(f"  Current: {current_sha[:8] if current_sha else 'None'}")
@@ -599,10 +668,10 @@ class SUB_OP_download_update(Operator):
             return False
 
 class SUB_OP_install_update(Operator):
-    """[DEPRECATED] Install the downloaded update - use Download & Install Update instead"""
+    """Install an update that has already been downloaded."""
     bl_idname = "sub.install_update"
-    bl_label = "Install Update (Legacy)"
-    bl_description = "[DEPRECATED] Manual installation operator - the main update process now handles this automatically"
+    bl_label = "Install Downloaded Update"
+    bl_description = "Install an already downloaded update. Download & Install Update does this for you"
     
     def execute(self, context):
         global UPDATE_STATUS
@@ -781,6 +850,13 @@ class SUB_OP_check_for_updates(Operator):
         if UPDATE_AVAILABLE:
             commit_short = LATEST_COMMIT_SHA[:8] if LATEST_COMMIT_SHA else "unknown"
             self.report({'INFO'}, f"Update available: commit {commit_short}")
+        elif LOCAL_VERSION_AHEAD and LOCAL_ADDON_VERSION and REMOTE_ADDON_VERSION:
+            local_text = ".".join(str(part) for part in LOCAL_ADDON_VERSION)
+            remote_text = ".".join(str(part) for part in REMOTE_ADDON_VERSION)
+            self.report(
+                {'INFO'},
+                f"This install (v{local_text}) is newer than the published v{remote_text}",
+            )
         else:
             self.report({'INFO'}, "No updates available")
         

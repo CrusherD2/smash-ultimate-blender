@@ -40,6 +40,8 @@ classes = [
     source.exo.exo_bone_cleanup.SUB_OP_cleanup_unused_exo_bones,
     source.anim.import_anim.SUB_PT_import_anim,
     source.anim.import_anim.SUB_OP_import_anim,
+    source.anim.import_anim.SUB_OP_toggle_animation_import_selection,
+    source.anim.import_anim.SUB_OP_select_all_animation_imports,
     source.anim.import_anim.SUB_UL_animation_import_list,
     source.anim.import_anim.SUB_OP_import_selected_anim,
     source.anim.import_anim.SUB_OP_select_animation_folder,
@@ -55,6 +57,7 @@ classes = [
     source.anim.export_anim.SUB_OP_anim_export,
     source.anim.export_anim.SUB_PG_anim_action_item,
     source.anim.export_anim.SUB_UL_action_export_list,
+    source.anim.export_anim.SUB_OP_toggle_action_export_selection,
     source.anim.export_anim.SUB_OP_refresh_actions,
     source.anim.export_anim.SUB_OP_select_all_actions,
     source.anim.export_anim.SUB_OP_deselect_all_actions,
@@ -136,7 +139,6 @@ classes = [
     source.extras.limit_weights.SUB_OP_limit_weights,
     source.extras.unstack_uvs.SUB_OP_unstack_uv_islands,
     source.extras.roll_copy.SUB_OT_copy_bone_rolls,
-    source.extras.animation_scroll.SUB_OP_animation_scroll_modal,
     source.anim.anim_data.SUB_PT_sub_smush_anim_data_main,
     source.extras.face_picker.SUB_PT_face_picker_anim_data,
     source.anim.anim_data.SUB_PT_sub_smush_anim_data_vis_tracks,
@@ -156,6 +158,7 @@ classes = [
     source.anim.anim_data.SUB_OP_vis_entry_shift,
     source.anim.anim_data.SUB_OP_vis_drivers_refresh,
     source.anim.anim_data.SUB_OP_vis_drivers_remove,
+    source.anim.anim_data.SUB_OP_purge_unused_vis_tracks,
     source.anim.anim_data.SUB_OP_auto_fill_vis_entries,
     source.anim.anim_data.SUB_OP_set_all_vis_entries_false,
     source.anim.anim_data.SUB_OP_set_all_vis_entries_true,
@@ -348,7 +351,7 @@ def register():
     for cls in classes:
         try:
             bpy.utils.register_class(cls)
-        except ValueError:
+        except (ValueError, RuntimeError):
             print(f"Class {cls.__name__} is already registered")
     source.model.import_model.register_handlers()
 
@@ -357,5 +360,5 @@ def unregister():
     for cls in reversed(classes):
         try:
             bpy.utils.unregister_class(cls)
-        except ValueError:
+        except (ValueError, RuntimeError):
             print(f"Class {cls.__name__} is not registered")

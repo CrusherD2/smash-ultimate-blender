@@ -36,6 +36,9 @@ from . import stage_tools
 # Import animation_scroll module
 from . import animation_scroll
 from . import viewport_capture
+from . import timeline_fps
+from . import refresh_bone_drawing
+from . import collection_presets
 
 # Explicit registration function for the package
 def register():
@@ -53,6 +56,9 @@ def register():
     
     # Register animation_scroll
     animation_scroll.register()
+    timeline_fps.register()
+    refresh_bone_drawing.register()
+    collection_presets.register()
     viewport_capture.register()
     face_picker.register()
     eye_rig.register()
@@ -79,6 +85,9 @@ def unregister():
     eye_rig.unregister()
     create_animation_rig.unregister()
     viewport_capture.unregister()
+    collection_presets.unregister()
+    refresh_bone_drawing.unregister()
+    timeline_fps.unregister()
     # Unregister animation_scroll
     animation_scroll.unregister()
     

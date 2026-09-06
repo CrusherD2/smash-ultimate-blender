@@ -18,7 +18,7 @@ from pathlib import Path
 
 from ...dependencies import ssbh_data_py
 from .import_anim import get_hierarchy_order
-from .fcurve_compat import get_all_action_fcurves, get_fcurves
+from .fcurve_compat import get_all_action_fcurves, get_fcurves, get_fcurves_for_assigned_slot
 from .raw_anim import (
     ensure_fighter_raw_anim_directory,
     ensure_rawanim_filename,
@@ -30,6 +30,7 @@ from .raw_anim import (
     resolve_raw_anim_export_path,
     strip_rawanim_suffix,
 )
+from .visibility_tracks import merge_exported_visibility_values
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -196,12 +197,56 @@ class SUB_PG_anim_action_item(bpy.types.PropertyGroup):
 class SUB_UL_action_export_list(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         if self.layout_type in {'DEFAULT', 'COMPACT'}:
-            row = layout.row()
-            row.prop(item, "export", text="")
-            row.label(text=item.name)
+            op = layout.operator(
+                SUB_OP_toggle_action_export_selection.bl_idname,
+                text=item.name,
+                icon='CHECKBOX_HLT' if item.export else 'CHECKBOX_DEHLT',
+                depress=item.export,
+            )
+            op.index = index
         elif self.layout_type in {'GRID'}:
             layout.alignment = 'CENTER'
-            layout.label(text=item.name)
+            op = layout.operator(
+                SUB_OP_toggle_action_export_selection.bl_idname,
+                text=item.name,
+                depress=item.export,
+            )
+            op.index = index
+
+
+class SUB_OP_toggle_action_export_selection(Operator):
+    bl_idname = 'sub.toggle_action_export_selection'
+    bl_label = 'Select Animation'
+    bl_description = 'Click to select one; Ctrl-click toggles; Shift-click selects a range'
+    bl_options = {'INTERNAL'}
+
+    index: IntProperty(options={'HIDDEN'})
+
+    def invoke(self, context, event):
+        ssp = context.scene.sub_scene_properties
+        items = ssp.action_export_list
+        if self.index < 0 or self.index >= len(items):
+            return {'CANCELLED'}
+
+        previous_index = max(0, min(ssp.action_export_list_index, len(items) - 1))
+        if event.shift:
+            if not event.ctrl:
+                for item in items:
+                    item.export = False
+            first, last = sorted((previous_index, self.index))
+            for index in range(first, last + 1):
+                items[index].export = True
+        elif event.ctrl:
+            items[self.index].export = not items[self.index].export
+        else:
+            for index, item in enumerate(items):
+                item.export = index == self.index
+
+        ssp.action_export_list_index = self.index
+        return {'FINISHED'}
+
+    def execute(self, _context):
+        return {'FINISHED'}
 
 class SUB_PT_export_anim(Panel):
     bl_space_type = 'VIEW_3D'
@@ -233,8 +278,6 @@ class SUB_PT_export_anim(Panel):
                 row.label(text=f'The selected {obj.type.lower()} has no action!', icon='ERROR')
             else:
                 ssp = context.scene.sub_scene_properties
-                if obj.type == 'ARMATURE':
-                    layout.prop(ssp, "anim_include_raw_animation", text="Include Raw Animation")
                 row.operator(SUB_OP_anim_export.bl_idname, icon='EXPORT', text='Export Current Animation')
                 
                 # Add collapsible batch export section
@@ -254,7 +297,11 @@ class SUB_PT_export_anim(Panel):
                     # Action list
                     row = box.row()
                     row.template_list("SUB_UL_action_export_list", "", ssp, "action_export_list", 
-                                     ssp, "action_export_list_index", rows=3)
+                                     ssp, "action_export_list_index", rows=5)
+
+                    help_row = box.row()
+                    help_row.scale_y = 0.8
+                    help_row.label(text="Click: one  Ctrl-click: toggle  Shift-click: range", icon='INFO')
                     
                     # Select/deselect all actions
                     row = box.row(align=True)
@@ -264,12 +311,12 @@ class SUB_PT_export_anim(Panel):
                     # Batch export button
                     row = box.row()
                     row.scale_y = 1.2
-                    row.operator(SUB_OP_batch_export_anim.bl_idname, icon='EXPORT', text='Export Selected Actions')
-
-                if obj.type == 'ARMATURE':
-                    row = layout.row()
-                    row.scale_y = 1.2
-                    row.operator(SUB_OP_raw_anim_export.bl_idname, icon='EXPORT', text='Export Raw Animation')
+                    selected_count = sum(1 for item in ssp.action_export_list if item.export)
+                    row.operator(
+                        SUB_OP_batch_export_anim.bl_idname,
+                        icon='EXPORT',
+                        text=f'Export Selected Animations ({selected_count})',
+                    )
         else:
             row.label(text=f'The selected {obj.type.lower()} is not an armature or a camera.')
 
@@ -325,6 +372,7 @@ class SUB_OP_deselect_all_actions(Operator):
 class SUB_OP_batch_export_anim(Operator):
     bl_idname = 'sub.batch_export_anim'
     bl_label = 'Batch Export Animations'
+    bl_description = 'Export the selected actions as .nuanmb animation files'
     
     filter_glob: StringProperty(
         default='*.nuanmb',
@@ -396,7 +444,7 @@ class SUB_OP_batch_export_anim(Operator):
         return (obj and 
                 (obj.type == 'ARMATURE' or obj.type == 'CAMERA') and 
                 obj.animation_data and
-                len(context.scene.sub_scene_properties.action_export_list) > 0)
+                any(item.export for item in context.scene.sub_scene_properties.action_export_list))
     
     def invoke(self, context, event):
         ssp = context.scene.sub_scene_properties
@@ -586,7 +634,8 @@ class SUB_OP_batch_export_anim(Operator):
 def sanitize_filename(filename):
     """
     Replace invalid Windows filename characters with underscores.
-    Invalid characters: \ / : * ? " < > |
+    Invalid characters include slash, backslash, colon, asterisk, question
+    mark, quote, angle brackets, and pipe.
     """
     # Characters not allowed in Windows filenames
     invalid_chars = ['\\', '/', ':', '*', '?', '"', '<', '>', '|']
@@ -632,9 +681,11 @@ def export_raw_animation_for_object(
         return False
 
     raw_filepath = ensure_rawanim_filepath(filepath)
+    action = obj.animation_data.action
+    assigned = get_fcurves_for_assigned_slot(obj)
     if not export_raw_animation(
         obj,
-        obj.animation_data.action,
+        action,
         raw_filepath,
         frame_start,
         frame_end,
@@ -642,7 +693,12 @@ def export_raw_animation_for_object(
     ):
         return False
 
-    operator.report({'INFO'}, f"Successfully exported raw animation to {os.path.basename(raw_filepath)}")
+    curve_hint = len(assigned) if assigned else "all-slots"
+    operator.report(
+        {'INFO'},
+        f"Successfully exported raw animation to {os.path.basename(raw_filepath)} "
+        f"(source curves: {curve_hint})",
+    )
     return True
 
 
@@ -724,6 +780,7 @@ class SUB_OP_raw_anim_export(Operator):
 class SUB_OP_anim_export(Operator):
     bl_idname = 'sub.anim_export'
     bl_label = 'Export Anim'
+    bl_description = 'Export the active action as a .nuanmb animation file'
 
     filter_glob: StringProperty(
         default='*.nuanmb',
@@ -1405,20 +1462,23 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
             vis_track_index_to_name[vis_track_index] = sap.vis_track_entries[vis_track_index].name
             vis_track_index_to_values[vis_track_index] = [bool(fcurve.evaluate(frame)) for frame in range(first_blender_frame, last_blender_frame+1)]
 
+        named_values = [
+            (vis_track_index_to_name[index], vis_track_index_to_values[index])
+            for index in sorted(vis_track_index_to_values)
+        ]
+        named_values = merge_exported_visibility_values(arma, named_values)
+
         # Create Vis Group
         vis_group = ssbh_data_py.anim_data.GroupData(ssbh_data_py.anim_data.GroupType.Visibility)
         ssbh_anim_data.groups.append(vis_group)
 
         # Create nodes
-        for vis_track_index, values in vis_track_index_to_values.items():
-            node = ssbh_data_py.anim_data.NodeData(vis_track_index_to_name[vis_track_index])
+        for vis_track_name, values in named_values:
+            node = ssbh_data_py.anim_data.NodeData(vis_track_name)
             track = ssbh_data_py.anim_data.TrackData('Visibility')
             track.values = values.copy()
             node.tracks.append(track)
             vis_group.nodes.append(node)
-        
-        # Sort Nodes
-        vis_group.nodes.sort(key= lambda x: sap.vis_track_entries.find(x.name))
 
     if include_material_track and does_armature_data_have_fcurves(arma):
         # Convenience variable for the sub_anim_properties

@@ -38,6 +38,56 @@ _last_known_actions = {}
 # Global owner object for msgbus subscriptions
 _msgbus_owner = object()
 
+# Runtime switch for depsgraph/frame/timer SAP sync (UI: Ultimate Animation Data).
+_sap_auto_sync_enabled = True
+
+
+def is_sap_auto_sync_enabled() -> bool:
+    return bool(_sap_auto_sync_enabled)
+
+
+def _install_sap_auto_sync_handlers():
+    if sync_sap_action_handler not in bpy.app.handlers.frame_change_post:
+        bpy.app.handlers.frame_change_post.append(sync_sap_action_handler)
+    # Do not use depsgraph_update_post here. It fires continuously and is enough
+    # to keep EEVEE/Cycles Rendered sampling from ever finishing. Frame change,
+    # msgbus, and a slow timer are enough to catch action switches.
+    if sync_sap_action_depsgraph_handler in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(sync_sap_action_depsgraph_handler)
+    if not bpy.app.timers.is_registered(sync_sap_timer):
+        bpy.app.timers.register(sync_sap_timer, first_interval=0.5, persistent=True)
+    subscribe_to_action_changes()
+
+
+def _uninstall_sap_auto_sync_handlers():
+    if sync_sap_action_handler in bpy.app.handlers.frame_change_post:
+        bpy.app.handlers.frame_change_post.remove(sync_sap_action_handler)
+    if sync_sap_action_depsgraph_handler in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(sync_sap_action_depsgraph_handler)
+    if bpy.app.timers.is_registered(sync_sap_timer):
+        bpy.app.timers.unregister(sync_sap_timer)
+    unsubscribe_from_action_changes()
+
+
+def set_sap_auto_sync_enabled(enabled: bool) -> None:
+    """Enable or disable SAP auto-sync handlers/timers."""
+    global _sap_auto_sync_enabled
+    enabled = bool(enabled)
+    if enabled == _sap_auto_sync_enabled:
+        if enabled:
+            # Ensure handlers exist after addon reload without double-subscribe.
+            if sync_sap_action_handler not in bpy.app.handlers.frame_change_post:
+                _install_sap_auto_sync_handlers()
+        else:
+            _uninstall_sap_auto_sync_handlers()
+        return
+    _sap_auto_sync_enabled = enabled
+    if enabled:
+        _install_sap_auto_sync_handlers()
+    else:
+        _uninstall_sap_auto_sync_handlers()
+
+
 # Handler to sync SAP data action with bone animation action
 @bpy.app.handlers.persistent
 def sync_sap_action_handler(scene):
@@ -45,6 +95,8 @@ def sync_sap_action_handler(scene):
     Handler that automatically switches the SAP data action when the main action changes.
     This ensures that visibility and material animation data stays in sync with bone animation.
     """
+    if not _sap_auto_sync_enabled:
+        return
     global _last_known_actions
     
     for obj in bpy.data.objects:
@@ -107,17 +159,17 @@ def sync_sap_action_depsgraph_handler(scene, depsgraph):
     Alternative handler that runs on depsgraph updates.
     This catches more events including action changes.
     """
+    if not _sap_auto_sync_enabled:
+        return
     sync_sap_action_handler(scene)
     try:
         from .import_anim import sync_anim_importer_to_active
         sync_anim_importer_to_active(bpy.context)
     except Exception:
         pass
-    screen = getattr(bpy.context, 'screen', None)
-    if screen is not None and getattr(screen, 'is_animation_playing', False):
-        return
-    if not bpy.app.timers.is_registered(_style_visibility_soon):
-        bpy.app.timers.register(_style_visibility_soon, first_interval=0.05)
+    # Do NOT restyle visibility/eye F-Curves here. Writing RNA on every
+    # depsgraph update (theme colors, bone palette, keyframe types) creates a
+    # feedback loop that restarts EEVEE/Cycles viewport sampling forever.
 
 # Timer function for periodic checking
 def sync_sap_timer():
@@ -125,6 +177,8 @@ def sync_sap_timer():
     Timer function that runs periodically to check for action changes.
     This is a fallback method to ensure SAP actions stay synced.
     """
+    if not _sap_auto_sync_enabled:
+        return None
     try:
         # Check if we're in a valid context for modifying data
         if bpy.context.mode in {'OBJECT', 'POSE'}:
@@ -134,8 +188,8 @@ def sync_sap_timer():
         # Silently handle context errors
         pass
     
-    # Return the interval for the next call (0.1 seconds)
-    return 0.1
+    # Return the interval for the next call
+    return 0.5
 
 # Message bus callback for action changes
 def action_change_msgbus_callback(*args):
@@ -143,6 +197,8 @@ def action_change_msgbus_callback(*args):
     Callback function for msgbus that triggers when animation_data.action changes.
     This provides more direct detection of action changes in the UI.
     """
+    if not _sap_auto_sync_enabled:
+        return
     try:
         if bpy.context.mode in {'OBJECT', 'POSE'}:
             scene = bpy.context.scene
@@ -163,6 +219,7 @@ def subscribe_to_action_changes():
     This provides more direct detection of action switching in the UI.
     """
     try:
+        bpy.msgbus.clear_by_owner(_msgbus_owner)
         # Subscribe to changes in animation_data.action for all objects
         bpy.msgbus.subscribe_rna(
             key=(bpy.types.AnimData, "action"),
@@ -297,24 +354,23 @@ class SUB_PT_sub_smush_anim_data_main(Panel):
 
     def draw(self, context):
         layout = self.layout
-        arma = context.object
+        ssp = context.scene.sub_scene_properties
         
         # Show auto-sync status and manual control
         box = layout.box()
-        row = box.row()
-        
-        # Check if handlers are registered to show auto-sync status
-        handlers_active = (sync_sap_action_handler in bpy.app.handlers.frame_change_post and
-                          sync_sap_action_depsgraph_handler in bpy.app.handlers.depsgraph_update_post and
-                          bpy.app.timers.is_registered(sync_sap_timer))
-        
-        if handlers_active:
-            row.label(text="SAP Auto-Sync: Active", icon='CHECKMARK')
-        else:
-            row.label(text="SAP Auto-Sync: Inactive", icon='ERROR')
-            
-        # Manual sync button
+        row = box.row(align=True)
+        row.prop(
+            ssp,
+            "sap_auto_sync_enabled",
+            text="SAP Auto-Sync",
+            toggle=True,
+            icon='CHECKMARK' if ssp.sap_auto_sync_enabled else 'PAUSE',
+        )
         row.operator(SUB_OP_sync_sap_action.bl_idname, icon='FILE_REFRESH', text="Manual Sync")
+        if not ssp.sap_auto_sync_enabled:
+            col = box.column(align=True)
+            col.scale_y = 0.85
+            col.label(text="Off: use Manual Sync after switching actions.", icon='INFO')
         layout.operator("sub.face_picker_popup", text="Easy Facial Animation", icon="IMAGE_DATA")
 
 class SUB_PT_sub_smush_anim_data_vis_tracks(Panel):
@@ -354,6 +410,11 @@ class SUB_PT_sub_smush_anim_data_vis_tracks(Panel):
         col.separator()
         col.operator(SUB_OP_vis_entry_shift.bl_idname, icon='TRIA_UP', text='').shift_direction = 'UP'
         col.operator(SUB_OP_vis_entry_shift.bl_idname, icon='TRIA_DOWN', text='').shift_direction = 'DOWN'
+        row = layout.row(align=True)
+        op = row.operator(SUB_OP_purge_unused_vis_tracks.bl_idname, text="Purge Current", icon='BRUSH_DATA')
+        op.scope = 'CURRENT'
+        op = row.operator(SUB_OP_purge_unused_vis_tracks.bl_idname, text="Purge All Anims", icon='TRASH')
+        op.scope = 'ALL'
 
 class SUB_PT_sub_smush_anim_data_mat_tracks(Panel):
     bl_label = "Ultimate Material Tracks"
@@ -717,20 +778,18 @@ class SUB_OP_vis_entry_remove(Operator):
     def execute(self, context):
         sap = context.object.data.sub_anim_properties
         active_vis_track_index = sap.active_vis_track_index
-        
-        fcurves = get_id_action_fcurves(context.object.data)
-        if fcurves is not None:
-            fcurve_to_remove = fcurves.find(f'sub_anim_properties.vis_track_entries[{active_vis_track_index}].value')
-            if fcurve_to_remove is not None:
-                fcurves.remove(fcurve_to_remove)
-            for index in range(active_vis_track_index+1, len(sap.vis_track_entries)):
-                fcurve_to_decrement = fcurves.find(f'sub_anim_properties.vis_track_entries[{index}].value')
-                if fcurve_to_decrement is not None:
-                    fcurve_to_decrement.data_path = f'sub_anim_properties.vis_track_entries[{index-1}].value'
-        
-        sap.vis_track_entries.remove(active_vis_track_index)
-        i = active_vis_track_index
-        sap.active_vis_track_index = min(max(0, i-1), len(sap.vis_track_entries))
+
+        from .visibility_tracks import remap_visibility_entry_order
+
+        new_order = [
+            index for index in range(len(sap.vis_track_entries))
+            if index != active_vis_track_index
+        ]
+        remap_visibility_entry_order(context.object, new_order)
+        sap.active_vis_track_index = min(
+            max(0, active_vis_track_index - 1),
+            max(len(sap.vis_track_entries) - 1, 0),
+        )
 
         refresh_visibility_drivers(context)       
         return {'FINISHED'} 
@@ -761,16 +820,14 @@ class SUB_OP_vis_entry_shift(Operator):
         
         other_index = active_vis_entry_index-1 if self.shift_direction == 'UP' else active_vis_entry_index+1
             
-        fcurves = get_id_action_fcurves(context.object.data)
-        if fcurves is not None:
-            active_fcurve = fcurves.find(f"sub_anim_properties.vis_track_entries[{active_vis_entry_index}].value")
-            other_fcurve = fcurves.find(f"sub_anim_properties.vis_track_entries[{other_index}].value")
-            if active_fcurve is not None:
-                active_fcurve.data_path = f"sub_anim_properties.vis_track_entries[{other_index}].value"
-            if other_fcurve is not None:
-                other_fcurve.data_path = f"sub_anim_properties.vis_track_entries[{active_vis_entry_index}].value"
+        from .visibility_tracks import remap_visibility_entry_order
 
-        vis_entries.move(active_vis_entry_index, other_index)
+        new_order = list(range(len(vis_entries)))
+        new_order[active_vis_entry_index], new_order[other_index] = (
+            new_order[other_index],
+            new_order[active_vis_entry_index],
+        )
+        remap_visibility_entry_order(context.object, new_order)
         sap.active_vis_track_index = other_index
         refresh_visibility_drivers(context)
         return {'FINISHED'}
@@ -791,6 +848,69 @@ class SUB_OP_vis_drivers_remove(Operator):
         remove_visibility_drivers(context)
         return {'FINISHED'}
 
+
+class SUB_OP_purge_unused_vis_tracks(Operator):
+    bl_idname = 'sub.purge_unused_vis_tracks'
+    bl_label = 'Purge Unused Visibility Tracks'
+    bl_description = (
+        'Remove visibility tracks that do not match this model, compact their '
+        'indices safely, and merge names that differ only by capitalization'
+    )
+    bl_options = {'REGISTER', 'UNDO'}
+
+    scope: EnumProperty(
+        name='Scope',
+        items=(
+            ('CURRENT', 'Current Animation', 'Purge invalid tracks from the current animation'),
+            ('ALL', 'All Animations', 'Purge invalid tracks from every animation for this armature'),
+        ),
+        default='CURRENT',
+        options={'HIDDEN'},
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            context.object is not None
+            and context.object.type == 'ARMATURE'
+            and len(context.object.data.sub_anim_properties.vis_track_entries) > 0
+        )
+
+    def invoke(self, context, _event):
+        if self.scope == 'ALL':
+            return context.window_manager.invoke_confirm(
+                self,
+                _event,
+                title='Purge Visibility Tracks from All Animations?',
+                message='This removes tracks that do not correspond to a mesh on this model.',
+                confirm_text='Purge All Animations',
+                icon='WARNING',
+            )
+        return self.execute(context)
+
+    def execute(self, context):
+        from .visibility_tracks import purge_unused_visibility_tracks
+
+        result = purge_unused_visibility_tracks(context.object, self.scope)
+        if result['actions'] == 0:
+            self.report({'WARNING'}, 'No matching SAP visibility action was found.')
+            return {'CANCELLED'}
+
+        refresh_visibility_drivers(context)
+        try:
+            from ..extras.smash_viewport import invalidate_animation_state
+
+            invalidate_animation_state()
+        except Exception:
+            pass
+        scope_label = 'current animation' if self.scope == 'CURRENT' else f"{result['actions']} animations"
+        self.report(
+            {'INFO'},
+            f"Purged {result['entries']} entries and {result['curves']} F-curves from {scope_label}; "
+            f"merged {result['duplicates']} case-only duplicate(s)",
+        )
+        return {'FINISHED'}
+
 class SUB_OP_auto_fill_vis_entries(Operator):
     bl_idname = 'sub.auto_fill_vis_entries'
     bl_label = 'Auto Fill Vis Entries'
@@ -803,19 +923,17 @@ class SUB_OP_auto_fill_vis_entries(Operator):
 
     def execute(self, context):
         arma: bpy.types.Object = context.object
-        mesh_names = {child.name for child in arma.children if child.type == 'MESH'}
-        vis_names: set[str] = set()
-        for name in mesh_names:
-            regex = r"(.*)\_VIS\_.*"
-            match = re.match(regex, name)
-            if match:
-                vis_names.add(match.groups()[0])
+        from .visibility_tracks import model_visibility_names
+
+        vis_names = set(model_visibility_names(arma).values())
         sap: SUB_PG_sub_anim_data = arma.data.sub_anim_properties
+        existing_names = {entry.name.casefold() for entry in sap.vis_track_entries}
         for vis_name in vis_names:
-            if vis_name not in sap.vis_track_entries:
+            if vis_name.casefold() not in existing_names:
                 new_entry: SUB_PG_vis_track_entry = sap.vis_track_entries.add()
                 new_entry.name = vis_name
                 new_entry.value = True
+                existing_names.add(vis_name.casefold())
         return {'FINISHED'}
 
 class SUB_OP_set_all_vis_entries_false(Operator):
@@ -881,20 +999,13 @@ class SUB_OP_organize_vis_entries_alphabetically(Operator):
         arma: bpy.types.Object = context.object
         sap: SUB_PG_sub_anim_data = arma.data.sub_anim_properties
         
-        # Get all entries and sort them alphabetically by full name
-        entries = list(sap.vis_track_entries)
-        entries.sort(key=lambda x: x.name.lower())
-        
-        # Use bubble sort approach to avoid conflicts
-        for i in range(len(entries)):
-            for j in range(len(entries) - 1):
-                current_entry = sap.vis_track_entries[j]
-                next_entry = sap.vis_track_entries[j + 1]
-                
-                # Compare names (case-insensitive)
-                if current_entry.name.lower() > next_entry.name.lower():
-                    # Swap positions
-                    sap.vis_track_entries.move(j, j + 1)
+        from .visibility_tracks import remap_visibility_entry_order
+
+        new_order = sorted(
+            range(len(sap.vis_track_entries)),
+            key=lambda index: sap.vis_track_entries[index].name.casefold(),
+        )
+        remap_visibility_entry_order(arma, new_order)
         
         # Reset active index
         sap.active_vis_track_index = 0
@@ -916,52 +1027,16 @@ class SUB_OP_organize_vis_entries_by_move(Operator):
         arma: bpy.types.Object = context.object
         sap: SUB_PG_sub_anim_data = arma.data.sub_anim_properties
         
-        # Get all entries
-        entries = list(sap.vis_track_entries)
-        
-        # Group entries by their move type (last part after underscore)
-        move_groups = {}
-        for entry in entries:
-            # Split by underscore and get the last part
-            parts = entry.name.split('_')
-            if len(parts) > 1:
-                move_type = parts[-1]  # Last part after underscore
-                if move_type not in move_groups:
-                    move_groups[move_type] = []
-                move_groups[move_type].append(entry)
-            else:
-                # If no underscore, put in a special group
-                if 'no_move_type' not in move_groups:
-                    move_groups['no_move_type'] = []
-                move_groups['no_move_type'].append(entry)
-        
-        # Sort move types alphabetically
-        sorted_move_types = sorted(move_groups.keys())
-        
-        # Create the desired order - group by move type, then sort alphabetically within each group
-        desired_order = []
-        for move_type in sorted_move_types:
-            # Sort entries within each move type alphabetically
-            move_entries = sorted(move_groups[move_type], key=lambda x: x.name.lower())
-            desired_order.extend(move_entries)
-        
-        # Move entries to their correct positions using a more direct approach
-        # Create a mapping of entry names to their desired positions
-        name_to_desired = {entry.name: i for i, entry in enumerate(desired_order)}
-        
-        # Sort the current list based on the desired order
-        for i in range(len(sap.vis_track_entries)):
-            for j in range(len(sap.vis_track_entries) - 1):
-                current_entry = sap.vis_track_entries[j]
-                next_entry = sap.vis_track_entries[j + 1]
-                
-                # Get desired positions
-                current_desired = name_to_desired.get(current_entry.name, len(desired_order))
-                next_desired = name_to_desired.get(next_entry.name, len(desired_order))
-                
-                # If they're in wrong order, swap them
-                if current_desired > next_desired:
-                    sap.vis_track_entries.move(j, j + 1)
+        from .visibility_tracks import remap_visibility_entry_order
+
+        def move_sort_key(index):
+            name = sap.vis_track_entries[index].name
+            parts = name.rsplit('_', 1)
+            move_type = parts[1] if len(parts) > 1 else 'no_move_type'
+            return (move_type.casefold(), name.casefold())
+
+        new_order = sorted(range(len(sap.vis_track_entries)), key=move_sort_key)
+        remap_visibility_entry_order(arma, new_order)
         
         # Reset active index
         sap.active_vis_track_index = 0
@@ -1014,6 +1089,11 @@ class SUB_MT_vis_entry_context_menu(Menu):
         layout.separator()
         layout.operator('sub.auto_fill_vis_entries', icon='SHADERFX', text='Autofill Visibility Entries')
         layout.operator('sub.insert_all_vis_entry_keyframes', icon='KEY_HLT', text='Insert Keyframes for All Entries')
+        layout.separator()
+        op = layout.operator(SUB_OP_purge_unused_vis_tracks.bl_idname, icon='BRUSH_DATA', text='Purge Unused (Current Animation)')
+        op.scope = 'CURRENT'
+        op = layout.operator(SUB_OP_purge_unused_vis_tracks.bl_idname, icon='TRASH', text='Purge Unused (All Animations)')
+        op.scope = 'ALL'
         layout.separator()
         layout.operator('sub.organize_vis_entries_alphabetically', icon='SORTALPHA', text='Organize Alphabetically')
         layout.operator('sub.organize_vis_entries_by_move', icon='SORTSIZE', text='Organize by Move')
@@ -1195,8 +1275,13 @@ def _style_visibility_soon():
             eye_bone = pose.bones.get('BL_EyeLook') if pose is not None else None
             if eye_bone is not None:
                 try:
-                    eye_bone.color.palette = 'THEME03'
-                    eye_bone.bone.color.palette = 'THEME03'
+                    # Only write when needed — assigning the same palette every
+                    # call still dirties the depsgraph and restarts viewport samples.
+                    if getattr(eye_bone.color, "palette", None) != "THEME03":
+                        eye_bone.color.palette = "THEME03"
+                    bone = getattr(eye_bone, "bone", None)
+                    if bone is not None and getattr(bone.color, "palette", None) != "THEME03":
+                        bone.color.palette = "THEME03"
                 except Exception:
                     pass
     except Exception:
@@ -1272,19 +1357,15 @@ def cleanup_sap_auto_sync():
 
 def register():
     """Register only handlers and timers - classes are registered separately"""
-    # Register the SAP action sync handlers
-    if sync_sap_action_handler not in bpy.app.handlers.frame_change_post:
-        bpy.app.handlers.frame_change_post.append(sync_sap_action_handler)
-    
-    if sync_sap_action_depsgraph_handler not in bpy.app.handlers.depsgraph_update_post:
-        bpy.app.handlers.depsgraph_update_post.append(sync_sap_action_depsgraph_handler)
-    
-    # Also register a timer for more frequent checking
-    if not bpy.app.timers.is_registered(sync_sap_timer):
-        bpy.app.timers.register(sync_sap_timer, first_interval=0.1, persistent=True)
-    
-    # Subscribe to action changes for direct detection
-    subscribe_to_action_changes()
+    enabled = True
+    try:
+        scene = bpy.context.scene
+        ssp = getattr(scene, "sub_scene_properties", None)
+        if ssp is not None and hasattr(ssp, "sap_auto_sync_enabled"):
+            enabled = bool(ssp.sap_auto_sync_enabled)
+    except Exception:
+        enabled = True
+    set_sap_auto_sync_enabled(enabled)
     apply_dopesheet_key_colors()
     try:
         from .fcurve_compat import get_all_action_fcurves, is_ik_fk_fcurve, is_visibility_fcurve
@@ -1300,7 +1381,7 @@ def register():
                     fcurve.hide = False
     except Exception:
         pass
-    if not bpy.app.timers.is_registered(_style_visibility_soon):
+    if enabled and not bpy.app.timers.is_registered(_style_visibility_soon):
         bpy.app.timers.register(_style_visibility_soon, first_interval=0.2)
     
 
@@ -1314,16 +1395,9 @@ def register():
 
 def unregister():
     """Unregister only handlers and timers - classes are unregistered separately"""
-    # Unregister all SAP action sync handlers
-    if sync_sap_action_handler in bpy.app.handlers.frame_change_post:
-        bpy.app.handlers.frame_change_post.remove(sync_sap_action_handler)
-    
-    if sync_sap_action_depsgraph_handler in bpy.app.handlers.depsgraph_update_post:
-        bpy.app.handlers.depsgraph_update_post.remove(sync_sap_action_depsgraph_handler)
+    set_sap_auto_sync_enabled(False)
     
     # Unregister the timer
-    if bpy.app.timers.is_registered(sync_sap_timer):
-        bpy.app.timers.unregister(sync_sap_timer)
     if bpy.app.timers.is_registered(_style_visibility_soon):
         bpy.app.timers.unregister(_style_visibility_soon)
     
@@ -1331,8 +1405,6 @@ def unregister():
     global _last_known_actions
     _last_known_actions.clear()
     
-    # Unsubscribe from action changes
-    unsubscribe_from_action_changes()
     restore_dopesheet_key_colors()
     
 if __name__ == '__main__':

@@ -26,6 +26,7 @@ A custom render engine (`Smash Viewport`) that draws Smash shaders with the same
 - Smash shaders are perspective. Numpad ortho views are matched with a pulled-back perspective so lighting still works
 - Non-Smash meshes (retarget sources, Jump Force, etc.) get a simple lit preview so they are not black silhouettes. Smash still comes from `ssbh_wgpu`
 - **Relink Smash Model Folder** — older `.blend` files never stored the `.numshb` path. Point it at the original model folder so Smash Viewport can load that fighter again
+- Importing an animation while in Solid shading re-enables armature deform on meshes a previous Smash Viewport session left disabled, so expression and face meshes follow the rig instead of floating at bind pose
 
 Shipped native plugins (the addon updater installs these with the rest of the zip):
 
@@ -47,15 +48,20 @@ These are the pieces that are **not** in the main plugin, or are substantially d
 
 **Importer** (select the Smash armature or camera first):
 
-- Browse a single `.nuanmb`, or **Browse Animation Folder** and pick from a list
-- **Import Selected Animation** / **Import All Animations**
+- Imported action-name extensions are configurable in the add-on preferences: `.nuanmb` is hidden by default and `.rawanim` is shown by default
+
+- Browse one or more `.nuanmb` files, or **Browse Animation Folder** and pick from a list
+- Click, Ctrl-click, or Shift-click to select animations, with **Select All** and **Deselect All** controls
+- **Import Selected Animations** / **Import All Animations**
 - Import options: transform, material, visibility
 - **Raw Animations** — browse a folder of `.rawanim` files, import selected or all (fighter `motion/body` folders auto-point at `rawanims` when present)
+- In Armature Data → **Ultimate Visibility Track Entries**, use **Purge Current** or **Purge All Anims** to remove tracks with no corresponding model mesh and compact the shared list safely
+- Visibility names are matched case-insensitively; case-only duplicates are merged using logical OR so an enabled state is not lost
 
 **Exporter**:
 
-- Export the current action, or **batch export** a checklist of actions
-- **Export Raw Animation** / include raw animation on normal export
+- Export the current action, or batch export from a matching multi-select checkbox list. The batch button shows the selected count
+- **Export Raw Animation** and **Include Raw with .NUANMB Export** live in the **Raw Animations** panel, not here
 - Bone override list, populate-from-armature, **Thrown** preset
 - Bones named `BL_*` are skipped on anim (and model) export so helper controls never ship in-game
 
@@ -68,23 +74,37 @@ These are the pieces that are **not** in the main plugin, or are substantially d
   - **Finger sliders** (thumb pad + curl/spread; extra hands get the same controls). Toggle sliders vs Smash finger circles after creation
   - **Eye look** (`BL_EyeLook` + `CustomVector31`)
   - Hide helper / swing bones, match IK to the loaded anim, clean leftover keyframes
+- **Rig Extras** — once a rig exists, IK, Eyes, and Fingers each show as Added or Missing with a one-click **Add** or **Bake & Remove**, so you can build a rig without one of them and add it later
 - Remove rig, or **Bake and Remove Rig** (fingers / eyes / IK)
-- IK/FK switches for Arms, Legs, or Both
 - **Idle Pose Library** — store/apply idles, include Trans, mirrored, 180 rotate
 - **User Poses** — add/remove poses, apply to selected bones or the current frame
 - **IK Tools** — create arm/leg IK, bake & remove IK/FK, toggle influence, **Bulk IK** on every loaded animation
-- **Transfer Hip Animation to Trans**
 - **Mirror Animation** — space, Smash Y Anim Flip, custom extra bones, **Mirror All Loaded Animations**
-- Reset Bone Locations, Ground Character, Invert Positive and Negative, Remove Animation from Swing Bones
-- **Gif or Photo** (also on the Action Editor header)
+- **Misc Anim Stuff** (collapsible) — Transfer Hip Animation to Trans, Reset Bone Locations, Ground Character, Invert Positive and Negative, Remove Animation from Swing Bones, **GIF or Photo** (also on the Action Editor header)
+- **Animation Layers** — when the Animation Layers addon is installed, its UI is embedded in a collapsible section here, and layer handlers are paused around rig edits that would otherwise crash Blender
 
-### Gif or Photo and Animation Scroll
+#### Independent IK and FK
+
+IK and FK are separate channels rather than one influence slider. Full notes: [`docs/ik-fk-workflow.md`](docs/ik-fk-workflow.md).
+
+- **Switch to IK** / **Switch to FK** per Arms, Legs, or Both. Each switch keys only the destination mode at the current frame, so opposite-mode keys on different frames blend between them. The same rows appear in Animation Rig and in IK Tools
+- Creating limbs offers to copy the current FK animation into IK. Creation and matching add no switch keys and leave FK transform keys intact; new controls start in FK
+- **Match IK to Current Animation** appears when an action is newly loaded, controls are newly created, or a limb is unmatched. Matching samples the scene frame range and does not overwrite edited controls
+- **Bake & Remove IK** takes a limb selection (all present IK, legs only, arms only, arms and legs), samples the evaluated motion before removing controls, and leaves unrelated limb channels alone
+- Solver animation lives on hidden, nondeforming `BL_SUB_IK_*` bones; original bones blend to them through driven constraints
+- Regression suite: `blender --background --factory-startup --python-exit-code 1 --python tests/ik_regression.py`
+
+### GIF or Photo and Animation Navigation
 
 On the Action Editor / Dope Sheet header (and in Animation Tools):
 
 - **Start Animation Scroll** — mouse-wheel through every loaded action; the timeline jumps to that clip's range; unanimated bones go to rest (`_RET` bones are left alone)
-- **Gif or Photo** — copies a transparent Smash Viewport (or GPU viewport) capture to the clipboard. Photo is a still. GIF records the scene range at 30 FPS (Esc cancels). Temp files are deleted when Blender closes
+- **Start Sequence** — plays every compatible action once, beginning at the selected action and updating the frame range for each clip
+- **Ctrl+Down / Ctrl+Up** — play the next / previous compatible action; navigation wraps at both ends
+- **GIF or Photo** — copies a transparent Smash Viewport (or GPU viewport) capture to the clipboard. Photo is a still. GIF records the scene range at 30 FPS (Esc cancels). Temp files are deleted when Blender closes
 - **Easy Facial Animation** appears on that header when a face library is set up
+
+The Timeline header includes FPS preset buttons. Their four values (and button visibility) are configurable in the add-on preferences.
 
 ### Model Tools
 
@@ -95,7 +115,20 @@ On the Action Editor / Dope Sheet header (and in Animation Tools):
 - Unstack UV Islands
 - Convert Shape Keys to Meshes (prefix)
 - Remove Selected Bones, Connect Bone Chain, Delete Unweighted Bones
+- **Refresh Bone Drawing** in Armature Data > Viewport Display works around invisible bones on imported rigs without retaining any rig edits
 - **Roll Value Copier** — copy bone roll from a source armature to a target (name-matched, optional selected-only)
+
+### Armature Collection Presets
+
+The **Armature Collection Presets** panel in the Ultimate tab saves and restores an armature's organization and viewport setup. Presets can include scene collections and object placement, materials, bone collections, bone colors/custom shapes, and armature display settings. Each section can be enabled independently.
+
+- Choose a **Blend File**, **Global**, or **Custom** preset library. Configure the custom directory in the add-on preferences.
+- Select an armature and use **Save New** to capture it. Related descendants are included by default; custom-shape objects are optional.
+- Use **Preview** to inspect matches without changing the file, then **Apply** to review the same mapping and apply it with Undo support.
+- Matching is exact/case-insensitive and understands Blender suffixes such as `.001`. Optional fuzzy matching defaults to an 85% threshold and requires explicit approval of the displayed mappings.
+- Unmatched objects stay where they are unless **Move to Unmatched** is selected.
+- Presets preserve multiple object collection memberships and nested bone collections. Applying never deletes objects or collections and does not disturb collection links belonging exclusively to other scenes.
+- The list supports search, refresh, best-match selection, update, duplicate, rename, delete, multi-file import, and export.
 
 ### Easy Facial Animation
 
@@ -134,6 +167,16 @@ Expy Kit lives in the Ultimate tab (always listed; most operators want Pose Mode
 - SAP action auto-sync so vis/mat stay attached to the current action
 - Action slots / fcurve helpers for Blender 4 and 5
 - `ParamLabels.csv` lives outside the addon so updates do not wipe custom hashes (`%APPDATA%/Smash Ultimate Labels` on Windows)
+- **Append New Hashes** adds lowercase bone names, `bonecol` collision names, and child mesh names in a responsive batch; additional CSV destinations are configurable in the add-on preferences
+
+### Panel Presets and panel order
+
+Two independent controls over the Ultimate tab itself.
+
+- **Panel Presets** (bottom of the Ultimate tab) decides which panels are *visible*. **All Panels**, **Animate**, and **Modeling** ship built in; add, duplicate, rename, and delete your own, tick panels on and off, and **Save Presets** writes them to your Blender config so other `.blend` files pick them up. The checklist applies immediately
+- The add-on preferences contain a persistent **Ultimate Sidebar Panel Order** list, which decides the *order*. Select a panel and move it with the up/down arrows; the chosen order is restored when the add-on loads in later Blender sessions
+
+The two work together: ordering never moves the Panel Presets panel itself, which stays pinned at the bottom.
 
 ### Helper bones (`BL_*`)
 
@@ -144,6 +187,7 @@ Any extra control you add (IK widgets, finger sliders, eye look, custom helpers)
 Still here, documented on the [upstream wiki](https://github.com/ssbucarlos/smash-ultimate-blender/wiki):
 
 - Import/export of `.numdlb`, `.numshb`, `.nusktb`, `.nuhlpb`, `update.prc`, `.numeshexb`, `.adjb`, `.numatb`, `.nutexb`, `.nuanmb`, `swing.prc`
+- Batch `.nuanmb` import from the file browser, plus Ctrl-click/Shift-click multi-selection in the loaded animation-folder list
 - Camera `.nuanmb`
 - Magic Exo Skel Maker (build, preview modifiers, un-exo, bone align, weight transfer, cleanup)
 - Material Re-Importer, Attribute Renamer, swing collision editing
@@ -159,7 +203,8 @@ Tutorials for the shared import/export flow are on the [wiki](https://github.com
    - Or a specific commit from that branch
 2. Blender → Edit → Preferences → Add-ons → Install From Disk → pick the zip
 3. Enable **Smash Ultimate Blender Tools**
-4. In the 3D Viewport, open the Sidebar (`N`) and open the **Ultimate** tab. **If the tab is missing, switch to Object or Pose mode** (Edit Mesh hides most of these panels)
+4. In the 3D Viewport, open the Sidebar (`N`) and open the **Ultimate** tab. **If the tab is missing, switch to Object or Pose mode** (Edit Mesh hides most of these panels). Model Importer/Exporter, Swing, Material Re-Importer, Attribute Renamer, and Magic Exo Skel Maker are available in Pose mode too, not just Object mode
+5. If a panel you expect is missing while the tab is visible, check the active preset in **Panel Presets** at the bottom of the tab
 
 ## System requirements
 
@@ -172,6 +217,8 @@ If Blender runs but the addon will not enable, open an issue on [this fork](http
 ### Auto-updater
 
 This fork watches the **`animation-workflow`** branch (not GitHub Releases). When a new commit lands, **Update Available!** appears in the Ultimate tab with the changelog and **Download & Install Update**. It backs up the current install and restarts Blender.
+
+If your installed version is newer than the one published on that branch — a local build with unreleased work, for instance — the panel stays hidden rather than offering an update that would replace newer code with older. Equal versions still update on new commits, and if the branch cannot be reached the usual commit check applies.
 
 Smash Viewport binaries ship in that zip. After an update that changes them, quit Blender completely once so the new `.dll` / `.so` / `.dylib` can load.
 

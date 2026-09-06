@@ -3663,7 +3663,7 @@ def _blit_rgba(width, height, pixels, dest_w=None, dest_h=None):
                 gpu.matrix.load_matrix(identity)
             except Exception:
                 gpu.matrix.load_identity()
-            draw_texture_2d(texture, (0, 0), dest_w, dest_h)
+            _draw_texture_2d_compat(texture, (0, 0), dest_w, dest_h)
     finally:
         try:
             gpu.state.blend_set(prev_blend or "NONE")
@@ -5508,3 +5508,17 @@ def unregister():
         except Exception:
             pass
     _unregister_old_classes()
+
+
+def _draw_texture_2d_compat(texture, position, width, height):
+    """draw_texture_2d that keeps correct gamma on Blender 5.0+.
+
+    5.0 requires textures from gpu.texture.from_image() drawn inside a Python
+    draw handler to declare the target colour space, or they render washed out.
+    """
+    from gpu_extras.presets import draw_texture_2d
+    try:
+        draw_texture_2d(texture, position, width, height,
+                        is_scene_linear_with_rec709_srgb_target=True)
+    except TypeError:
+        draw_texture_2d(texture, position, width, height)  # Blender 4.x
