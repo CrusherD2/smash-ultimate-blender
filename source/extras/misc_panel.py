@@ -1,6 +1,10 @@
+import os
+import threading
+
 import bpy
 
 from bpy.types import Panel, Operator
+from bpy.props import StringProperty
 
 from ..model.material.convert_smash_material import (
     find_target_armature as find_material_armature,
@@ -329,7 +333,7 @@ class SUB_PT_animation_tools(Panel):
         row.operator("sub.remove_swing_bone_animation", text="Remove Animation from Swing Bones")
 
         row = layout.row(align=True)
-        row.operator("sub.gif_or_photo", text="Gif or Photo", icon="RENDER_ANIMATION")
+        row.operator("sub.gif_or_photo", text="GIF or Photo", icon="RENDER_ANIMATION")
 
 class SUB_PT_model_tools(Panel):
     bl_space_type = 'VIEW_3D'
@@ -470,6 +474,8 @@ class SUB_PT_misc_utilities(Panel):
     def draw(self, context):
         layout = self.layout
         layout.use_property_split = False
+
+        layout.operator("sub.append_param_labels", text="Append New Hashes", icon="FILE_TICK")
         ssp = context.scene.sub_scene_properties
 
         eye_box = layout.box()
@@ -742,6 +748,130 @@ class SUB_OP_convert_shape_keys_to_meshes(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class SUB_OT_add_param_labels_path(Operator):
+    bl_idname = "sub.add_param_labels_path"
+    bl_label = "Add ParamLabels File"
+    bl_description = "Choose an additional ParamLabels CSV file to receive generated hashes"
+
+    filepath: StringProperty(subtype="FILE_PATH")
+    filter_glob: StringProperty(default="*.csv", options={"HIDDEN"})
+
+    def invoke(self, context, _event):
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        from ..addon_preferences import get_addon_preferences
+
+        if not self.filepath:
+            return {"CANCELLED"}
+        prefs = get_addon_preferences(context)
+        if prefs is None:
+            self.report({"ERROR"}, "Could not access add-on preferences")
+            return {"CANCELLED"}
+        item = prefs.param_labels_paths.add()
+        item.path = self.filepath
+        item.name = os.path.basename(self.filepath)
+        prefs.param_labels_paths_index = len(prefs.param_labels_paths) - 1
+        return {"FINISHED"}
+
+
+class SUB_OT_remove_param_labels_path(Operator):
+    bl_idname = "sub.remove_param_labels_path"
+    bl_label = "Remove ParamLabels File"
+
+    def execute(self, context):
+        from ..addon_preferences import get_addon_preferences
+
+        prefs = get_addon_preferences(context)
+        if prefs is None or not prefs.param_labels_paths:
+            return {"CANCELLED"}
+        index = min(prefs.param_labels_paths_index, len(prefs.param_labels_paths) - 1)
+        prefs.param_labels_paths.remove(index)
+        prefs.param_labels_paths_index = max(0, index - 1)
+        return {"FINISHED"}
+
+
+class SUB_OT_append_param_labels(Operator):
+    bl_idname = "sub.append_param_labels"
+    bl_label = "Append New Hashes"
+    bl_description = (
+        "Append lowercase bone, bone collision, and child mesh hashes to ParamLabels.csv "
+        "and any additional files configured in the add-on preferences"
+    )
+
+    _thread = None
+    _timer = None
+    _result = None
+    _bone_count = 0
+    _mesh_label_count = 0
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return obj is not None and obj.type == "ARMATURE"
+
+    def execute(self, context):
+        from ..addon_preferences import get_addon_preferences
+        from ..param_labels import batch_add_hash_labels, ensure_param_labels
+
+        armature = context.active_object
+        labels = []
+        for bone in armature.data.bones:
+            name = bone.name.lower()
+            labels.extend((name, name + "col"))
+
+        mesh_labels = []
+        for child in armature.children_recursive:
+            if child.type != "MESH":
+                continue
+            name = child.name.lower()
+            mesh_labels.append(name)
+            suffix = "_vis_o_objshape"
+            if name.endswith(suffix):
+                mesh_labels.append(name[:-len(suffix)])
+        labels.extend(mesh_labels)
+
+        prefs = get_addon_preferences(context)
+        extra_paths = tuple(item.path for item in prefs.param_labels_paths if item.path) if prefs else ()
+        # Creation/download and all bpy access must happen on Blender's main thread.
+        ensure_param_labels()
+        self._bone_count = len(armature.data.bones)
+        self._mesh_label_count = len(mesh_labels)
+        self._result = None
+
+        def worker():
+            self._result = batch_add_hash_labels(labels, extra_paths)
+
+        self._thread = threading.Thread(target=worker, name="SUB ParamLabels", daemon=True)
+        self._thread.start()
+        self._timer = context.window_manager.event_timer_add(0.05, window=context.window)
+        context.window_manager.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event):
+        if event.type != "TIMER" or self._result is None:
+            return {"RUNNING_MODAL"}
+        context.window_manager.event_timer_remove(self._timer)
+        self._timer = None
+        added, skipped, file_count, error = self._result
+        if error:
+            self.report({"ERROR"}, f"Could not append ParamLabels hashes: {error}")
+            return {"CANCELLED"}
+        source_count = self._bone_count * 2 + self._mesh_label_count
+        self.report(
+            {"INFO"},
+            f"Processed {source_count} labels across {file_count} file(s): "
+            f"{added} added, {skipped} already present.",
+        )
+        return {"FINISHED"}
+
+    def cancel(self, context):
+        if self._timer is not None:
+            context.window_manager.event_timer_remove(self._timer)
+            self._timer = None
+
+
 def register():
     bpy.utils.register_class(SUB_PT_animation_tools)
     bpy.utils.register_class(SUB_PT_model_tools)
@@ -749,9 +879,15 @@ def register():
     bpy.utils.register_class(SUB_OP_mirror_vertex_groups)
     bpy.utils.register_class(SUB_OP_mirror_mesh_as_separate_object)
     bpy.utils.register_class(SUB_OP_convert_shape_keys_to_meshes)
+    bpy.utils.register_class(SUB_OT_add_param_labels_path)
+    bpy.utils.register_class(SUB_OT_remove_param_labels_path)
+    bpy.utils.register_class(SUB_OT_append_param_labels)
 
 
 def unregister():
+    bpy.utils.unregister_class(SUB_OT_append_param_labels)
+    bpy.utils.unregister_class(SUB_OT_remove_param_labels_path)
+    bpy.utils.unregister_class(SUB_OT_add_param_labels_path)
     bpy.utils.unregister_class(SUB_OP_convert_shape_keys_to_meshes)
     bpy.utils.unregister_class(SUB_OP_mirror_mesh_as_separate_object)
     bpy.utils.unregister_class(SUB_OP_mirror_vertex_groups)
@@ -760,4 +896,3 @@ def unregister():
     bpy.utils.unregister_class(SUB_PT_animation_tools)
         
     
-        

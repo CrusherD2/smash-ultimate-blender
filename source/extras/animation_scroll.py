@@ -2,13 +2,68 @@ import bpy
 from bpy.types import Operator
 from bpy.props import BoolProperty
 
-from ..anim.fcurve_compat import get_fcurves
+from ..anim.fcurve_compat import action_frame_range_safe, action_matches_armature, get_fcurves
+from ..blender_compat import assign_action
 
 # Global variable to track the last checked object
 _last_checked_object = None
 
 # Global variable to track the last action to detect changes
 _last_action = None
+
+_sequence_operator = None
+_addon_keymaps = []
+
+
+def get_armature_actions(armature):
+    """Return this armature's playable actions in stable name order."""
+    if armature is None or armature.type != 'ARMATURE':
+        return []
+    actions = [
+        action for action in bpy.data.actions
+        if "SAP" not in action.name
+        and "_old" not in action.name
+        and action_matches_armature(action, armature)
+    ]
+    return sorted(actions, key=lambda action: action.name.casefold())
+
+
+def apply_armature_action(context, armature, action, *, jump_to_start=True, autoplay=True):
+    if armature.animation_data is None:
+        armature.animation_data_create()
+    armature.animation_data.use_nla = False
+    assign_action(armature.animation_data, action)
+
+    global _last_action
+    _last_action = action
+    reset_unanimated_bones_to_rest(armature, action)
+    start, end = action_frame_range_safe(action)
+    context.scene.frame_start = start
+    context.scene.frame_end = end
+    if jump_to_start:
+        context.scene.frame_set(start)
+    screen = context.screen
+    if autoplay and screen is not None and not screen.is_animation_playing:
+        bpy.ops.screen.animation_play()
+    return start, end
+
+
+def cycle_armature_action(context, direction):
+    armature = context.object
+    if armature is None or armature.type != 'ARMATURE':
+        return None
+    actions = get_armature_actions(armature)
+    if not actions:
+        return None
+    current = armature.animation_data.action if armature.animation_data else None
+    if current in actions:
+        index = actions.index(current)
+        next_index = (index + direction) % len(actions)
+    else:
+        next_index = 0 if direction > 0 else len(actions) - 1
+    action = actions[next_index]
+    apply_armature_action(context, armature, action)
+    return action
 
 def reset_unanimated_bones_to_rest(armature, action):
     """
@@ -231,73 +286,15 @@ class SUB_OP_animation_scroll_modal(Operator):
 
     def cycle_animation(self, context, scroll_up):
         """Cycle through available animations"""
-        armature = context.active_object
-        
-        if not armature or not armature.animation_data:
+        action = cycle_armature_action(context, -1 if scroll_up else 1)
+        if action is None:
+            self.report({'INFO'}, "No compatible armature actions found")
             return
-        
-        # Get all available actions, filtering out SAP and _old actions
-        actions = [action for action in bpy.data.actions 
-                  if not ("SAP" in action.name or "_old" in action.name)]
-        
-        if len(actions) < 2:
-            self.report({'INFO'}, f"Need at least 2 actions to cycle (found {len(actions)})")
-            return  # Need at least 2 actions to cycle
-        
-        current_action = armature.animation_data.action
-        current_index = -1
-        
-        # Find current action index
-        if current_action:
-            try:
-                current_index = actions.index(current_action)
-            except ValueError:
-                current_index = -1
-        
-        # Calculate next index
-        if scroll_up:
-            next_index = (current_index - 1) % len(actions)
-        else:
-            next_index = (current_index + 1) % len(actions)
-        
-        # Set the new action
-        new_action = actions[next_index]
-        armature.animation_data.action = new_action
-        
-        # Update global action tracking
-        global _last_action
-        _last_action = new_action
-        
-        # Reset unanimated bones to their rest positions
-        reset_unanimated_bones_to_rest(armature, new_action)
-        
-        # Update the timeline to show the full animation range
-        if new_action and get_fcurves(new_action):
-            # Find the first and last keyframed frames in the action
-            first_frame = float('inf')
-            last_frame = float('-inf')
-            has_keyframes = False
-            
-            for fcurve in get_fcurves(new_action):
-                if fcurve.keyframe_points:
-                    for keyframe in fcurve.keyframe_points:
-                        frame_num = int(keyframe.co[0])
-                        first_frame = min(first_frame, frame_num)
-                        last_frame = max(last_frame, frame_num)
-                        has_keyframes = True
-            
-            if has_keyframes:
-                # Set the timeline to show the complete animation range
-                context.scene.frame_start = first_frame
-                context.scene.frame_end = last_frame
-                # Keep the current frame position - don't jump to start
-        
-        # Show notification with frame range info
-        if new_action and get_fcurves(new_action):
-            frame_range = f" (frames {context.scene.frame_start}-{context.scene.frame_end})"
-        else:
-            frame_range = ""
-        self.report({'INFO'}, f"Switched to animation: {new_action.name}{frame_range}")
+        self.report(
+            {'INFO'},
+            f"Switched to animation: {action.name} "
+            f"(frames {context.scene.frame_start}-{context.scene.frame_end})",
+        )
 
     def execute(self, context):
         # Start the modal operator (only called by auto-start timer)
@@ -309,6 +306,156 @@ class SUB_OP_animation_scroll_modal(Operator):
         SUB_OP_animation_scroll_modal._running = False
         return {'CANCELLED'}
 
+class SUB_OT_next_armature_action(Operator):
+    bl_idname = "sub.next_armature_action"
+    bl_label = "Next Armature Action"
+    bl_description = "Play the next armature action (wraps after the last action)"
+
+    @classmethod
+    def poll(cls, context):
+        return context.object is not None and context.object.type == 'ARMATURE'
+
+    def execute(self, context):
+        action = cycle_armature_action(context, 1)
+        if action is None:
+            return {'CANCELLED'}
+        self.report({'INFO'}, f"Playing {action.name}")
+        return {'FINISHED'}
+
+
+class SUB_OT_previous_armature_action(Operator):
+    bl_idname = "sub.previous_armature_action"
+    bl_label = "Previous Armature Action"
+    bl_description = "Play the previous armature action (wraps before the first action)"
+
+    @classmethod
+    def poll(cls, context):
+        return context.object is not None and context.object.type == 'ARMATURE'
+
+    def execute(self, context):
+        action = cycle_armature_action(context, -1)
+        if action is None:
+            return {'CANCELLED'}
+        self.report({'INFO'}, f"Playing {action.name}")
+        return {'FINISHED'}
+
+
+def _sequence_frame_change(scene, _depsgraph=None):
+    operator = _sequence_operator
+    if operator is not None:
+        operator.on_frame_change(scene)
+
+
+class SUB_OT_animation_sequence(Operator):
+    bl_idname = "sub.animation_sequence"
+    bl_label = "Play Animation Sequence"
+    bl_description = "Play every compatible action once, starting with the selected action"
+
+    _running = False
+    _cancel_requested = False
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            not cls._running
+            and context.object is not None
+            and context.object.type == 'ARMATURE'
+        )
+
+    def execute(self, context):
+        global _sequence_operator
+        armature = context.object
+        actions = get_armature_actions(armature)
+        if not actions:
+            self.report({'WARNING'}, "No compatible armature actions found")
+            return {'CANCELLED'}
+
+        current = armature.animation_data.action if armature.animation_data else None
+        start_index = actions.index(current) if current in actions else 0
+        self._actions = actions[start_index:] + actions[:start_index]
+        self._index = 0
+        self._armature = armature
+        self._finished = False
+        self._changing = False
+        SUB_OT_animation_sequence._cancel_requested = False
+        SUB_OT_animation_sequence._running = True
+        _sequence_operator = self
+
+        if _sequence_frame_change not in bpy.app.handlers.frame_change_post:
+            bpy.app.handlers.frame_change_post.append(_sequence_frame_change)
+        apply_armature_action(context, armature, self._actions[0], jump_to_start=True, autoplay=True)
+        self._timer = context.window_manager.event_timer_add(0.05, window=context.window)
+        context.window_manager.modal_handler_add(self)
+        self.report({'INFO'}, f"Sequence started with {self._actions[0].name}")
+        return {'RUNNING_MODAL'}
+
+    def on_frame_change(self, scene):
+        if self._changing or self._finished or scene.frame_current < scene.frame_end:
+            return
+        self._index += 1
+        if self._index >= len(self._actions):
+            self._finished = True
+            return
+        self._changing = True
+        try:
+            context = bpy.context
+            apply_armature_action(
+                context,
+                self._armature,
+                self._actions[self._index],
+                jump_to_start=True,
+                autoplay=False,
+            )
+        finally:
+            self._changing = False
+
+    def modal(self, context, event):
+        if event.type == 'ESC' or SUB_OT_animation_sequence._cancel_requested:
+            return self._stop(context, cancelled=True)
+        if event.type == 'TIMER' and self._finished:
+            return self._stop(context, cancelled=False)
+        if (
+            event.type == 'TIMER'
+            and context.screen is not None
+            and not context.screen.is_animation_playing
+        ):
+            return self._stop(context, cancelled=True)
+        return {'PASS_THROUGH'}
+
+    def _stop(self, context, *, cancelled):
+        global _sequence_operator
+        if context.screen is not None and context.screen.is_animation_playing:
+            bpy.ops.screen.animation_play()
+        if getattr(self, '_timer', None) is not None:
+            context.window_manager.event_timer_remove(self._timer)
+            self._timer = None
+        if _sequence_frame_change in bpy.app.handlers.frame_change_post:
+            bpy.app.handlers.frame_change_post.remove(_sequence_frame_change)
+        _sequence_operator = None
+        SUB_OT_animation_sequence._running = False
+        SUB_OT_animation_sequence._cancel_requested = False
+        if not cancelled:
+            self.report({'INFO'}, f"Finished {len(self._actions)} animation(s)")
+            return {'FINISHED'}
+        self.report({'INFO'}, "Animation sequence stopped")
+        return {'CANCELLED'}
+
+    def cancel(self, context):
+        return self._stop(context, cancelled=True)
+
+
+class SUB_OT_toggle_animation_sequence(Operator):
+    bl_idname = "sub.toggle_animation_sequence"
+    bl_label = "Toggle Animation Sequence"
+
+    def execute(self, _context):
+        if SUB_OT_animation_sequence._running:
+            SUB_OT_animation_sequence._cancel_requested = True
+        else:
+            bpy.ops.sub.animation_sequence('INVOKE_DEFAULT')
+        return {'FINISHED'}
+
+
 # --- HEADER BUTTON DRAW FUNCTION ---
 def draw_animation_scroll_button(self, context):
     # Only show in Action Editor mode
@@ -317,8 +464,16 @@ def draw_animation_scroll_button(self, context):
         is_running = SUB_OP_animation_scroll_modal._running
         icon = 'PLAY' if not is_running else 'PAUSE'
         label = 'Start Animation Scroll' if not is_running else 'Stop Animation Scroll'
-        self.layout.operator('sub.toggle_animation_scroll_modal', text=label, icon=icon, depress=is_running)
-        self.layout.operator('sub.gif_or_photo', text='Gif or Photo', icon='RENDER_ANIMATION')
+        row = self.layout.row(align=True)
+        row.operator('sub.toggle_animation_scroll_modal', text=label, icon=icon, depress=is_running)
+        sequence_running = SUB_OT_animation_sequence._running
+        row.operator(
+            'sub.toggle_animation_sequence',
+            text='Stop Sequence' if sequence_running else 'Start Sequence',
+            icon='PAUSE' if sequence_running else 'PLAY',
+            depress=sequence_running,
+        )
+        self.layout.operator('sub.gif_or_photo', text='GIF or Photo', icon='RENDER_ANIMATION')
         try:
             from .face_picker import armature_has_face_picker_menu
             if armature_has_face_picker_menu(context):
@@ -349,14 +504,57 @@ class SUB_OP_toggle_animation_scroll_modal(Operator):
 def register():
     bpy.utils.register_class(SUB_OP_animation_scroll_modal)
     bpy.utils.register_class(SUB_OP_toggle_animation_scroll_modal)
+    bpy.utils.register_class(SUB_OT_next_armature_action)
+    bpy.utils.register_class(SUB_OT_previous_armature_action)
+    bpy.utils.register_class(SUB_OT_animation_sequence)
+    bpy.utils.register_class(SUB_OT_toggle_animation_sequence)
     # Add button to Action Editor/Dope Sheet header
     bpy.types.DOPESHEET_HT_header.append(draw_animation_scroll_button)
 
+    key_config = bpy.context.window_manager.keyconfigs.addon
+    if key_config is not None:
+        keymap = key_config.keymaps.new(name='3D View', space_type='VIEW_3D')
+        item = keymap.keymap_items.new(
+            SUB_OT_next_armature_action.bl_idname,
+            'DOWN_ARROW',
+            'PRESS',
+            ctrl=True,
+            repeat=True,
+        )
+        _addon_keymaps.append((keymap, item))
+        item = keymap.keymap_items.new(
+            SUB_OT_previous_armature_action.bl_idname,
+            'UP_ARROW',
+            'PRESS',
+            ctrl=True,
+            repeat=True,
+        )
+        _addon_keymaps.append((keymap, item))
+
 def unregister():
+    global _sequence_operator
+    SUB_OT_animation_sequence._cancel_requested = True
+    if _sequence_operator is not None and getattr(_sequence_operator, '_timer', None) is not None:
+        try:
+            bpy.context.window_manager.event_timer_remove(_sequence_operator._timer)
+        except Exception:
+            pass
+        _sequence_operator._timer = None
+    if _sequence_frame_change in bpy.app.handlers.frame_change_post:
+        bpy.app.handlers.frame_change_post.remove(_sequence_frame_change)
+    _sequence_operator = None
+    SUB_OT_animation_sequence._running = False
+    for keymap, item in _addon_keymaps:
+        keymap.keymap_items.remove(item)
+    _addon_keymaps.clear()
     # Remove button from header
     bpy.types.DOPESHEET_HT_header.remove(draw_animation_scroll_button)
+    bpy.utils.unregister_class(SUB_OT_toggle_animation_sequence)
+    bpy.utils.unregister_class(SUB_OT_animation_sequence)
+    bpy.utils.unregister_class(SUB_OT_previous_armature_action)
+    bpy.utils.unregister_class(SUB_OT_next_armature_action)
     bpy.utils.unregister_class(SUB_OP_toggle_animation_scroll_modal)
     bpy.utils.unregister_class(SUB_OP_animation_scroll_modal)
     # Reset class variables
     SUB_OP_animation_scroll_modal._running = False
-    SUB_OP_animation_scroll_modal._should_auto_stop = False 
+    SUB_OP_animation_scroll_modal._should_auto_stop = False

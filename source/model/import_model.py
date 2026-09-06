@@ -341,6 +341,7 @@ class SUB_PT_import_model(Panel):
 class SUB_OP_select_model_import_folder(Operator):
     bl_idname = 'sub.ssbh_model_folder_selector'
     bl_label = 'Folder Selector'
+    bl_description = 'Choose a mods directory or folder containing Smash model files'
     bl_options = {'UNDO'}
 
     filter_glob: StringProperty(
@@ -553,6 +554,7 @@ class SUB_OP_import_selected_model(bpy.types.Operator):
 class SUB_OP_select_individual_model(Operator):
     bl_idname = 'sub.ssbh_individual_model_selector'
     bl_label = 'Individual Model Selector'
+    bl_description = 'Choose a folder containing an individual Smash model'
     bl_options = {'UNDO'}
 
     filter_glob: StringProperty(

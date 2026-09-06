@@ -113,6 +113,11 @@ class ModelImportItem(PropertyGroup):
 class AnimationImportFile(PropertyGroup):
     name: StringProperty()
     path: StringProperty()
+    selected: BoolProperty(
+        name="Selected",
+        description="Include this animation when importing selected animations",
+        default=False,
+    )
 
 class IdlePoseItem(PropertyGroup):
     name: StringProperty(

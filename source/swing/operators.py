@@ -20,9 +20,9 @@ import importlib.util
 # Global variable to store the active mismatch operator instance
 _active_mismatch_operator = None
 
-def add_hash_to_param_labels(hash_value: str, label: str):
+def add_hash_to_param_labels(hash_value: str, label: str, labels_paths=None):
     """Add a new hash-label pair to the user ParamLabels.csv if it doesn't already exist."""
-    return add_hash_label(label)
+    return add_hash_label(label, extra_paths=labels_paths or ())
 
 def save_swing_bone_chain_hashes(chain_name: str, start_bone_name: str, end_bone_name: str, bone_names: list):
     """Save all relevant hashes for a swing bone chain to ParamLabels.csv"""
@@ -1384,6 +1384,7 @@ class SUB_OP_swing_data_connection_remove(Operator):
 class SUB_OP_swing_import(Operator):
     bl_idname = 'sub.swing_import'
     bl_label = 'Import swing.prc'
+    bl_description = 'Choose and import a swing.prc file for the active armature'
 
     filter_glob: StringProperty(
         default='*.prc',
@@ -2063,6 +2064,7 @@ def setup_bone_meshes(operator: Operator, context: Context, master_collection: C
 class SUB_OP_swing_export(Operator):
     bl_idname = 'sub.swing_export'
     bl_label = 'Export swing.prc'
+    bl_description = 'Choose where to export swing.prc for the active armature'
 
     filter_glob: StringProperty(
         default='*.prc',

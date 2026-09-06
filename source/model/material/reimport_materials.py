@@ -52,6 +52,7 @@ class SUB_PT_reimport_materials(Panel):
 class SUB_OP_mat_reimport_directory_selector(Operator):
     bl_idname = 'sub.mat_reimport_dir_selector'
     bl_label = 'Confirm folder'
+    bl_description = 'Choose the folder containing materials and textures to re-import'
 
     filter_glob: StringProperty(
         default='*.numatb; *.png',
@@ -83,6 +84,7 @@ class SUB_OP_mat_reimport_directory_selector(Operator):
 class SUB_OP_mat_reimport_numatb_selector(Operator):
     bl_idname = 'sub.mat_reimport_numatb_selector'
     bl_label = 'Confirm .numatb'
+    bl_description = 'Choose the .numatb file to use when re-importing materials'
 
     filter_glob: StringProperty(
         default='*.numatb;',

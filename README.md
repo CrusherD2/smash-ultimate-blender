@@ -47,17 +47,24 @@ These are the pieces that are **not** in the main plugin, or are substantially d
 
 **Importer** (select the Smash armature or camera first):
 
-- Browse a single `.nuanmb`, or **Browse Animation Folder** and pick from a list
-- **Import Selected Animation** / **Import All Animations**
+- Imported action-name extensions are configurable in the add-on preferences: `.nuanmb` is hidden by default and `.rawanim` is shown by default
+
+- Browse one or more `.nuanmb` files, or **Browse Animation Folder** and pick from a list
+- Click, Ctrl-click, or Shift-click to select animations, with **Select All** and **Deselect All** controls
+- **Import Selected Animations** / **Import All Animations**
 - Import options: transform, material, visibility
 - **Raw Animations** — browse a folder of `.rawanim` files, import selected or all (fighter `motion/body` folders auto-point at `rawanims` when present)
+- In Armature Data → **Ultimate Visibility Track Entries**, use **Purge Current** or **Purge All Anims** to remove tracks with no corresponding model mesh and compact the shared list safely
+- Visibility names are matched case-insensitively; case-only duplicates are merged using logical OR so an enabled state is not lost
 
 **Exporter**:
 
-- Export the current action, or **batch export** a checklist of actions
+- Export the current action, or batch export from a matching multi-select checkbox list
 - **Export Raw Animation** / include raw animation on normal export
 - Bone override list, populate-from-armature, **Thrown** preset
 - Bones named `BL_*` are skipped on anim (and model) export so helper controls never ship in-game
+
+The add-on preferences also contain a persistent **Ultimate Sidebar Panel Order** list. Select a panel and move it with the up/down arrows; the chosen order is restored when the add-on loads in later Blender sessions.
 
 ### Animation Tools
 
@@ -76,15 +83,19 @@ These are the pieces that are **not** in the main plugin, or are substantially d
 - **Transfer Hip Animation to Trans**
 - **Mirror Animation** — space, Smash Y Anim Flip, custom extra bones, **Mirror All Loaded Animations**
 - Reset Bone Locations, Ground Character, Invert Positive and Negative, Remove Animation from Swing Bones
-- **Gif or Photo** (also on the Action Editor header)
+- **GIF or Photo** (also on the Action Editor header)
 
-### Gif or Photo and Animation Scroll
+### GIF or Photo and Animation Navigation
 
 On the Action Editor / Dope Sheet header (and in Animation Tools):
 
 - **Start Animation Scroll** — mouse-wheel through every loaded action; the timeline jumps to that clip's range; unanimated bones go to rest (`_RET` bones are left alone)
-- **Gif or Photo** — copies a transparent Smash Viewport (or GPU viewport) capture to the clipboard. Photo is a still. GIF records the scene range at 30 FPS (Esc cancels). Temp files are deleted when Blender closes
+- **Start Sequence** — plays every compatible action once, beginning at the selected action and updating the frame range for each clip
+- **Ctrl+Down / Ctrl+Up** — play the next / previous compatible action; navigation wraps at both ends
+- **GIF or Photo** — copies a transparent Smash Viewport (or GPU viewport) capture to the clipboard. Photo is a still. GIF records the scene range at 30 FPS (Esc cancels). Temp files are deleted when Blender closes
 - **Easy Facial Animation** appears on that header when a face library is set up
+
+The Timeline header includes FPS preset buttons. Their four values (and button visibility) are configurable in the add-on preferences.
 
 ### Model Tools
 
@@ -95,7 +106,21 @@ On the Action Editor / Dope Sheet header (and in Animation Tools):
 - Unstack UV Islands
 - Convert Shape Keys to Meshes (prefix)
 - Remove Selected Bones, Connect Bone Chain, Delete Unweighted Bones
+- **Refresh Bone Drawing** in Armature Data > Viewport Display works around invisible bones on imported rigs without retaining any rig edits
 - **Roll Value Copier** — copy bone roll from a source armature to a target (name-matched, optional selected-only)
+
+### Armature Collection Presets
+
+The **Armature Collection Presets** panel in the Ultimate tab saves and restores an armature's organization and viewport setup. Presets can include scene collections and object placement, materials, bone collections, bone colors/custom shapes, and armature display settings. Each section can be enabled independently.
+
+- Choose a **Blend File**, **Global**, or **Custom** preset library. Configure the custom directory in the add-on preferences.
+- Select an armature and use **Save New** to capture it. Related descendants are included by default; custom-shape objects are optional.
+- Use **Preview** to inspect matches without changing the file, then **Apply** to review the same mapping and apply it with Undo support.
+- Matching is exact/case-insensitive and understands Blender suffixes such as `.001`. Optional fuzzy matching defaults to an 85% threshold and requires explicit approval of the displayed mappings.
+- Unmatched objects stay where they are unless **Move to Unmatched** is selected.
+- Presets preserve multiple object collection memberships and nested bone collections. Applying never deletes objects or collections and does not disturb collection links belonging exclusively to other scenes.
+- The list supports search, refresh, best-match selection, update, duplicate, rename, delete, multi-file import, and export.
+- Existing JSON presets from j00bert's standalone sorter remain loadable; updating one writes the safer versioned format.
 
 ### Easy Facial Animation
 
@@ -134,6 +159,7 @@ Expy Kit lives in the Ultimate tab (always listed; most operators want Pose Mode
 - SAP action auto-sync so vis/mat stay attached to the current action
 - Action slots / fcurve helpers for Blender 4 and 5
 - `ParamLabels.csv` lives outside the addon so updates do not wipe custom hashes (`%APPDATA%/Smash Ultimate Labels` on Windows)
+- **Append New Hashes** adds lowercase bone names, `bonecol` collision names, and child mesh names in a responsive batch; additional CSV destinations are configurable in the add-on preferences
 
 ### Helper bones (`BL_*`)
 
@@ -144,6 +170,7 @@ Any extra control you add (IK widgets, finger sliders, eye look, custom helpers)
 Still here, documented on the [upstream wiki](https://github.com/ssbucarlos/smash-ultimate-blender/wiki):
 
 - Import/export of `.numdlb`, `.numshb`, `.nusktb`, `.nuhlpb`, `update.prc`, `.numeshexb`, `.adjb`, `.numatb`, `.nutexb`, `.nuanmb`, `swing.prc`
+- Batch `.nuanmb` import from the file browser, plus Ctrl-click/Shift-click multi-selection in the loaded animation-folder list
 - Camera `.nuanmb`
 - Magic Exo Skel Maker (build, preview modifiers, un-exo, bone align, weight transfer, cleanup)
 - Material Re-Importer, Attribute Renamer, swing collision editing

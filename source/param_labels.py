@@ -20,6 +20,7 @@ import shutil
 import tempfile
 import urllib.request
 from pathlib import Path
+from collections.abc import Iterable
 
 LABELS_DIR_NAME = "Smash Ultimate Labels"
 LABELS_FILENAME = "ParamLabels.csv"
@@ -89,6 +90,47 @@ def _read_hash_set(path: Path) -> set[str]:
             if row:
                 hashes.add(row[0].strip())
     return hashes
+
+
+def _deduplicate_csv(path: Path) -> None:
+    """Remove duplicate CSV rows while preserving their original order."""
+    if not path.is_file():
+        return
+    with open(path, "r", encoding="utf-8", errors="replace", newline="") as handle:
+        rows = list(csv.reader(handle))
+    seen = set()
+    unique = []
+    for row in rows:
+        key = tuple(row)
+        if key not in seen:
+            seen.add(key)
+            unique.append(row)
+    if len(unique) != len(rows):
+        with open(path, "w", encoding="utf-8", newline="") as handle:
+            csv.writer(handle).writerows(unique)
+
+
+def _append_entries(path: Path, entries: list[tuple[str, str]]) -> tuple[int, int]:
+    path = Path(path).expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _deduplicate_csv(path)
+    existing = _read_hash_set(path)
+    new_entries = []
+    for hash_hex, label in entries:
+        if hash_hex not in existing:
+            new_entries.append((hash_hex, label))
+            existing.add(hash_hex)
+    if new_entries:
+        needs_newline = path.is_file() and path.stat().st_size > 0
+        if needs_newline:
+            with open(path, "rb") as handle:
+                handle.seek(-1, os.SEEK_END)
+                needs_newline = handle.read(1) not in (b"\n", b"\r")
+        with open(path, "a", encoding="utf-8", newline="") as handle:
+            if needs_newline:
+                handle.write("\n")
+            csv.writer(handle).writerows(new_entries)
+    return len(new_entries), len(entries) - len(new_entries)
 
 
 def _reset_hash_cache() -> None:
@@ -205,7 +247,12 @@ def load_param_labels() -> Path:
     return path
 
 
-def add_hash_label(label: str | None, *, reload: bool = False) -> bool:
+def add_hash_label(
+    label: str | None,
+    *,
+    reload: bool = False,
+    extra_paths: Iterable[str | os.PathLike] = (),
+) -> bool:
     """Append hash40(label) to the user ParamLabels.csv if it is not already present."""
     if not label or not isinstance(label, str):
         return False
@@ -215,13 +262,16 @@ def add_hash_label(label: str | None, *, reload: bool = False) -> bool:
     try:
         path = ensure_param_labels()
         hash_hex = _label_to_hex(label)
-        known = _ensure_known_hashes(path)
-        if hash_hex in known:
-            return True
-        with open(path, "a", encoding="utf-8", newline="") as handle:
-            csv.writer(handle).writerow([hash_hex, label])
-        known.add(hash_hex)
-        print(f"Added hash to ParamLabels.csv: {hash_hex},{label}")
+        destinations = [path]
+        for extra_path in extra_paths:
+            resolved = Path(extra_path).expanduser().resolve()
+            if resolved not in destinations:
+                destinations.append(resolved)
+        for destination in destinations:
+            added, _skipped = _append_entries(destination, [(hash_hex, label)])
+            if added:
+                print(f"Added hash to {destination}: {hash_hex},{label}")
+        _reset_hash_cache()
         if reload:
             load_param_labels()
         return True
@@ -238,3 +288,42 @@ def add_hash_labels(*labels: str, reload: bool = False) -> None:
             load_param_labels()
         except Exception as exc:
             print(f"Warning: Could not reload ParamLabels.csv: {exc}")
+
+
+def batch_add_hash_labels(
+    labels: Iterable[str],
+    extra_paths: Iterable[str | os.PathLike] = (),
+) -> tuple[int, int, int, str | None]:
+    """Hash labels once and batch append them to the user and configured CSVs.
+
+    This function performs no Blender API calls and can safely run in a worker
+    thread. Returns ``(added, skipped, file_count, error_message)``.
+    """
+    try:
+        primary = ensure_param_labels()
+        destinations = [primary]
+        for extra_path in extra_paths:
+            if not extra_path:
+                continue
+            resolved = Path(extra_path).expanduser().resolve()
+            if resolved not in destinations:
+                destinations.append(resolved)
+
+        entries = []
+        seen_labels = set()
+        for label in labels:
+            if not label or label in seen_labels or _looks_like_hash40(label):
+                continue
+            seen_labels.add(label)
+            entries.append((_label_to_hex(label), label))
+
+        total_added = 0
+        total_skipped = 0
+        for destination in destinations:
+            added, skipped = _append_entries(destination, entries)
+            total_added += added
+            total_skipped += skipped
+        _reset_hash_cache()
+        return total_added, total_skipped, len(destinations), None
+    except Exception as exc:
+        return 0, 0, 0, str(exc)

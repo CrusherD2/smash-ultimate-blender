@@ -9,6 +9,7 @@ from pathlib import Path
 
 import bpy
 
+from ..addon_preferences import format_animation_name_on_import
 from ..blender_compat import assign_action, ensure_action_slot
 from .fcurve_compat import (
     ensure_fcurve_for_datablock,
@@ -18,6 +19,7 @@ from .fcurve_compat import (
     remove_fcurve,
     style_visibility_fcurve,
 )
+from .visibility_tracks import merge_raw_visibility_tracks
 
 RAW_ANIM_FORMAT = "sub_raw_anim"
 RAW_ANIM_VERSION = 1
@@ -230,7 +232,8 @@ def _export_visibility_tracks(
                 "keys": keys,
             }
         )
-    visibility_tracks.sort(key=lambda track: track["name"])
+    visibility_tracks = merge_raw_visibility_tracks(arma, visibility_tracks)
+    visibility_tracks.sort(key=lambda track: track["name"].casefold())
     return visibility_tracks
 
 
@@ -242,6 +245,7 @@ def _import_visibility_tracks(
 ) -> tuple[bpy.types.Action | None, int]:
     if not visibility_tracks:
         return None, 0
+    visibility_tracks = merge_raw_visibility_tracks(arma, visibility_tracks)
 
     if arma.data.animation_data is None:
         arma.data.animation_data_create()
@@ -257,23 +261,29 @@ def _import_visibility_tracks(
     ensure_action_slot(sap_action, arma.data)
 
     sap = arma.data.sub_anim_properties
+    entries_by_case = {entry.name.casefold(): entry for entry in sap.vis_track_entries}
     for track_data in visibility_tracks:
         track_name = track_data.get("name", "")
         if not track_name:
             continue
-        entry = sap.vis_track_entries.get(track_name)
+        entry = entries_by_case.get(track_name.casefold())
         if entry is None:
             entry = sap.vis_track_entries.add()
             entry.name = track_name
+            entries_by_case[track_name.casefold()] = entry
 
     assign_action(arma.data.animation_data, sap_action)
 
     keyframe_count = 0
+    entry_indices_by_case = {
+        entry.name.casefold(): index
+        for index, entry in enumerate(sap.vis_track_entries)
+    }
     for track_data in visibility_tracks:
         track_name = track_data.get("name", "")
         if not track_name:
             continue
-        entry_index = sap.vis_track_entries.find(track_name)
+        entry_index = entry_indices_by_case.get(track_name.casefold(), -1)
         if entry_index < 0:
             continue
         data_path = f"sub_anim_properties.vis_track_entries[{entry_index}].value"
@@ -589,22 +599,11 @@ def import_raw_animation(
     # leftover Legacy Slot from a previous import/edit of the same name.
     action_name = data.get("action_name") or Path(filepath).stem
     action_name = normalize_anim_stem(str(action_name)) or Path(filepath).stem
-    existing = bpy.data.actions.get(action_name)
-    if existing is not None:
-        # Detach from this armature first, then remove if unused.
-        if arma.animation_data and arma.animation_data.action == existing:
-            arma.animation_data.action = None
-        try:
-            bpy.data.actions.remove(existing)
-        except RuntimeError:
-            # Still in use elsewhere — fall back to clearing curves.
-            for existing_fcurve in list(get_all_action_fcurves(existing)):
-                remove_fcurve(existing, existing_fcurve, id_type="OBJECT")
-            action = existing
-        else:
-            action = bpy.data.actions.new(name=action_name)
-    else:
-        action = bpy.data.actions.new(name=action_name)
+    action_name = format_animation_name_on_import(action_name, RAW_ANIM_EXTENSION, context)
+    # Always create a distinct action. Blender supplies .001, .002, etc. for
+    # duplicates, which also prevents a raw import from replacing a nuanmb
+    # action when the user hides both extensions.
+    action = bpy.data.actions.new(name=action_name)
 
     if fcurve_entries:
         # Assign before writing so fcurve_ensure_for_datablock binds the slot.

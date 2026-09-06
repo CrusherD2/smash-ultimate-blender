@@ -410,6 +410,11 @@ class SUB_PT_sub_smush_anim_data_vis_tracks(Panel):
         col.separator()
         col.operator(SUB_OP_vis_entry_shift.bl_idname, icon='TRIA_UP', text='').shift_direction = 'UP'
         col.operator(SUB_OP_vis_entry_shift.bl_idname, icon='TRIA_DOWN', text='').shift_direction = 'DOWN'
+        row = layout.row(align=True)
+        op = row.operator(SUB_OP_purge_unused_vis_tracks.bl_idname, text="Purge Current", icon='BRUSH_DATA')
+        op.scope = 'CURRENT'
+        op = row.operator(SUB_OP_purge_unused_vis_tracks.bl_idname, text="Purge All Anims", icon='TRASH')
+        op.scope = 'ALL'
 
 class SUB_PT_sub_smush_anim_data_mat_tracks(Panel):
     bl_label = "Ultimate Material Tracks"
@@ -773,20 +778,18 @@ class SUB_OP_vis_entry_remove(Operator):
     def execute(self, context):
         sap = context.object.data.sub_anim_properties
         active_vis_track_index = sap.active_vis_track_index
-        
-        fcurves = get_id_action_fcurves(context.object.data)
-        if fcurves is not None:
-            fcurve_to_remove = fcurves.find(f'sub_anim_properties.vis_track_entries[{active_vis_track_index}].value')
-            if fcurve_to_remove is not None:
-                fcurves.remove(fcurve_to_remove)
-            for index in range(active_vis_track_index+1, len(sap.vis_track_entries)):
-                fcurve_to_decrement = fcurves.find(f'sub_anim_properties.vis_track_entries[{index}].value')
-                if fcurve_to_decrement is not None:
-                    fcurve_to_decrement.data_path = f'sub_anim_properties.vis_track_entries[{index-1}].value'
-        
-        sap.vis_track_entries.remove(active_vis_track_index)
-        i = active_vis_track_index
-        sap.active_vis_track_index = min(max(0, i-1), len(sap.vis_track_entries))
+
+        from .visibility_tracks import remap_visibility_entry_order
+
+        new_order = [
+            index for index in range(len(sap.vis_track_entries))
+            if index != active_vis_track_index
+        ]
+        remap_visibility_entry_order(context.object, new_order)
+        sap.active_vis_track_index = min(
+            max(0, active_vis_track_index - 1),
+            max(len(sap.vis_track_entries) - 1, 0),
+        )
 
         refresh_visibility_drivers(context)       
         return {'FINISHED'} 
@@ -817,16 +820,14 @@ class SUB_OP_vis_entry_shift(Operator):
         
         other_index = active_vis_entry_index-1 if self.shift_direction == 'UP' else active_vis_entry_index+1
             
-        fcurves = get_id_action_fcurves(context.object.data)
-        if fcurves is not None:
-            active_fcurve = fcurves.find(f"sub_anim_properties.vis_track_entries[{active_vis_entry_index}].value")
-            other_fcurve = fcurves.find(f"sub_anim_properties.vis_track_entries[{other_index}].value")
-            if active_fcurve is not None:
-                active_fcurve.data_path = f"sub_anim_properties.vis_track_entries[{other_index}].value"
-            if other_fcurve is not None:
-                other_fcurve.data_path = f"sub_anim_properties.vis_track_entries[{active_vis_entry_index}].value"
+        from .visibility_tracks import remap_visibility_entry_order
 
-        vis_entries.move(active_vis_entry_index, other_index)
+        new_order = list(range(len(vis_entries)))
+        new_order[active_vis_entry_index], new_order[other_index] = (
+            new_order[other_index],
+            new_order[active_vis_entry_index],
+        )
+        remap_visibility_entry_order(context.object, new_order)
         sap.active_vis_track_index = other_index
         refresh_visibility_drivers(context)
         return {'FINISHED'}
@@ -847,6 +848,69 @@ class SUB_OP_vis_drivers_remove(Operator):
         remove_visibility_drivers(context)
         return {'FINISHED'}
 
+
+class SUB_OP_purge_unused_vis_tracks(Operator):
+    bl_idname = 'sub.purge_unused_vis_tracks'
+    bl_label = 'Purge Unused Visibility Tracks'
+    bl_description = (
+        'Remove visibility tracks that do not match this model, compact their '
+        'indices safely, and merge names that differ only by capitalization'
+    )
+    bl_options = {'REGISTER', 'UNDO'}
+
+    scope: EnumProperty(
+        name='Scope',
+        items=(
+            ('CURRENT', 'Current Animation', 'Purge invalid tracks from the current animation'),
+            ('ALL', 'All Animations', 'Purge invalid tracks from every animation for this armature'),
+        ),
+        default='CURRENT',
+        options={'HIDDEN'},
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            context.object is not None
+            and context.object.type == 'ARMATURE'
+            and len(context.object.data.sub_anim_properties.vis_track_entries) > 0
+        )
+
+    def invoke(self, context, _event):
+        if self.scope == 'ALL':
+            return context.window_manager.invoke_confirm(
+                self,
+                _event,
+                title='Purge Visibility Tracks from All Animations?',
+                message='This removes tracks that do not correspond to a mesh on this model.',
+                confirm_text='Purge All Animations',
+                icon='WARNING',
+            )
+        return self.execute(context)
+
+    def execute(self, context):
+        from .visibility_tracks import purge_unused_visibility_tracks
+
+        result = purge_unused_visibility_tracks(context.object, self.scope)
+        if result['actions'] == 0:
+            self.report({'WARNING'}, 'No matching SAP visibility action was found.')
+            return {'CANCELLED'}
+
+        refresh_visibility_drivers(context)
+        try:
+            from ..extras.smash_viewport import invalidate_animation_state
+
+            invalidate_animation_state()
+        except Exception:
+            pass
+        scope_label = 'current animation' if self.scope == 'CURRENT' else f"{result['actions']} animations"
+        self.report(
+            {'INFO'},
+            f"Purged {result['entries']} entries and {result['curves']} F-curves from {scope_label}; "
+            f"merged {result['duplicates']} case-only duplicate(s)",
+        )
+        return {'FINISHED'}
+
 class SUB_OP_auto_fill_vis_entries(Operator):
     bl_idname = 'sub.auto_fill_vis_entries'
     bl_label = 'Auto Fill Vis Entries'
@@ -859,19 +923,17 @@ class SUB_OP_auto_fill_vis_entries(Operator):
 
     def execute(self, context):
         arma: bpy.types.Object = context.object
-        mesh_names = {child.name for child in arma.children if child.type == 'MESH'}
-        vis_names: set[str] = set()
-        for name in mesh_names:
-            regex = r"(.*)\_VIS\_.*"
-            match = re.match(regex, name)
-            if match:
-                vis_names.add(match.groups()[0])
+        from .visibility_tracks import model_visibility_names
+
+        vis_names = set(model_visibility_names(arma).values())
         sap: SUB_PG_sub_anim_data = arma.data.sub_anim_properties
+        existing_names = {entry.name.casefold() for entry in sap.vis_track_entries}
         for vis_name in vis_names:
-            if vis_name not in sap.vis_track_entries:
+            if vis_name.casefold() not in existing_names:
                 new_entry: SUB_PG_vis_track_entry = sap.vis_track_entries.add()
                 new_entry.name = vis_name
                 new_entry.value = True
+                existing_names.add(vis_name.casefold())
         return {'FINISHED'}
 
 class SUB_OP_set_all_vis_entries_false(Operator):
@@ -937,20 +999,13 @@ class SUB_OP_organize_vis_entries_alphabetically(Operator):
         arma: bpy.types.Object = context.object
         sap: SUB_PG_sub_anim_data = arma.data.sub_anim_properties
         
-        # Get all entries and sort them alphabetically by full name
-        entries = list(sap.vis_track_entries)
-        entries.sort(key=lambda x: x.name.lower())
-        
-        # Use bubble sort approach to avoid conflicts
-        for i in range(len(entries)):
-            for j in range(len(entries) - 1):
-                current_entry = sap.vis_track_entries[j]
-                next_entry = sap.vis_track_entries[j + 1]
-                
-                # Compare names (case-insensitive)
-                if current_entry.name.lower() > next_entry.name.lower():
-                    # Swap positions
-                    sap.vis_track_entries.move(j, j + 1)
+        from .visibility_tracks import remap_visibility_entry_order
+
+        new_order = sorted(
+            range(len(sap.vis_track_entries)),
+            key=lambda index: sap.vis_track_entries[index].name.casefold(),
+        )
+        remap_visibility_entry_order(arma, new_order)
         
         # Reset active index
         sap.active_vis_track_index = 0
@@ -972,52 +1027,16 @@ class SUB_OP_organize_vis_entries_by_move(Operator):
         arma: bpy.types.Object = context.object
         sap: SUB_PG_sub_anim_data = arma.data.sub_anim_properties
         
-        # Get all entries
-        entries = list(sap.vis_track_entries)
-        
-        # Group entries by their move type (last part after underscore)
-        move_groups = {}
-        for entry in entries:
-            # Split by underscore and get the last part
-            parts = entry.name.split('_')
-            if len(parts) > 1:
-                move_type = parts[-1]  # Last part after underscore
-                if move_type not in move_groups:
-                    move_groups[move_type] = []
-                move_groups[move_type].append(entry)
-            else:
-                # If no underscore, put in a special group
-                if 'no_move_type' not in move_groups:
-                    move_groups['no_move_type'] = []
-                move_groups['no_move_type'].append(entry)
-        
-        # Sort move types alphabetically
-        sorted_move_types = sorted(move_groups.keys())
-        
-        # Create the desired order - group by move type, then sort alphabetically within each group
-        desired_order = []
-        for move_type in sorted_move_types:
-            # Sort entries within each move type alphabetically
-            move_entries = sorted(move_groups[move_type], key=lambda x: x.name.lower())
-            desired_order.extend(move_entries)
-        
-        # Move entries to their correct positions using a more direct approach
-        # Create a mapping of entry names to their desired positions
-        name_to_desired = {entry.name: i for i, entry in enumerate(desired_order)}
-        
-        # Sort the current list based on the desired order
-        for i in range(len(sap.vis_track_entries)):
-            for j in range(len(sap.vis_track_entries) - 1):
-                current_entry = sap.vis_track_entries[j]
-                next_entry = sap.vis_track_entries[j + 1]
-                
-                # Get desired positions
-                current_desired = name_to_desired.get(current_entry.name, len(desired_order))
-                next_desired = name_to_desired.get(next_entry.name, len(desired_order))
-                
-                # If they're in wrong order, swap them
-                if current_desired > next_desired:
-                    sap.vis_track_entries.move(j, j + 1)
+        from .visibility_tracks import remap_visibility_entry_order
+
+        def move_sort_key(index):
+            name = sap.vis_track_entries[index].name
+            parts = name.rsplit('_', 1)
+            move_type = parts[1] if len(parts) > 1 else 'no_move_type'
+            return (move_type.casefold(), name.casefold())
+
+        new_order = sorted(range(len(sap.vis_track_entries)), key=move_sort_key)
+        remap_visibility_entry_order(arma, new_order)
         
         # Reset active index
         sap.active_vis_track_index = 0
@@ -1070,6 +1089,11 @@ class SUB_MT_vis_entry_context_menu(Menu):
         layout.separator()
         layout.operator('sub.auto_fill_vis_entries', icon='SHADERFX', text='Autofill Visibility Entries')
         layout.operator('sub.insert_all_vis_entry_keyframes', icon='KEY_HLT', text='Insert Keyframes for All Entries')
+        layout.separator()
+        op = layout.operator(SUB_OP_purge_unused_vis_tracks.bl_idname, icon='BRUSH_DATA', text='Purge Unused (Current Animation)')
+        op.scope = 'CURRENT'
+        op = layout.operator(SUB_OP_purge_unused_vis_tracks.bl_idname, icon='TRASH', text='Purge Unused (All Animations)')
+        op.scope = 'ALL'
         layout.separator()
         layout.operator('sub.organize_vis_entries_alphabetically', icon='SORTALPHA', text='Organize Alphabetically')
         layout.operator('sub.organize_vis_entries_by_move', icon='SORTSIZE', text='Organize by Move')

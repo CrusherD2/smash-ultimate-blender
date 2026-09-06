@@ -592,15 +592,17 @@ def managed_track_names(picker, extra_names=None):
 
 
 def vis_entry_by_name(sap, name):
+    folded = name.casefold()
     for entry in sap.vis_track_entries:
-        if entry.name == name:
+        if entry.name.casefold() == folded:
             return entry
     return None
 
 
 def vis_entry_index(sap, name):
+    folded = name.casefold()
     for index, entry in enumerate(sap.vis_track_entries):
-        if entry.name == name:
+        if entry.name.casefold() == folded:
             return index
     return -1
 
@@ -609,11 +611,14 @@ def set_visibility_tracks(arma, enable_names, managed_names, insert_keyframes=Fa
     sap = get_sap(arma)
     if sap is None:
         return 0
+    enabled_folded = {name.casefold() for name in enable_names}
+    managed_folded = {name.casefold() for name in managed_names}
     changed = 0
     for index, entry in enumerate(sap.vis_track_entries):
-        if entry.name not in managed_names:
+        folded = entry.name.casefold()
+        if folded not in managed_folded:
             continue
-        new_value = entry.name in enable_names
+        new_value = folded in enabled_folded
         if entry.value != new_value:
             entry.value = new_value
             changed += 1
@@ -719,12 +724,12 @@ def refresh_track_choices(arma):
     sap = get_sap(arma)
     if picker is None or sap is None:
         return 0
-    selected = {item.name: item.selected for item in picker.track_choices}
+    selected = {item.name.casefold(): item.selected for item in picker.track_choices}
     picker.track_choices.clear()
     for entry in sap.vis_track_entries:
         item = picker.track_choices.add()
         item.name = entry.name
-        item.selected = selected.get(entry.name, False)
+        item.selected = selected.get(entry.name.casefold(), False)
     picker.track_choices_index = min(picker.track_choices_index, max(len(picker.track_choices) - 1, 0))
     return len(picker.track_choices)
 
@@ -831,6 +836,7 @@ def capture_thumbnail(context, arma, filepath, size):
         "resolution_x": render.resolution_x,
         "resolution_y": render.resolution_y,
         "resolution_percentage": render.resolution_percentage,
+        "media_type": getattr(render.image_settings, "media_type", None),
         "file_format": render.image_settings.file_format,
         "camera": scene.camera,
     }
@@ -847,6 +853,9 @@ def capture_thumbnail(context, arma, filepath, size):
         render.resolution_x = size
         render.resolution_y = size
         render.resolution_percentage = 100
+        # Blender 5.0 added media_type, which must be set before file_format.
+        if hasattr(render.image_settings, "media_type"):
+            render.image_settings.media_type = 'IMAGE'
         render.image_settings.file_format = "PNG"
         if camera is not None:
             scene.camera = camera
@@ -863,6 +872,8 @@ def capture_thumbnail(context, arma, filepath, size):
         render.resolution_x = old["resolution_x"]
         render.resolution_y = old["resolution_y"]
         render.resolution_percentage = old["resolution_percentage"]
+        if old.get("media_type") is not None:
+            render.image_settings.media_type = old["media_type"]
         render.image_settings.file_format = old["file_format"]
         scene.camera = old["camera"]
         if space is not None:
@@ -1468,7 +1479,7 @@ def _draw_picker_canvas(context, region, picker):
         if image is not None:
             try:
                 texture = gpu.texture.from_image(image)
-                draw_texture_2d(texture, (cell_x, img_y), cell_w, img_h)
+                _draw_texture_2d_compat(texture, (cell_x, img_y), cell_w, img_h)
             except Exception:
                 _draw_rect(cell_x, img_y, cell_w, img_h, (0.1, 0.1, 0.1, 1.0))
         else:
@@ -2377,9 +2388,9 @@ class SUB_OP_face_picker_load_selected(Operator):
             return {"FINISHED"}
         picker.active_mode = "VIS"
         refresh_track_choices(arma)
-        assigned = {track.name for track in expr.tracks}
+        assigned = {track.name.casefold() for track in expr.tracks}
         for item in picker.track_choices:
-            item.selected = item.name in assigned
+            item.selected = item.name.casefold() in assigned
         set_visibility_tracks(arma, assigned, managed_track_names(picker, assigned), insert_keyframes=False)
         return {"FINISHED"}
 
@@ -2741,3 +2752,17 @@ class SUB_PT_face_picker_anim_data(Panel):
 
     def draw(self, context):
         draw_face_picker_layout(self.layout, context, show_grid=False)
+
+
+def _draw_texture_2d_compat(texture, position, width, height):
+    """draw_texture_2d that keeps correct gamma on Blender 5.0+.
+
+    5.0 requires textures from gpu.texture.from_image() drawn inside a Python
+    draw handler to declare the target colour space, or they render washed out.
+    """
+    from gpu_extras.presets import draw_texture_2d
+    try:
+        draw_texture_2d(texture, position, width, height,
+                        is_scene_linear_with_rec709_srgb_target=True)
+    except TypeError:
+        draw_texture_2d(texture, position, width, height)  # Blender 4.x

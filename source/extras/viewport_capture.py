@@ -266,6 +266,7 @@ def _capture_opengl_ops(context, area, region):
     path = os.path.join(getattr(bpy.app, "tempdir", "") or _capture_dir(), "smash_gl_capture.png")
     old = {
         "filepath": render.filepath,
+        "media_type": getattr(image_settings, "media_type", None),
         "file_format": image_settings.file_format,
         "color_mode": image_settings.color_mode,
         "film_transparent": bool(getattr(render, "film_transparent", False)),
@@ -276,6 +277,8 @@ def _capture_opengl_ops(context, area, region):
         if overlay is not None:
             overlay.show_overlays = False
         render.film_transparent = True
+        if hasattr(image_settings, "media_type"):
+            image_settings.media_type = 'IMAGE'
         image_settings.file_format = "PNG"
         image_settings.color_mode = "RGBA"
         render.filepath = path
@@ -306,6 +309,8 @@ def _capture_opengl_ops(context, area, region):
         except OSError:
             pass
         render.filepath = old["filepath"]
+        if old.get("media_type") is not None:
+            image_settings.media_type = old["media_type"]
         image_settings.file_format = old["file_format"]
         image_settings.color_mode = old["color_mode"]
         render.film_transparent = old["film_transparent"]
@@ -614,7 +619,7 @@ def copy_to_clipboard(path, png_bytes=None, rgba=None, size=None, as_file=False)
 
 class SUB_OP_gif_or_photo(Operator):
     bl_idname = "sub.gif_or_photo"
-    bl_label = "Gif or Photo"
+    bl_label = "GIF or Photo"
     bl_description = (
         "Copy a transparent viewport photo or animation GIF to the clipboard. "
         "The temp file is deleted when Blender closes"

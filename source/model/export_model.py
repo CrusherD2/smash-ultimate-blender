@@ -116,6 +116,7 @@ class SUB_PT_export_model(Panel):
 class SUB_OP_vanilla_update_prc_selector(Operator, ImportHelper):
     bl_idname = 'sub.vanilla_update_prc_selector'
     bl_label = 'Vanilla update.prc Selector'
+    bl_description = 'Choose the vanilla update.prc used as a reference for model export'
 
     filter_glob: StringProperty(
         default='*.prc',
@@ -128,6 +129,7 @@ class SUB_OP_vanilla_update_prc_selector(Operator, ImportHelper):
 class SUB_OP_vanilla_nusktb_selector(Operator, ImportHelper):
     bl_idname = 'sub.vanilla_nusktb_selector'
     bl_label = 'Vanilla Nusktb Selector'
+    bl_description = 'Choose the vanilla .nusktb used as a reference for model export'
 
     filter_glob: StringProperty(
         default='*.nusktb',
@@ -140,6 +142,7 @@ class SUB_OP_vanilla_nusktb_selector(Operator, ImportHelper):
 class SUB_OP_model_exporter(Operator):
     bl_idname = 'sub.model_exporter'
     bl_label = 'Export To This Folder'
+    bl_description = 'Choose the folder where the exported Smash model files will be written'
 
     filter_glob: StringProperty(
         default='*.numdlb;*.nusktb;*.numshb;*.numatb;*.nuhlpb',
@@ -1688,4 +1691,3 @@ def create_and_save_nuhlpb(path: Path, arma: bpy.types.Object):
                                         quat2             = [oc.quat2[1], oc.quat2[2], oc.quat2[3], oc.quat2[0]],
                                     ) for oc in arma.data.sub_helper_bone_data.orient_constraints]
     ssbh_hlpb.save(str(path))
-     

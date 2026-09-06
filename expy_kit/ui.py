@@ -316,7 +316,12 @@ class ExecutePresetArmatureRetarget(Operator):
                 self.report({'ERROR'}, "Failed to execute the preset: " + repr(ex))
 
         elif ext == ".xml":
-            import rna_xml
+            # Blender 5.0 made the bundled rna_xml module private by renaming
+            # it to _rna_xml. Same module, same API.
+            try:
+                import rna_xml
+            except ModuleNotFoundError:
+                import _rna_xml as rna_xml
             rna_xml.xml_file_run(context,
                                  filepath,
                                  preset_class.preset_xml_map)

@@ -603,8 +603,10 @@ def convert_smash_material_to_principled(operator: Operator, material: Material)
             # Handle specular input based on Blender version
             if 'Specular' in principled_node.inputs:
                 principled_node.inputs['Specular'].default_value = cv47_vector.value[3] * 5.0  # Scale to Blender range
-            elif 'Specular IOR' in principled_node.inputs:
-                principled_node.inputs['Specular IOR'].default_value = 1.0 + (cv47_vector.value[3] * 2.5)  # Map to IOR range
+            elif 'Specular IOR Level' in principled_node.inputs:
+                # Blender 4.0+ name. The old 'Specular IOR' spelling never matched,
+                # so specular was silently dropped on every 4.x/5.x import.
+                principled_node.inputs['Specular IOR Level'].default_value = min(cv47_vector.value[3] * 5.0, 1.0)
             
             operator.report({'INFO'}, f"Applied CustomVector47 values: Metallic={cv47_vector.value[0]:.3f}, Roughness={cv47_vector.value[1]:.3f}, Specular={cv47_vector.value[3]:.3f}")
     

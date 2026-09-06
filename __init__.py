@@ -1,10 +1,10 @@
 bl_info = {
     'name': 'Smash Ultimate Blender Tools',
-    'author': 'Carlos Aguilar, ScanMountGoat (SMG)',
+    'author': 'Carlos Aguilar, ScanMountGoat (SMG), j00bert',
     'category': 'Object',
     'location': 'View 3D > Tool Shelf > Ultimate',
     'description': 'A collection of tools for importing models and animations to smash ultimate.',
-    'version': (4, 2, 2),
+    'version': (4, 3, 0),
     'blender': (4, 0, 0),
     'warning': 'TO REMOVE: First "Disable" the plugin, then restart blender, then you can hit "Remove" to uninstall',
     'doc_url': 'https://github.com/ssbucarlos/smash-ultimate-blender/wiki',
@@ -22,6 +22,10 @@ def register():
     print('Loading Smash Ultimate Blender Tools...')
 
     check_unsupported_blender_versions()
+
+    # Preferences are needed by ParamLabels and Timeline tools.
+    from .source import addon_preferences
+    addon_preferences.register()
 
     from .source import blender_property_extensions, new_classes_to_register
     from .source.extras import set_linear_vertex_color
@@ -82,6 +86,10 @@ def register():
     from .source import retargeting
     retargeting.register()
 
+    # Apply the user-defined Ultimate tab order only after every panel exists.
+    from .source.panel_order import apply_saved_order
+    apply_saved_order()
+
     print('Loaded Smash Ultimate Blender Tools!')
 
 def unregister():
@@ -117,14 +125,18 @@ def unregister():
     from .source.anim import anim_data
     anim_data.unregister()
 
-    new_classes_to_register.unregister()
-    
-    # Unregister swing module
-    swing.unregister()
-    
-    # Unregister extras module (panels) before deleting scene properties
+    # Let feature modules remove their own panels, handlers, and keymaps before
+    # the legacy central class list handles everything that remains.
     from .source import extras
     extras.unregister()
+
+    new_classes_to_register.unregister()
+
+    # Unregister swing module
+    swing.unregister()
+
+    from .source import addon_preferences
+    addon_preferences.unregister()
 
     if hasattr(bpy.types.Scene, "sub_scene_properties"):
         del bpy.types.Scene.sub_scene_properties
