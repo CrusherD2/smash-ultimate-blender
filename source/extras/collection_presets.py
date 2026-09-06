@@ -73,7 +73,6 @@ def _load_path(path):
         if version > FORMAT_VERSION:
             raise ValueError(f"Preset version {version} is newer than supported version {FORMAT_VERSION}")
         return data
-    # j00bert v1 compatibility.
     if "collection_tree" in data or "bone_collections" in data:
         fingerprint = data.get("armature_fingerprint", {})
         related_names = set(fingerprint.get("meshes", []))
@@ -810,7 +809,6 @@ class SUB_UL_collection_presets(UIList):
             layout.label(text=item.name, icon='ERROR')
             return
         layout.label(text=item.name, icon='PRESET')
-        layout.label(text="Legacy" if item.is_legacy else f"v{item.version}")
 
     def filter_items(self, _context, data, propname):
         items = getattr(data, propname)
@@ -834,7 +832,7 @@ class SUB_OP_collection_presets_refresh(Operator):
 class SUB_OP_collection_preset_save(Operator):
     bl_idname = "sub.collection_preset_save"
     bl_label = "Save Collection Preset"
-    bl_description = "Save the selected armature layout as a versioned collection preset"
+    bl_description = "Save the selected armature layout as a new collection preset"
     bl_options = {'REGISTER'}
 
     preset_name: StringProperty(name="Name", default="collection_preset")

@@ -312,6 +312,11 @@ def _import_visibility_tracks(
     from .import_anim import setup_visibility_drivers
 
     setup_visibility_drivers(arma)
+    try:
+        from ..extras.smash_viewport import heal_solid_view_deform_after_anim
+        heal_solid_view_deform_after_anim()
+    except Exception:
+        pass
     return sap_action, keyframe_count
 
 

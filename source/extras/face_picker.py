@@ -2486,7 +2486,7 @@ class SUB_OP_face_picker_save(Operator):
 class SUB_OP_face_picker_load(Operator):
     bl_idname = "sub.face_picker_load"
     bl_label = "Load Expression Menu"
-    bl_description = "Load face_picker.json (or legacy face_picker.toml) from the model folder"
+    bl_description = "Load saved expressions from the model folder"
 
     @classmethod
     def poll(cls, context):
@@ -2502,7 +2502,7 @@ class SUB_OP_face_picker_load(Operator):
         if path is None:
             self.report(
                 {"ERROR"},
-                f"No {PICKER_FILE_NAME} or legacy {LEGACY_TOML_NAME} in {folder}",
+                f"No saved expressions found in {folder}",
             )
             return {"CANCELLED"}
         try:

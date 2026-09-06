@@ -4,7 +4,6 @@ from bpy.types import Panel, Operator
 class SUB_PT_attribute_renamer(Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_context = "objectmode"
     bl_category = 'Ultimate'
     bl_label = 'Attribute Renamer'
     bl_options = {'DEFAULT_CLOSED'}

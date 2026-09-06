@@ -27,6 +27,11 @@ DEFAULT_PANEL_ORDER = (
 )
 
 
+# The Panel Presets panel pins itself to the bottom with a very high bl_order.
+# Leave it out of the reorderable set so it stays there.
+EXCLUDED_PANELS = frozenset({"SUB_PT_panel_presets"})
+
+
 def _registered_ultimate_panels():
     panels = {}
     for type_name in dir(bpy.types):
@@ -45,6 +50,8 @@ def _registered_ultimate_panels():
         if ".source." not in module_name:
             continue
         panel_id = panel_type.bl_rna.identifier
+        if panel_id in EXCLUDED_PANELS:
+            continue
         panels[panel_id] = panel_type
     return panels
 

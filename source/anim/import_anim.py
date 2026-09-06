@@ -1495,6 +1495,12 @@ def import_model_anim(context: bpy.types.Context, filepath: str,
         ensure_eye_live_preview(scene)
     except Exception:
         pass
+    # Solid view: faces must keep armature deform after vis tracks load
+    try:
+        from ..extras.smash_viewport import heal_solid_view_deform_after_anim
+        heal_solid_view_deform_after_anim()
+    except Exception:
+        pass
 
 
 def get_raw_matrix(bone_to_node, bone, index, node) -> Matrix:

@@ -14,7 +14,6 @@ from ..model.material.convert_smash_material import (
 from .create_animation_rig import (
     armature_has_animation_rig,
     armature_has_ik,
-    armature_ik_is_enabled,
     find_target_armature as find_anim_rig_armature,
 )
 
@@ -47,36 +46,13 @@ class SUB_PT_animation_tools(Panel):
         layout.prop(ssp, "clean_keyframes_after_rig", text="Clean keyframes after creation")
 
         arm = find_anim_rig_armature(context)
+        from .anim_rig_extras import draw_anim_rig_extras, _draw_ik_fk_switch_rows
+        draw_anim_rig_extras(layout, context, arm)
+
         if arm is not None and armature_has_ik(arm):
-            has_arms = armature_has_ik(arm, 'ARMS')
-            has_legs = armature_has_ik(arm, 'LEGS')
-            if has_arms:
-                row = layout.row(align=True)
-                row.label(text="Arms")
-                if armature_ik_is_enabled(arm, 'ARMS'):
-                    op = row.operator("sub.anim_rig_toggle_ik_fk", text="Switch to FK", icon="BONE_DATA")
-                else:
-                    op = row.operator("sub.anim_rig_toggle_ik_fk", text="Switch to IK", icon="CON_KINEMATIC")
-                op.limbs = 'ARMS'
-            if has_legs:
-                row = layout.row(align=True)
-                row.label(text="Legs")
-                if armature_ik_is_enabled(arm, 'LEGS'):
-                    op = row.operator("sub.anim_rig_toggle_ik_fk", text="Switch to FK", icon="BONE_DATA")
-                else:
-                    op = row.operator("sub.anim_rig_toggle_ik_fk", text="Switch to IK", icon="CON_KINEMATIC")
-                op.limbs = 'LEGS'
-            if has_arms and has_legs:
-                row = layout.row(align=True)
-                row.label(text="Both")
-                op = row.operator("sub.anim_rig_toggle_ik_fk", text="IK", icon="CON_KINEMATIC")
-                op.limbs = 'BOTH'
-                op.set_enabled = True
-                op.enable_ik = True
-                op = row.operator("sub.anim_rig_toggle_ik_fk", text="FK", icon="BONE_DATA")
-                op.limbs = 'BOTH'
-                op.set_enabled = True
-                op.enable_ik = False
+            box_ik = layout.box()
+            box_ik.label(text="IK / FK", icon="CON_KINEMATIC")
+            _draw_ik_fk_switch_rows(box_ik, arm)
 
         from .finger_sliders import has_finger_sliders, finger_sliders_are_enabled
         if arm is not None and has_finger_sliders(arm):
@@ -186,14 +162,22 @@ class SUB_PT_animation_tools(Panel):
                 if hasattr(bpy.types, 'SUB_OP_quick_switch_ik_fk'):
                     col.operator("sub.quick_switch_ik_fk", text="Switch IK/FK")
                 col.separator()
+
+                # Same IK/FK switches + Match as Animation Rig
+                arm_ik = find_anim_rig_armature(context)
+                if arm_ik is not None and armature_has_ik(arm_ik):
+                    col.label(text="IK / FK Control:")
+                    from .anim_rig_extras import _draw_ik_fk_switch_rows
+                    _draw_ik_fk_switch_rows(col, arm_ik)
+                    col.separator()
                 
                 # Animation Tools section
                 col.label(text="Animation Tools:")
                 col.operator("sub.apply_ik_animation", text="Bake & Remove IK/FK")
                 col.separator()
                 
-                # IK/FK Control section (moved to bottom)
-                col.label(text="IK/FK Control:")
+                # Legacy influence toggle
+                col.label(text="More:")
                 if hasattr(bpy.types, 'SUB_OP_advanced_ik_fk_control'):
                     col.operator("sub.advanced_ik_fk_control", text="Advanced IK/FK Control")
                 col.operator("sub.toggle_ik_influence", text="Toggle IK Influence")
@@ -245,13 +229,7 @@ class SUB_PT_animation_tools(Panel):
                     else:
                         bulk_box.label(text="Select an armature to configure Bulk IK", icon='INFO')
 
-        layout.separator()
-        
-        # Add button for hip animation transfer
-        row = layout.row(align=True)
-        row.operator("sub.transfer_hip_animation", text="Transfer Hip Animation to Trans")
-        
-        # Add Mirror Animation section
+        # Mirror Animation section
         layout.separator()
         box = layout.box()
         
@@ -309,31 +287,62 @@ class SUB_PT_animation_tools(Panel):
             # Show simple button when collapsed
             row = box.row(align=True)
             row.operator("sub.mirror_action", text="Mirror Animation")
-        
-        # Add Reset Bone Locations button - just a button, not a section
-        row = layout.row(align=True)
-        row.operator("sub.reset_bone_locations", text="Reset Bone Locations")
-        
-        # Add Ground Character button
-        row = layout.row(align=True)
-        row.operator("sub.ground_character", text="Ground Character")
-        
-        # Add Invert Rotation button (only available in pose mode with selected bones)
-        row = layout.row(align=True)
-        if context.mode == 'POSE' and context.selected_pose_bones:
-            row.operator("sub.invert_rotation_values", text="Invert Positive and Negative")
-        else:
-            row.enabled = False
-            if context.mode != 'POSE':
-                row.operator("sub.invert_rotation_values", text="Invert Positive and Negative (Pose Mode Only)")
+
+        # Animation Layers (only when that addon is available)
+        from . import anim_layers_compat
+        al_mod = anim_layers_compat._find_anim_layers_module()
+        draw_fn = getattr(al_mod, "draw_embedded_ui", None) if al_mod else None
+        if callable(draw_fn):
+            layout.separator()
+            al_box = layout.box()
+            al_header = al_box.row()
+            al_header.prop(
+                ssp,
+                "anim_layers_panel_expanded",
+                icon="TRIA_DOWN" if ssp.anim_layers_panel_expanded else "TRIA_RIGHT",
+                icon_only=True,
+                emboss=False,
+            )
+            al_header.label(text="Animation Layers", icon="NLA")
+            if ssp.anim_layers_panel_expanded:
+                draw_fn(al_box, context, show_tools=True)
+
+        # Misc Anim Stuff
+        layout.separator()
+        misc_box = layout.box()
+        misc_header = misc_box.row()
+        misc_header.prop(
+            ssp,
+            "misc_anim_stuff_expanded",
+            icon="TRIA_DOWN" if ssp.misc_anim_stuff_expanded else "TRIA_RIGHT",
+            icon_only=True,
+            emboss=False,
+        )
+        misc_header.label(text="Misc Anim Stuff")
+        if ssp.misc_anim_stuff_expanded:
+            col = misc_box.column(align=True)
+            col.operator("sub.transfer_hip_animation", text="Transfer Hip Animation to Trans")
+            col.operator("sub.reset_bone_locations", text="Reset Bone Locations")
+            col.operator("sub.ground_character", text="Ground Character")
+
+            row = col.row(align=True)
+            if context.mode == 'POSE' and context.selected_pose_bones:
+                row.operator("sub.invert_rotation_values", text="Invert Positive and Negative")
             else:
-                row.operator("sub.invert_rotation_values", text="Invert Positive and Negative (Select Bones)")
+                row.enabled = False
+                if context.mode != 'POSE':
+                    row.operator(
+                        "sub.invert_rotation_values",
+                        text="Invert Positive and Negative (Pose Mode Only)",
+                    )
+                else:
+                    row.operator(
+                        "sub.invert_rotation_values",
+                        text="Invert Positive and Negative (Select Bones)",
+                    )
 
-        row = layout.row(align=True)
-        row.operator("sub.remove_swing_bone_animation", text="Remove Animation from Swing Bones")
-
-        row = layout.row(align=True)
-        row.operator("sub.gif_or_photo", text="GIF or Photo", icon="RENDER_ANIMATION")
+            col.operator("sub.remove_swing_bone_animation", text="Remove Animation from Swing Bones")
+            col.operator("sub.gif_or_photo", text="GIF or Photo", icon="RENDER_ANIMATION")
 
 class SUB_PT_model_tools(Panel):
     bl_space_type = 'VIEW_3D'

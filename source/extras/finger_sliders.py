@@ -1,9 +1,10 @@
 """Finger sliders parented to the Smash hand bones.
 
-Most controls are 1D sliders on the hand box. The thumb is a square knob
-inside a square pad, aligned with the Hand box, so it can curl on two axes.
-Extra hands (HandL2, etc.) get the same controls. Bones are named BL_* so
-they stay visible in the animation rig and can be skipped on export.
+Most controls are 1D sliders on the hand box. Curl is a 2D knob (Y = all
+fingers together, X = progressive cascade Index↔Pinky). The thumb is a
+square knob inside a square pad. Extra hands (HandL2, etc.) get the same
+controls. Bones are named BL_* so they stay visible in the animation rig
+and can be skipped on export.
 """
 
 import math
@@ -488,6 +489,39 @@ def _configure_slider_pose(pose_bone, half_travel, color):
     _set_bone_color(pose_bone, color)
 
 
+def _configure_curl_slider_pose(pose_bone, half_travel, color):
+    """Curl is 2D: Y = all fingers together, X = progressive cascade."""
+    pose_bone.lock_location = (False, False, True)
+    pose_bone.lock_rotation = (True, True, True)
+    pose_bone.lock_scale = (True, True, True)
+    pose_bone.lock_rotation_w = True
+    pose_bone.rotation_mode = "XYZ"
+    pose_bone.location = (0.0, 0.0, 0.0)
+    pose_bone.bone.hide_select = False
+
+    for constraint in list(pose_bone.constraints):
+        if constraint.type == "LIMIT_LOCATION":
+            pose_bone.constraints.remove(constraint)
+
+    limit = pose_bone.constraints.new("LIMIT_LOCATION")
+    limit.owner_space = "LOCAL"
+    limit.use_min_x = True
+    limit.use_max_x = True
+    limit.min_x = -half_travel
+    limit.max_x = half_travel
+    limit.use_min_y = True
+    limit.use_max_y = True
+    limit.min_y = -half_travel
+    limit.max_y = half_travel
+    limit.use_min_z = True
+    limit.use_max_z = True
+    limit.min_z = 0.0
+    limit.max_z = 0.0
+    limit.use_transform_limit = True
+    limit.name = "Curl Pad Range"
+    _set_bone_color(pose_bone, color)
+
+
 def _configure_thumb_knob_pose(pose_bone, half_travel, color):
     pose_bone.lock_location = (False, False, True)
     pose_bone.lock_rotation = (True, True, True)
@@ -535,7 +569,20 @@ def _map_transform_from_axis(constraint, from_axis, to_axis):
             setattr(constraint, attr, from_letter if i == to_axis else "X")
 
 
-def _ensure_finger_constraint(pose_bone, name, target, subtarget, half, rot_axis, rot_at_max, from_axis=1):
+def _ensure_finger_constraint(
+    pose_bone,
+    name,
+    target,
+    subtarget,
+    half,
+    rot_axis,
+    rot_at_max,
+    from_axis=1,
+    from_min=None,
+    from_max=None,
+    rot_min=None,
+    rot_max=None,
+):
     constraint = next((c for c in pose_bone.constraints if c.name == name), None)
     if constraint is None:
         constraint = pose_bone.constraints.new("TRANSFORM")
@@ -546,16 +593,25 @@ def _ensure_finger_constraint(pose_bone, name, target, subtarget, half, rot_axis
     constraint.owner_space = "LOCAL"
     constraint.map_from = "LOCATION"
     constraint.map_to = "ROTATION"
-    constraint.from_min_x = -half if from_axis == 0 else 0.0
-    constraint.from_max_x = half if from_axis == 0 else 0.0
-    constraint.from_min_y = -half if from_axis == 1 else 0.0
-    constraint.from_max_y = half if from_axis == 1 else 0.0
+
+    axis_min = -half if from_min is None else float(from_min)
+    axis_max = half if from_max is None else float(from_max)
+    constraint.from_min_x = axis_min if from_axis == 0 else 0.0
+    constraint.from_max_x = axis_max if from_axis == 0 else 0.0
+    constraint.from_min_y = axis_min if from_axis == 1 else 0.0
+    constraint.from_max_y = axis_max if from_axis == 1 else 0.0
     constraint.from_min_z = 0.0
     constraint.from_max_z = 0.0
     _map_transform_from_axis(constraint, from_axis, rot_axis)
+
+    if rot_min is None and rot_max is None:
+        rmin, rmax = -float(rot_at_max), float(rot_at_max)
+    else:
+        rmin = -float(rot_at_max) if rot_min is None else float(rot_min)
+        rmax = float(rot_at_max) if rot_max is None else float(rot_max)
     for axis in range(3):
         if axis == rot_axis:
-            _set_transform_rot_range(constraint, axis, -rot_at_max, rot_at_max)
+            _set_transform_rot_range(constraint, axis, rmin, rmax)
         else:
             _set_transform_rot_range(constraint, axis, 0.0, 0.0)
     if hasattr(constraint, "mix_mode_rot"):
@@ -579,6 +635,30 @@ def _ensure_finger_constraint(pose_bone, name, target, subtarget, half, rot_axis
             pass
     constraint.mute = False
     return constraint
+
+
+# Index → Pinky. Horizontal Curl X cascades through these in order.
+_CURL_CASCADE_DIGITS = (1, 2, 3, 4)
+
+
+def _cascade_window(finger_index, count, half, positive):
+    """X window where this finger curls during a progressive sweep."""
+    count = max(int(count), 1)
+    t0 = finger_index / count
+    t1 = (finger_index + 1) / count
+    overlap = 0.22 / count
+    t0 = max(0.0, t0 - overlap)
+    t1 = min(1.0, t1 + overlap)
+    if positive:
+        return (t0 * half, t1 * half)
+    return (-t1 * half, -t0 * half)
+
+
+def _cascade_rot_range(weight):
+    weight = float(weight)
+    if weight >= 0.0:
+        return 0.0, weight
+    return weight, 0.0
 
 
 def _curl_axis_for_finger(bone, digit, bend_vector):
@@ -613,6 +693,7 @@ def _clear_finger_drive_props(pose_bone):
     for key in (
         "sub_finger_curl_axis",
         "sub_finger_curl_weight",
+        "sub_finger_curl_cascade_weight",
         "sub_finger_spread_axis",
         "sub_finger_spread_weight",
         "sub_finger_side_axis",
@@ -637,6 +718,8 @@ def _drive_fingers(armature_obj, side, suffix, half_travel, digits=""):
     max_spread = math.radians(MAX_SPREAD_DEGREES)
     max_side = math.radians(MAX_SIDE_DEGREES)
     half = max(half_travel, 1e-6)
+    cascade_count = len(_CURL_CASCADE_DIGITS)
+    cascade_index = {digit: i for i, digit in enumerate(_CURL_CASCADE_DIGITS)}
 
     for label, digit in FINGERS:
         offset_name = slider_bone_name(label, side, suffix, digits=digits)
@@ -690,6 +773,7 @@ def _drive_fingers(armature_obj, side, suffix, half_travel, digits=""):
                     from_axis=1,
                 )
             else:
+                # Y: all fingers curl together
                 _ensure_finger_constraint(
                     pose_bone,
                     f"{FINGER_CON_PREFIX} Curl",
@@ -700,6 +784,42 @@ def _drive_fingers(armature_obj, side, suffix, half_travel, digits=""):
                     weight,
                     from_axis=1,
                 )
+                # X: progressive cascade (right = Index→Pinky, left = Pinky→Index)
+                if digit in cascade_index:
+                    pose_bone["sub_finger_curl_cascade_weight"] = weight
+                    idx = cascade_index[digit]
+                    rev = cascade_count - 1 - idx
+                    rmin, rmax = _cascade_rot_range(weight)
+                    pos_min, pos_max = _cascade_window(idx, cascade_count, half, True)
+                    neg_min, neg_max = _cascade_window(rev, cascade_count, half, False)
+                    _ensure_finger_constraint(
+                        pose_bone,
+                        f"{FINGER_CON_PREFIX} Curl Cascade+",
+                        armature_obj,
+                        curl_name,
+                        half,
+                        curl_axis,
+                        weight,
+                        from_axis=0,
+                        from_min=pos_min,
+                        from_max=pos_max,
+                        rot_min=rmin,
+                        rot_max=rmax,
+                    )
+                    _ensure_finger_constraint(
+                        pose_bone,
+                        f"{FINGER_CON_PREFIX} Curl Cascade-",
+                        armature_obj,
+                        curl_name,
+                        half,
+                        curl_axis,
+                        weight,
+                        from_axis=0,
+                        from_min=neg_min,
+                        from_max=neg_max,
+                        rot_min=rmin,
+                        rot_max=rmax,
+                    )
                 if offset_name in armature_obj.pose.bones:
                     _ensure_finger_constraint(
                         pose_bone,
@@ -873,6 +993,12 @@ def build_finger_sliders(context, armature_obj):
         if is_thumb_slider_bone(pose_bone.name):
             _configure_thumb_knob_pose(pose_bone, half_travel, color)
             _assign_shape(pose_bone, knob_widget, knob_scale, color, False, armature_obj)
+            if hasattr(pose_bone, "custom_shape_wire_width"):
+                pose_bone.custom_shape_wire_width = 2.5
+        elif "Curl" in base:
+            # 2D pad: Y = uniform curl, X = progressive cascade
+            _configure_curl_slider_pose(pose_bone, half_travel, color)
+            _assign_shape(pose_bone, knob_widget, knob_scale * 1.15, color, False, armature_obj)
             if hasattr(pose_bone, "custom_shape_wire_width"):
                 pose_bone.custom_shape_wire_width = 2.5
         else:
@@ -1072,13 +1198,45 @@ def _slider_loc_axis(constraint):
     return 1
 
 
+def _constraint_from_range(constraint, loc_axis):
+    if loc_axis == 0:
+        return float(constraint.from_min_x), float(constraint.from_max_x)
+    return float(constraint.from_min_y), float(constraint.from_max_y)
+
+
+def _constraint_amount(slider, constraint, half):
+    """Map slider location through the constraint's from-range.
+
+    Symmetric Curl/Spread/Side use -1..1. Cascade windows use 0..1 within their slice.
+    """
+    loc_axis = _slider_loc_axis(constraint)
+    loc = float(slider.location[loc_axis])
+    from_min, from_max = _constraint_from_range(constraint, loc_axis)
+    span = from_max - from_min
+    if abs(span) < 1e-8:
+        return 0.0
+    # Cascade: one-sided window mapped 0→1
+    if "Cascade" in (constraint.name or ""):
+        t = (loc - from_min) / span
+        return max(0.0, min(1.0, t))
+    # Symmetric controls centered on travel half
+    if half > 1e-8 and abs(from_min + half) < 1e-5 and abs(from_max - half) < 1e-5:
+        return max(-1.0, min(1.0, loc / half))
+    t = (loc - from_min) / span
+    return max(-1.0, min(1.0, t * 2.0 - 1.0))
+
+
 def _slider_constraint_quat(armature_obj, pose_bone, constraint, half):
     slider = armature_obj.pose.bones.get(constraint.subtarget)
     if slider is None or half <= 0.0:
         return Quaternion()
-    loc_axis = _slider_loc_axis(constraint)
-    amount = max(-1.0, min(1.0, slider.location[loc_axis] / half))
-    if loc_axis == 0:
+    amount = _constraint_amount(slider, constraint, half)
+    if "Cascade" in (constraint.name or ""):
+        axis = pose_bone.get("sub_finger_curl_axis")
+        weight = pose_bone.get("sub_finger_curl_cascade_weight")
+        if weight is None:
+            weight = pose_bone.get("sub_finger_curl_weight")
+    elif _slider_loc_axis(constraint) == 0 and "Side" in (constraint.name or ""):
         axis = pose_bone.get("sub_finger_side_axis")
         weight = pose_bone.get("sub_finger_side_weight")
     elif "Spread" in constraint.name:
@@ -1115,9 +1273,13 @@ def _subtract_slider_constraints(armature_obj, pose_bone, captured_quat, half):
             slider = armature_obj.pose.bones.get(constraint.subtarget)
             if slider is None or half <= 0.0:
                 continue
-            loc_axis = _slider_loc_axis(constraint)
-            amount = max(-1.0, min(1.0, slider.location[loc_axis] / half))
-            if loc_axis == 0:
+            amount = _constraint_amount(slider, constraint, half)
+            if "Cascade" in (constraint.name or ""):
+                axis = pose_bone.get("sub_finger_curl_axis")
+                weight = pose_bone.get("sub_finger_curl_cascade_weight")
+                if weight is None:
+                    weight = pose_bone.get("sub_finger_curl_weight")
+            elif _slider_loc_axis(constraint) == 0 and "Side" in (constraint.name or ""):
                 axis = pose_bone.get("sub_finger_side_axis")
                 weight = pose_bone.get("sub_finger_side_weight")
             elif "Spread" in constraint.name:

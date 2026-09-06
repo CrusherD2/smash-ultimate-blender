@@ -8,8 +8,10 @@ class SUB_PT_update_plugin(Panel):
 
     @classmethod
     def poll(cls, context):
-        from .version_check import UPDATE_AVAILABLE
-        return UPDATE_AVAILABLE
+        # LOCAL_VERSION_AHEAD is a cached flag from the last check, so this stays
+        # cheap enough for a poll and keeps the panel hidden on newer local builds.
+        from .version_check import UPDATE_AVAILABLE, LOCAL_VERSION_AHEAD
+        return bool(UPDATE_AVAILABLE) and not LOCAL_VERSION_AHEAD
     
     def draw(self, context):
         from ...__init__ import bl_info
@@ -89,8 +91,10 @@ class SUB_PT_updater_settings(Panel):
 
     @classmethod
     def poll(cls, context):
-        from .version_check import UPDATE_AVAILABLE
-        return UPDATE_AVAILABLE
+        # LOCAL_VERSION_AHEAD is a cached flag from the last check, so this stays
+        # cheap enough for a poll and keeps the panel hidden on newer local builds.
+        from .version_check import UPDATE_AVAILABLE, LOCAL_VERSION_AHEAD
+        return bool(UPDATE_AVAILABLE) and not LOCAL_VERSION_AHEAD
     
     def draw(self, context):
         from .version_check import UPDATE_STATUS

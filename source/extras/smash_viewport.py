@@ -2752,6 +2752,10 @@ def _heal_smash_file_viewport_state():
     Modifier `show_viewport` and `display_type` are stored in the .blend. A file
     saved with Smash Viewport on can reopen with every character mesh stuck in
     rest pose (black T-pose) while the GPU overlay still follows the pose.
+
+    Also heals expression / face meshes that stay visible in Solid view after
+    loading vis animations — those often keep show_viewport=False from a prior
+    Smash Viewport session and float at bind pose behind the head.
     """
     global _in_mod_sync
     _in_mod_sync = True
@@ -2765,6 +2769,9 @@ def _heal_smash_file_viewport_state():
                 try:
                     if not bool(mod.show_viewport):
                         mod.show_viewport = True
+                    if hasattr(mod, "show_in_editmode") and not bool(mod.show_in_editmode):
+                        # keep editmode flag alone; only force viewport deform
+                        pass
                 except Exception:
                     pass
             try:
@@ -2774,6 +2781,39 @@ def _heal_smash_file_viewport_state():
                 pass
     finally:
         _in_mod_sync = False
+
+
+def heal_solid_view_deform_after_anim():
+    """Public hook: call after importing anims so Solid view faces follow the rig."""
+    try:
+        # If Smash Viewport is off, restore any leftover disabled deform mods
+        if not _viewport_enabled():
+            _restore_armature_mod_viewport()
+            _heal_smash_file_viewport_state()
+            return
+        # Smash Viewport on but user is in Solid: still need CPU deform for faces
+        wm = getattr(bpy.context, "window_manager", None)
+        solid = False
+        if wm is not None:
+            for window in wm.windows:
+                screen = getattr(window, "screen", None)
+                if screen is None:
+                    continue
+                for area in screen.areas:
+                    if area.type != "VIEW_3D":
+                        continue
+                    space = area.spaces.active
+                    shading = getattr(space, "shading", None) if space else None
+                    if shading is not None and getattr(shading, "type", "") != "RENDERED":
+                        solid = True
+                        break
+        if solid:
+            _heal_smash_file_viewport_state()
+    except Exception:
+        try:
+            _heal_smash_file_viewport_state()
+        except Exception:
+            pass
 
 
 def _restore_gpu_mesh_draw():
@@ -2961,7 +3001,9 @@ def _sync_armature_mod_viewport(context=None):
                         _mod_show_saved[key] = True
                     else:
                         _mod_show_saved[key] = bool(getattr(mod, "show_viewport", True))
-                want = bool(_mod_show_saved[key] and draw)
+                want = bool(draw) if _is_smash_deform_mesh(obj, arm) else bool(
+                    _mod_show_saved.get(key, True) and draw
+                )
                 try:
                     if bool(mod.show_viewport) != want:
                         mod.show_viewport = want
