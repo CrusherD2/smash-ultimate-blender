@@ -306,6 +306,7 @@ class SUB_PT_import_model(Panel):
         return True
 
     def draw(self, context):
+        self.layout.use_property_decorate = False
         ssp: SubSceneProperties = context.scene.sub_scene_properties
         layout = self.layout
         layout.use_property_split = False
@@ -333,10 +334,15 @@ class SUB_PT_import_model(Panel):
         row.operator(SUB_OP_select_individual_model.bl_idname, icon='ZOOM_ALL', text='Browse for individual model')
 
         row = layout.row()
+        layout.prop(ssp, "auto_import_default_eyelid")
         row.template_list("SUB_UL_model_import_list", "", ssp, "model_import_models", ssp, "model_import_models_index")
 
         row = layout.row()
         row.operator(SUB_OP_import_selected_model.bl_idname, text="Import Selected Model")
+
+    def draw_header_preset(self, context):
+        from ..ui_help import draw_panel_help
+        draw_panel_help(self.layout, self)
 
 class SUB_OP_select_model_import_folder(Operator):
     bl_idname = 'sub.ssbh_model_folder_selector'
@@ -395,6 +401,7 @@ class SUB_OP_refresh_model_import_list(Operator):
         return {'FINISHED'}
 
 class SUB_OP_import_model(bpy.types.Operator):
+    bl_description = 'Import a Smash model, including its meshes, skeleton, and materials'
     bl_idname = 'sub.model_importer'
     bl_label = 'Model Importer'
     bl_options = {'UNDO'}
@@ -483,6 +490,7 @@ def _resolve_model_path(folder: Path, fallback: Path, filename: str, suffix: str
 
 
 class SUB_OP_import_selected_model(bpy.types.Operator):
+    bl_description = 'Import the model selected in the model folder browser'
     bl_idname = 'sub.import_selected_model'
     bl_label = 'Import Selected Model'
     bl_options = {'UNDO'}
@@ -579,6 +587,8 @@ class SUB_OP_select_individual_model(Operator):
         return {'FINISHED'}
 
 def import_model(operator: bpy.types.Operator, context: bpy.types.Context):
+    from ..anim.import_anim import save_visible_animation_folders
+    save_visible_animation_folders(context)
     ssp: SubSceneProperties = context.scene.sub_scene_properties
     dir = Path(ssp.model_import_folder_path)
     fallback_raw = ssp.get("sub_model_import_fallback", "") or ""
@@ -800,10 +810,29 @@ def import_model(operator: bpy.types.Operator, context: bpy.types.Context):
 
     if armature is not None:
         try:
-            from ..anim.import_anim import bind_anim_folder_to_armature
-            bind_anim_folder_to_armature(armature, ssp.animation_import_folder_path)
+            from ..anim.import_anim import (
+                bind_anim_folder_to_armature,
+                related_motion_folder,
+                sync_anim_importer_to_active,
+            )
+            exact_folder = related_motion_folder(str(dir))
+            bind_anim_folder_to_armature(armature, exact_folder)
+            sync_anim_importer_to_active(context, force=True, armature=armature)
         except Exception:
             pass
+
+    if armature is not None and ssp.auto_import_default_eyelid:
+        eyelid = find_default_eyelid(dir)
+        if eyelid is not None:
+            context.view_layer.objects.active = armature
+            armature.select_set(True)
+            try:
+                result = bpy.ops.sub.import_anim(
+                    filepath=str(eyelid), first_blender_frame=context.scene.frame_start)
+                if result != {'FINISHED'}:
+                    operator.report({'WARNING'}, f'Default eyelid import failed: {eyelid}')
+            except Exception as error:
+                operator.report({'WARNING'}, f'Default eyelid import failed: {error}')
 
     # File-backed idle poses are resolved from the active animation folder on use.
     from ..extras.idle_pose_library import initialize_predefined_poses
@@ -817,6 +846,22 @@ def import_model(operator: bpy.types.Operator, context: bpy.types.Context):
             operator.report({'WARNING'}, f'Collection preset auto-apply failed: {error}')
 
     return {'FINISHED'}
+
+def find_default_eyelid(model_folder):
+    """Prefer this costume, then shared c00; never use another fighter's folder."""
+    folder = Path(model_folder)
+    for parent in (folder, *folder.parents):
+        if parent.name.lower() == 'model':
+            motion = parent.parent / 'motion'
+            relative = folder.relative_to(parent)
+            direct = motion / relative
+            for candidate in (direct, direct.parent / 'c00', motion / 'body' / 'c00', motion / 'body', motion):
+                path = candidate / 'a00defaulteyelid.nuanmb'
+                if path.is_file():
+                    return path
+            break
+    return None
+
 
 def get_shader_db_file_path():
     # This file was generated with duplicates removed to optimize space.

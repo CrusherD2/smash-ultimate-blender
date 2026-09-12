@@ -39,6 +39,8 @@ from . import viewport_capture
 from . import timeline_fps
 from . import refresh_bone_drawing
 from . import collection_presets
+from . import ik_floor_contact
+from . import custom_ik
 
 # Explicit registration function for the package
 def register():
@@ -59,6 +61,8 @@ def register():
     timeline_fps.register()
     refresh_bone_drawing.register()
     collection_presets.register()
+    ik_floor_contact.register()
+    custom_ik.register()
     viewport_capture.register()
     face_picker.register()
     eye_rig.register()
@@ -80,11 +84,13 @@ def register():
     ik_pole_alignment.register()
     
 def unregister():
+    custom_ik.unregister()
     face_picker.unregister()
     smash_viewport.unregister()
     eye_rig.unregister()
     create_animation_rig.unregister()
     viewport_capture.unregister()
+    ik_floor_contact.unregister()
     collection_presets.unregister()
     refresh_bone_drawing.unregister()
     timeline_fps.unregister()

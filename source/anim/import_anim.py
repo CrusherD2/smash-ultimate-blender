@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 
 ANIM_FOLDER_KEY = "sub_anim_import_folder"
 _last_anim_sync_ptr = 0
+_anim_sync_busy = False
 
 
 def remember_animation_folder(ssp, folder):
@@ -79,13 +80,40 @@ def fill_animation_import_list(ssp, folder):
     return count
 
 
-def bind_anim_folder_to_armature(armature, folder):
-    if armature is None or not folder:
+def active_import_armature(context):
+    obj = context.view_layer.objects.active
+    if obj and obj.type == 'ARMATURE':
+        return obj
+    if obj and obj.type == 'MESH':
+        return obj.find_armature()
+    return None
+
+
+def related_motion_folder(model):
+    parts = list(Path(model).parts)
+    for index in range(len(parts) - 1, -1, -1):
+        if parts[index].lower() == 'model':
+            parts[index] = 'motion'
+            folder = str(Path(*parts))
+            return folder if os.path.isdir(folder) else ''
+    return ''
+
+
+def bind_anim_folder_to_armature(armature, folder, ssp=None):
+    if armature is None:
         return
     try:
-        armature[ANIM_FOLDER_KEY] = folder
-        if armature.data is not None:
-            armature.data[ANIM_FOLDER_KEY] = folder
+        armature[ANIM_FOLDER_KEY] = folder or ''
+        if ssp is not None:
+            paths = [item.path for item in ssp.animation_import_folders]
+        else:
+            try:
+                paths = list(json.loads(armature.get('sub_anim_import_folders', '[]')))
+            except (TypeError, ValueError):
+                paths = []
+        if folder and folder not in paths:
+            paths.append(folder)
+        armature['sub_anim_import_folders'] = json.dumps(paths)
     except Exception:
         pass
 
@@ -104,53 +132,79 @@ def anim_folder_for_armature(armature):
     smash = armature.get("sub_smash_model_folder", "") or ""
     if data is not None and not smash:
         smash = data.get("sub_smash_model_folder", "") or ""
-    if smash:
-        motion = smash.replace("model", "motion")
-        if os.path.isdir(motion):
-            nuanmb = [name for name in os.listdir(motion) if name.endswith(".nuanmb")]
-            if nuanmb:
-                return motion
-            body = Path(motion) / "body" if os.path.basename(motion) != "body" else Path(motion)
-            if not str(body).endswith("body"):
-                fighter = Path(smash).parent.parent.parent
-                body = fighter / "motion" / "body"
-            if body.is_dir():
-                subs = [name for name in os.listdir(body) if os.path.isdir(body / name)]
-                if subs:
-                    return str(body / subs[0])
-    return ""
+    return related_motion_folder(smash) if smash else ""
 
 
-def sync_anim_importer_to_active(context=None):
-    global _last_anim_sync_ptr
+def save_visible_animation_folders(context):
+    owner = getattr(context.scene, 'sub_anim_folder_owner', None)
+    ssp = getattr(context.scene, 'sub_scene_properties', None)
+    if owner is not None and ssp is not None:
+        bind_anim_folder_to_armature(owner, ssp.animation_import_folder_path, ssp)
+
+
+def sync_anim_importer_to_active(context=None, force=False, armature=None):
+    global _last_anim_sync_ptr, _anim_sync_busy
     context = context or bpy.context
-    obj = getattr(context, "object", None)
-    if obj is None or getattr(obj, "type", "") != "ARMATURE":
+    obj = armature if armature is not None else active_import_armature(context)
+    if obj is None or _anim_sync_busy:
         return
     try:
         ptr = int(obj.as_pointer())
     except Exception:
         ptr = 0
-    if ptr == _last_anim_sync_ptr:
+    scene = context.scene
+    key = (int(scene.as_pointer()), ptr)
+    if key == _last_anim_sync_ptr and not force and scene.sub_anim_folder_owner == obj:
         return
-    folder = anim_folder_for_armature(obj)
-    if not folder:
-        _last_anim_sync_ptr = ptr
-        return
-    ssp = getattr(getattr(context, "scene", None), "sub_scene_properties", None)
+    ssp = getattr(scene, "sub_scene_properties", None)
     if ssp is None:
         return
-    current = getattr(ssp, "animation_import_folder_path", "") or ""
-    if os.path.normcase(os.path.normpath(current)) == os.path.normcase(os.path.normpath(folder)):
-        _last_anim_sync_ptr = ptr
-        return
-    fill_animation_import_list(ssp, folder)
     try:
-        from .raw_anim import refresh_raw_animation_import_list
+        _anim_sync_busy = True
+        if scene.sub_anim_folder_owner != obj:
+            save_visible_animation_folders(context)
+        folder = anim_folder_for_armature(obj)
+        try:
+            paths = json.loads(obj.get('sub_anim_import_folders', '[]'))
+        except (TypeError, ValueError):
+            paths = []
+        scene.sub_anim_folder_owner = None
+        ssp.animation_import_folders.clear()
+        ssp.animation_import_folder_path = ''
+        for path in paths:
+            remember_animation_folder(ssp, path)
+        fill_animation_import_list(ssp, folder)
+        ssp.raw_animation_import_folder_path = ''
         refresh_raw_animation_import_list(ssp)
-    except Exception:
+        scene.sub_anim_folder_owner = obj
+        _last_anim_sync_ptr = key
+        for area in context.screen.areas if context.screen else ():
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+    finally:
+        _anim_sync_busy = False
+
+
+def animation_folder_selection_timer():
+    try:
+        if bpy.context.mode in {'OBJECT', 'POSE'}:
+            sync_anim_importer_to_active()
+    except (ReferenceError, RuntimeError, AttributeError):
         pass
-    _last_anim_sync_ptr = ptr
+    return 0.2
+
+
+def register_folder_sync():
+    bpy.types.Scene.sub_anim_folder_owner = bpy.props.PointerProperty(type=bpy.types.Object)
+    if not bpy.app.timers.is_registered(animation_folder_selection_timer):
+        bpy.app.timers.register(animation_folder_selection_timer, persistent=True)
+
+
+def unregister_folder_sync():
+    if bpy.app.timers.is_registered(animation_folder_selection_timer):
+        bpy.app.timers.unregister(animation_folder_selection_timer)
+    if hasattr(bpy.types.Scene, 'sub_anim_folder_owner'):
+        del bpy.types.Scene.sub_anim_folder_owner
 
 
 def import_animation_file(
@@ -220,16 +274,27 @@ def _refresh_imported_ik(context, obj, active_limbs, *, preserve_controls=False)
 
     paths = {fc.data_path for fc in get_fcurves_for_assigned_slot(obj)} if preserve_controls else set()
     with anim_layers_compat.anim_layers_paused():
+        wanted = []
         for kind in active_limbs:
-            controls = [obj.pose.bones[name].path_from_id() + '.'
-                        for _, _, target, pole in ik_channels.chains(obj, kind)
-                        for name in (target, pole)]
-            if paths and any(path.startswith(tuple(controls)) for path in paths):
+            controls = tuple(obj.pose.bones[name].path_from_id() + '.'
+                             for _, _, target, pole in ik_channels.chains(obj, kind)
+                             for name in (target, pole))
+            if paths and controls and any(path.startswith(controls) for path in paths):
                 # Raw clips carry their own IK controls and switch animation.
                 continue
-            ik_channels.match(context, obj, kind, entire=True, key=True)
-            rig._key_use_ik(obj, context.scene.frame_start, limbs=kind, enabled=True)
-            rig._set_ik_enabled(context, obj, True, limbs=kind)
+            wanted.append(kind)
+        if wanted:
+            # One sweep covering every eligible limb. match() walks the whole
+            # clip per call, so asking per kind sampled and solved the entire
+            # animation twice on an arms-and-legs rig. _batch additionally lets
+            # the limbs it can prove independent share depsgraph evaluations --
+            # it defaults off, so this path had been taking the slowest branch.
+            ik_channels.match(context, obj,
+                              'BOTH' if len(wanted) > 1 else wanted[0],
+                              entire=True, key=True, _batch=True)
+            for kind in wanted:
+                rig._key_use_ik(obj, context.scene.frame_start, limbs=kind, enabled=True)
+                rig._set_ik_enabled(context, obj, True, limbs=kind)
         context.scene.frame_set(context.scene.frame_current)
         context.view_layer.update()
 
@@ -298,15 +363,11 @@ def import_animation_paths(context, operator, filepaths):
 
 class SUB_UL_animation_import_list(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        from .selection import visible_list_indices
+        visible = ','.join(map(str, visible_list_indices(self, data.animation_import_files)))
         layout.operator_context = 'INVOKE_DEFAULT'
         if self.layout_type in {'DEFAULT', 'COMPACT'}:
-            checkbox = layout.operator(
-                SUB_OP_toggle_animation_import_selection.bl_idname,
-                text="", icon='CHECKBOX_HLT' if item.selected else 'CHECKBOX_DEHLT',
-                emboss=False,
-            )
-            checkbox.index = index
-            checkbox.toggle = True
+            layout.prop(item, "selected", text="")
             op = layout.operator(
                 SUB_OP_toggle_animation_import_selection.bl_idname,
                 text=item.name,
@@ -314,6 +375,7 @@ class SUB_UL_animation_import_list(bpy.types.UIList):
                 depress=item.selected,
             )
             op.index = index
+            op.visible_indices = visible
         elif self.layout_type in {'GRID'}:
             layout.alignment = 'CENTER'
             op = layout.operator(
@@ -322,6 +384,7 @@ class SUB_UL_animation_import_list(bpy.types.UIList):
                 depress=item.selected,
             )
             op.index = index
+            op.visible_indices = visible
 
 
 class SUB_OP_toggle_animation_import_selection(Operator):
@@ -331,6 +394,7 @@ class SUB_OP_toggle_animation_import_selection(Operator):
     bl_options = {'INTERNAL'}
 
     index: IntProperty(options={'HIDDEN'})
+    visible_indices: StringProperty(options={'HIDDEN'})
     toggle: BoolProperty(default=False, options={'HIDDEN'})
 
     def invoke(self, context, event):
@@ -342,6 +406,7 @@ class SUB_OP_toggle_animation_import_selection(Operator):
         from .selection import select_range
         ssp.animation_import_selection_anchor = select_range(
             items, 'selected', self.index, ssp.animation_import_selection_anchor,
+            visible_indices=[int(i) for i in self.visible_indices.split(',') if i] or None,
             shift=event.shift, toggle=event.ctrl or event.oskey or (self.toggle and not event.shift),
         )
         ssp.animation_import_files_index = self.index
@@ -381,6 +446,7 @@ class SUB_UL_raw_animation_import_list(bpy.types.UIList):
             layout.label(text=item.name)
 
 class SUB_OP_import_all_animations(bpy.types.Operator):
+    bl_description = 'Import every animation from the selected animation folder as Blender actions'
     bl_idname = 'sub.import_all_animations'
     bl_label = 'Import All Animations'
     bl_options = {'REGISTER', 'UNDO'}
@@ -731,6 +797,7 @@ class SUB_OP_import_raw_anim_file(Operator, ImportHelper):
 
 
 class SUB_OP_refresh_raw_animation_list(Operator):
+    bl_description = 'Scan the raw animation folder again and refresh its file list'
     bl_idname = 'sub.refresh_raw_animation_list'
     bl_label = 'Refresh Raw Animation List'
     bl_options = {'UNDO'}
@@ -752,6 +819,7 @@ class SUB_OP_refresh_raw_animation_list(Operator):
 
 
 class SUB_OP_import_selected_raw_anim(Operator):
+    bl_description = 'Import checked raw animations from the file list onto the selected armature'
     bl_idname = 'sub.import_selected_raw_anim'
     bl_label = 'Import Selected Raw Animation'
     bl_options = {'UNDO'}
@@ -784,6 +852,7 @@ class SUB_OP_import_selected_raw_anim(Operator):
 
 
 class SUB_OP_import_all_raw_anims(Operator):
+    bl_description = 'Import all raw animations from the chosen folder onto the selected armature'
     bl_idname = 'sub.import_all_raw_anims'
     bl_label = 'Import All Raw Animations'
     bl_options = {'UNDO'}
@@ -832,6 +901,7 @@ class SUB_PT_import_anim(Panel):
         return False
     
     def draw(self, context):
+        self.layout.use_property_decorate = False
         layout = self.layout
         layout.use_property_split = False
         obj: bpy.types.Object = context.active_object
@@ -895,7 +965,7 @@ class SUB_PT_import_anim(Panel):
                         rows=5,
                     )
 
-                    box.label(text="Checkboxes include animations independently")
+                    box.label(text="Drag checkboxes to include or exclude")
                     help_row = box.row()
                     help_row.scale_y = 0.8
                     help_row.label(text="Name: select  Ctrl: toggle  Shift: range", icon='INFO')
@@ -907,7 +977,7 @@ class SUB_PT_import_anim(Panel):
                     op.select = False
                     
                     row = box.row()
-                    row.scale_y = 1.2
+                    row.scale_y = 1.0
                     selected_count = sum(1 for item in ssp.animation_import_files if item.selected)
                     row.operator(
                         SUB_OP_import_selected_anim.bl_idname,
@@ -918,6 +988,10 @@ class SUB_PT_import_anim(Panel):
                     # Add batch import button
                     row = box.row()
                     row.operator(SUB_OP_import_all_animations.bl_idname, text="Import All Animations")
+
+    def draw_header_preset(self, context):
+        from ..ui_help import draw_panel_help
+        draw_panel_help(self.layout, self)
 
 
 class SUB_PT_raw_animations(Panel):
@@ -932,6 +1006,7 @@ class SUB_PT_raw_animations(Panel):
         return context.mode in {"POSE", "OBJECT"}
 
     def draw(self, context):
+        self.layout.use_property_decorate = False
         layout = self.layout
         layout.use_property_split = False
         ssp = context.scene.sub_scene_properties
@@ -1007,8 +1082,12 @@ class SUB_PT_raw_animations(Panel):
         export_box.label(text="Export", icon='EXPORT')
         export_box.prop(ssp, "anim_include_raw_animation", text="Include Raw with .NUANMB Export")
         row = export_box.row()
-        row.scale_y = 1.2
+        row.scale_y = 1.0
         row.operator('sub.raw_anim_export', icon='EXPORT', text='Export Raw Animation')
+
+    def draw_header_preset(self, context):
+        from ..ui_help import draw_panel_help
+        draw_panel_help(self.layout, self)
 
 
 class SUB_OP_import_anim(Operator):
@@ -2020,6 +2099,7 @@ class SUB_MT_animation_folders(Menu):
 
 
 class SUB_OP_switch_animation_folder(Operator):
+    bl_description = 'Switch the animation browser to this folder and refresh its file list'
     bl_idname = 'sub.switch_animation_folder'
     bl_label = 'Switch Animation Folder'
     bl_options = {'UNDO'}
@@ -2027,11 +2107,10 @@ class SUB_OP_switch_animation_folder(Operator):
     folder: StringProperty(subtype='DIR_PATH')
 
     def execute(self, context):
+        sync_anim_importer_to_active(context)
         ssp = context.scene.sub_scene_properties
         fill_animation_import_list(ssp, self.folder)
-        obj = context.object
-        if obj is not None and obj.type == 'ARMATURE':
-            bind_anim_folder_to_armature(obj, self.folder)
+        bind_anim_folder_to_armature(active_import_armature(context), self.folder, ssp)
         return {'FINISHED'}
 
 
@@ -2050,6 +2129,7 @@ class SUB_OP_select_animation_folder(Operator):
         return {'RUNNING_MODAL'}
 
     def execute(self, context):
+        sync_anim_importer_to_active(context)
         ssp = context.scene.sub_scene_properties
         folder = os.path.normpath(bpy.path.abspath(self.directory))
         if not os.path.isdir(folder):
@@ -2065,9 +2145,8 @@ class SUB_OP_select_animation_folder(Operator):
             remember_animation_folder(ssp, path)
         count = fill_animation_import_list(ssp, folders[0] if folders else folder)
         refresh_raw_animation_import_list(ssp)
-        obj = context.object
-        if obj is not None and obj.type == 'ARMATURE':
-            bind_anim_folder_to_armature(obj, ssp.animation_import_folder_path)
+        bind_anim_folder_to_armature(
+            active_import_armature(context), ssp.animation_import_folder_path, ssp)
         self.report({'INFO'}, f'Added {len(folders) or 1} folder(s); {count} animations in selected folder')
         return {'FINISHED'}
 

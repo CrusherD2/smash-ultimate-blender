@@ -4,7 +4,7 @@ bl_info = {
     'category': 'Object',
     'location': 'View 3D > Tool Shelf > Ultimate',
     'description': 'A collection of tools for importing models and animations to smash ultimate.',
-    'version': (4, 5, 0),
+    'version': (4, 6, 0),
     'blender': (4, 4, 0),
     'warning': 'TO REMOVE: First "Disable" the plugin, then restart blender, then you can hit "Remove" to uninstall',
     'doc_url': 'https://github.com/ssbucarlos/smash-ultimate-blender/wiki',
@@ -22,6 +22,9 @@ def register():
     print('Loading Smash Ultimate Blender Tools...')
 
     check_unsupported_blender_versions()
+
+    from .source.ui_help import unregister_retired_panels
+    unregister_retired_panels()
 
     # Preferences are needed by ParamLabels and Timeline tools.
     from .source import addon_preferences
@@ -90,6 +93,9 @@ def register():
     from .source import doctor
     doctor.register()
 
+    from .source.anim import motion_list_ui
+    motion_list_ui.register()
+
     # Last, once every panel exists: Panel Presets owns both sidebar visibility
     # and sidebar order, and its registration applies the saved layout.
     from .source.extras import panel_presets
@@ -109,6 +115,9 @@ def unregister():
     # Unregister panel presets first (restores original panel polls)
     from .source.extras import panel_presets
     panel_presets.unregister()
+
+    from .source.anim import motion_list_ui
+    motion_list_ui.unregister()
 
     from .source import doctor
     doctor.unregister()

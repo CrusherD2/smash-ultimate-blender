@@ -101,6 +101,7 @@ def register():
         type=SUB_PG_shpc_settings
     )
 
+
 class ModelImportFile(PropertyGroup):
     name: StringProperty()
 
@@ -221,6 +222,11 @@ class UserPoseItem(PropertyGroup):
 
 
 class SubSceneProperties(PropertyGroup):
+    auto_import_default_eyelid: BoolProperty(
+        name="Auto-import Default Eyelid",
+        description="Import a00defaulteyelid.nuanmb from the model's motion folder when available",
+        default=False,
+    )
     model_import_folder_path: StringProperty(
         name="Model Import Folder Path",
         description="Path to the folder containing the model files",
@@ -473,12 +479,12 @@ class SubSceneProperties(PropertyGroup):
         description="Whether the Bulk IK section is expanded",
         default=False
     )
-    bulk_ik_leg_l: StringProperty(name="Leg L", default="LegL")
-    bulk_ik_knee_l: StringProperty(name="Knee L", default="KneeL")
-    bulk_ik_foot_l: StringProperty(name="Foot L", default="FootL")
-    bulk_ik_leg_r: StringProperty(name="Leg R", default="LegR")
-    bulk_ik_knee_r: StringProperty(name="Knee R", default="KneeR")
-    bulk_ik_foot_r: StringProperty(name="Foot R", default="FootR")
+    bulk_ik_leg_l: StringProperty(name="Leg L", default="LegL", description='Left upper-leg bone used when creating or baking leg IK across actions')
+    bulk_ik_knee_l: StringProperty(name="Knee L", default="KneeL", description='Left knee bone used to determine the leg IK bend')
+    bulk_ik_foot_l: StringProperty(name="Foot L", default="FootL", description='Left foot bone matched to the foot IK control')
+    bulk_ik_leg_r: StringProperty(name="Leg R", default="LegR", description='Right upper-leg bone used when creating or baking leg IK across actions')
+    bulk_ik_knee_r: StringProperty(name="Knee R", default="KneeR", description='Right knee bone used to determine the leg IK bend')
+    bulk_ik_foot_r: StringProperty(name="Foot R", default="FootR", description='Right foot bone matched to the foot IK control')
     related_animations_expanded: BoolProperty(
         name="Related Animations Expanded",
         description="Whether the Related Animations section is expanded",

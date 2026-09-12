@@ -29,7 +29,6 @@ classes = [
     source.exo.magic_exo_skel.SUB_OP_populate_bone_list,
     source.exo.magic_exo_skel.SUB_OP_update_bone_list,
     source.exo.magic_exo_skel.SUB_OP_rename_other_bones,
-    source.exo.magic_exo_skel.SUB_PT_ultimate_exo_skel,
     source.exo.magic_exo_skel.BoneListItem,
     source.exo.magic_exo_skel.PairableBoneListItem,
     source.exo.magic_exo_skel.SUB_UL_BoneList,
@@ -349,8 +348,15 @@ classes = [
     source.model.material.shader_nodes.custom_sprite_sheet_params_node.SUB_CSN_ultimate_sprite_sheet_params,
 ]
 
+
+def _draw_panel_help_header(self, context):
+    from .ui_help import draw_panel_help
+    draw_panel_help(self.layout, self)
+
 def register():
     for cls in classes:
+        if issubclass(cls, bpy.types.Panel) and not hasattr(cls, 'draw_header_preset'):
+            cls.draw_header_preset = _draw_panel_help_header
         try:
             bpy.utils.register_class(cls)
         except (ValueError, RuntimeError):

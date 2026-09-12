@@ -212,6 +212,7 @@ def auto_detect_smash_armature(scene):
 # Override preset execution to handle custom bones properly
 class ULTIMATE_OT_execute_preset_retarget(bpy.types.Operator):
     """Apply a Bone Retarget Preset with Custom Bone Support"""
+    bl_description = 'Apply a Bone Retarget Preset with Custom Bone Support'
     bl_idname = "object.ultimate_armature_preset_apply"
     bl_label = "Apply Bone Retarget Preset"
 
@@ -298,6 +299,7 @@ from bl_operators.presets import AddPresetBase
 
 class ULTIMATE_OT_add_preset_retarget(AddPresetBase, bpy.types.Operator):
     """Add or Remove a Bone Retarget Preset"""
+    bl_description = 'Add or Remove a Bone Retarget Preset'
     bl_idname = "object.ultimate_armature_preset_add"
     bl_label = "Add Bone Retarget Preset"
     
@@ -465,6 +467,7 @@ class ULTIMATE_OT_add_preset_retarget(AddPresetBase, bpy.types.Operator):
 
 class ULTIMATE_OT_map_bones_by_proximity(bpy.types.Operator):
     """Map bones whose heads are close between the active and reference armatures"""
+    bl_description = 'Map bones whose heads are close between the active and reference armatures'
     bl_idname = "object.ultimate_map_bones_by_proximity"
     bl_label = "Map Bones by Proximity"
     bl_options = {'REGISTER', 'UNDO'}
@@ -1026,6 +1029,7 @@ class ULTIMATE_OT_constrain_to_armature(operators.ConstrainToArmature):
 # Custom bind operator with auto-detection and auto pose mode
 class ULTIMATE_OT_bind_armatures(bpy.types.Operator):
     """Bind armatures with automatic Smash preset detection and pose mode switching"""
+    bl_description = 'Bind armatures with automatic Smash preset detection and pose mode switching'
     bl_idname = "object.ultimate_bind_armatures"
     bl_label = "Bind Armatures"
     bl_options = {'UNDO'}
@@ -1096,6 +1100,7 @@ class ULTIMATE_OT_bind_armatures(bpy.types.Operator):
 # Help operator for how to use retargeting
 class ULTIMATE_OT_retargeting_help(bpy.types.Operator):
     """Show instructions for using the retargeting system"""
+    bl_description = 'Show instructions for using the retargeting system'
     bl_idname = "object.ultimate_retargeting_help"
     bl_label = "How to Use Expy Kit Retargeting"
     
@@ -1191,6 +1196,7 @@ class SUB_PT_retargeting_main(Panel):
         return True
 
     def draw(self, context):
+        self.layout.use_property_decorate = False
         layout = self.layout
         scene = context.scene
 
@@ -1199,7 +1205,7 @@ class SUB_PT_retargeting_main(Panel):
         col.label(text="Expy Kit Retargeting Tools", icon='ARMATURE_DATA')
 
         row = col.row()
-        row.scale_y = 1.4
+        row.scale_y = 1.0
         row.operator(
             "object.ultimate_guided_mode",
             text=guided.guided_button_label(scene),
@@ -1207,78 +1213,89 @@ class SUB_PT_retargeting_main(Panel):
         )
 
         bake_row = col.row()
-        bake_row.scale_y = 1.6
+        bake_row.scale_y = 1.0
         bake_row.operator("armature.ultimate_bake_actions", text="Bake Actions", icon='RENDER_ANIMATION')
 
+        layout.separator()
+        draw_bind_controls(layout, context)
+        layout.separator()
+        draw_mapping_controls(layout, context)
+        draw_bone_mapping_sections(layout, context)
 
-# Expy_kit panels moved to Ultimate tab, all as children of Retargeting
-# These will replace the original panels
+    def draw_header_preset(self, context):
+        from ..ui_help import draw_panel_help
+        draw_panel_help(self.layout, self)
 
-class ULTIMATE_PT_expy_retarget(ui.VIEW3D_PT_expy_retarget):
-    """Expy Mapping panel in Ultimate tab"""
-    bl_category = 'Ultimate'
-    bl_parent_id = "SUB_PT_retargeting_main"
-    
-    @classmethod
-    def poll(cls, context):
-        # Always show the panel
-        return True
-    
-    def draw(self, context):
-        layout = self.layout
 
-        # Add help button for active bone functionality
+# The former Bind To and Expy Mapping bodies are drawn by the parent panel.
+def draw_mapping_controls(layout, context):
+    layout.label(text='Expy Mapping', icon='ARMATURE_DATA')
+    # Add help button for active bone functionality
+    row = layout.row()
+    row.operator(ui.SetToActiveBoneHelpText.bl_idname, text="How to Set Active Bone", icon='HELP')
+    layout.separator()
+
+    sync_preset_menu_label(context)
+
+    preset_label = get_preset_display_label(context.object)
+
+    # Use our custom preset menu that handles custom bones
+    split = layout.split(factor=0.75)
+    split.menu(ULTIMATE_MT_retarget_presets.__name__, text=preset_label)
+    row = split.row(align=True)
+    row.operator(ULTIMATE_OT_add_preset_retarget.bl_idname, text="+")
+    row.operator(ULTIMATE_OT_add_preset_retarget.bl_idname, text="-").remove_active = True
+
+    layout.separator()
+    box = layout.box()
+    box.label(text="Map from Reference Armature", icon='AUTO')
+    row = box.row(align=True)
+    row.prop(context.scene, 'expykit_nearest_bone_ref', text="Reference")
+    row.operator(ULTIMATE_OT_map_bones_by_proximity.bl_idname, text="Map by Proximity")
+    box.prop(context.scene, 'expykit_map_radius', text="Match Radius", slider=True)
+    box.label(
+        text="Scales auto match distance. Raise if overlapping bones still miss.",
+        icon='INFO',
+    )
+
+
+def draw_bind_controls(layout, context):
+    scene = context.scene
+    layout.prop(scene, 'expykit_bind_to', text="Bind To")
+    layout.operator("object.ultimate_bind_armatures")
+    source, target = guided.bound_pair(scene)
+    if source and target:
+        layout.separator()
+        draw_binded_settings_ui(layout, context, show_presets=True)
         row = layout.row()
-        row.operator(ui.SetToActiveBoneHelpText.bl_idname, text="How to Set Active Bone", icon='HELP')
-        layout.separator()
-
-        sync_preset_menu_label(context)
-
-        preset_label = get_preset_display_label(context.object)
-
-        # Use our custom preset menu that handles custom bones
-        split = layout.split(factor=0.75)
-        split.menu(ULTIMATE_MT_retarget_presets.__name__, text=preset_label)
-        row = split.row(align=True)
-        row.operator(ULTIMATE_OT_add_preset_retarget.bl_idname, text="+")
-        row.operator(ULTIMATE_OT_add_preset_retarget.bl_idname, text="-").remove_active = True
-
-        layout.separator()
-        box = layout.box()
-        box.label(text="Map from Reference Armature", icon='AUTO')
-        row = box.row(align=True)
-        row.prop(context.scene, 'expykit_nearest_bone_ref', text="Reference")
-        row.operator(ULTIMATE_OT_map_bones_by_proximity.bl_idname, text="Map by Proximity")
-        box.prop(context.scene, 'expykit_map_radius', text="Match Radius", slider=True)
-        box.label(
-            text="Scales auto match distance. Raise if overlapping bones still miss.",
-            icon='INFO',
-        )
+        row.scale_y = 1.0
+        row.operator("object.ultimate_apply_bind_settings", icon='FILE_REFRESH')
 
 
-class ULTIMATE_PT_BindPanel(ui.VIEW3D_PT_BindPanel):
-    """Bind To panel in Ultimate tab with custom bind operator"""
-    bl_category = 'Ultimate'
-    bl_parent_id = "SUB_PT_retargeting_main"
-    bl_label = "Bind To"
-    
-    @classmethod
-    def poll(cls, context):
-        # Always show the panel
-        return True
-    
-    def draw(self, context):
-        layout = self.layout
-        scene = context.scene
-        layout.prop(scene, 'expykit_bind_to', text="")
-        layout.operator("object.ultimate_bind_armatures")
-        source, target = guided.bound_pair(scene)
-        if source and target:
-            layout.separator()
-            draw_binded_settings_ui(layout, context, show_presets=True)
-            row = layout.row()
-            row.scale_y = 1.2
-            row.operator("object.ultimate_apply_bind_settings", icon='FILE_REFRESH')
+class _MappingLayout(ui.RetargetBasePanel):
+    """Reuse Expy's drawing helpers without registering another Blender panel."""
+    def __init__(self, layout):
+        self.layout = layout
+
+
+def draw_bone_mapping_sections(layout, context):
+    obj = context.object
+    if not obj or obj.type != 'ARMATURE' or not hasattr(obj.data, 'expykit_retarget'):
+        layout.label(text='Select an armature to edit bone mappings.', icon='INFO')
+        return
+    sections = (
+        ('custom', 'Custom Bones', ui.VIEW3D_PT_expy_retarget_custom),
+        ('core', 'Core', ui.VIEW3D_PT_expy_retarget_spine),
+        ('arms', 'Arms', ui.VIEW3D_PT_expy_retarget_arms),
+        ('legs', 'Legs', ui.VIEW3D_PT_expy_retarget_leg),
+        ('fingers', 'Fingers', ui.VIEW3D_PT_expy_retarget_fingers),
+        ('root', 'Root', ui.VIEW3D_PT_expy_retarget_root),
+    )
+    for section_id, label, drawing in sections:
+        header, body = layout.panel('sub_retarget_mapping_' + section_id, default_closed=True)
+        header.label(text=label)
+        if body is not None:
+            drawing.draw(_MappingLayout(body), context)
 
 
 class ULTIMATE_PT_ActionsPanel(Panel):
@@ -1295,10 +1312,15 @@ class ULTIMATE_PT_ActionsPanel(Panel):
         return True
     
     def draw(self, context):
+        self.layout.use_property_decorate = False
         layout = self.layout
         
         if context.mode != 'POSE':
             layout.label(text="Enter Pose Mode for actions", icon='INFO')
+
+    def draw_header_preset(self, context):
+        from ..ui_help import draw_panel_help
+        draw_panel_help(self.layout, self)
 
 
 class ULTIMATE_PT_ActionsBinding(Panel):
@@ -1315,6 +1337,7 @@ class ULTIMATE_PT_ActionsBinding(Panel):
         return context.mode == 'POSE'
     
     def draw(self, context):
+        self.layout.use_property_decorate = False
         layout = self.layout
         
         col = layout.column()
@@ -1322,6 +1345,10 @@ class ULTIMATE_PT_ActionsBinding(Panel):
         col.operator(operators.ConstraintStatus.bl_idname)
         op = col.operator(operators.SelectConstrainedControls.bl_idname)
         op.select_type = 'constr'
+
+    def draw_header_preset(self, context):
+        from ..ui_help import draw_panel_help
+        draw_panel_help(self.layout, self)
 
 
 class ULTIMATE_PT_ActionsConversion(Panel):
@@ -1338,6 +1365,7 @@ class ULTIMATE_PT_ActionsConversion(Panel):
         return context.mode == 'POSE'
     
     def draw(self, context):
+        self.layout.use_property_decorate = False
         layout = self.layout
         
         col = layout.column()
@@ -1346,6 +1374,10 @@ class ULTIMATE_PT_ActionsConversion(Panel):
         col.operator(operators.ConvertBoneNaming.bl_idname)
         col.operator(operators.ExtractMetarig.bl_idname)
         col.operator(operators.CreateTransformOffset.bl_idname)
+
+    def draw_header_preset(self, context):
+        from ..ui_help import draw_panel_help
+        draw_panel_help(self.layout, self)
 
 
 class ULTIMATE_PT_ActionsAnimation(Panel):
@@ -1362,6 +1394,7 @@ class ULTIMATE_PT_ActionsAnimation(Panel):
         return context.mode == 'POSE'
     
     def draw(self, context):
+        self.layout.use_property_decorate = False
         layout = self.layout
         
         col = layout.column()
@@ -1371,6 +1404,10 @@ class ULTIMATE_PT_ActionsAnimation(Panel):
         col.operator(operators.AddRootMotion.bl_idname)
         op = col.operator(operators.SelectConstrainedControls.bl_idname, text="Select Animated Controls")
         op.select_type = 'anim'
+
+    def draw_header_preset(self, context):
+        from ..ui_help import draw_panel_help
+        draw_panel_help(self.layout, self)
 
 
 # Custom bake operator with "Bake Visible" option
@@ -1404,13 +1441,6 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
     exclude_deform: bpy.props.BoolProperty(
         name="Exclude deform bones",
         default=False
-    )
-    
-    do_bake: bpy.props.BoolProperty(
-        name="Bake and Exit",
-        description="Bake driven motion and exit",
-        default=True,
-        options={'SKIP_SAVE'}
     )
     
     copy_visibility_fcurves: bpy.props.BoolProperty(
@@ -1506,11 +1536,6 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
             row = column.split(factor=0.30, align=True)
             row.label(text="")
             row.prop(self, "clear_constraints_after")
-        
-        column.separator()
-        row = column.split(factor=0.30, align=True)
-        row.label(text="")
-        row.prop(self, "do_bake", toggle=True)
     
     def _get_trg_ob(self, ob):
         """Get target object from constrained bones"""
@@ -1533,10 +1558,6 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
         return None
     
     def execute(self, context):
-        if not self.do_bake:
-            self.report({'INFO'}, "Enable 'Bake and Exit' to run the bake")
-            return {'FINISHED'}
-        
         if self.bake_mode == 'VISIBLE':
             return self._execute_bake_visible(context)
         else:
@@ -1624,7 +1645,6 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
             exclude_deform=self.exclude_deform,
             copy_visibility_fcurves=self.copy_visibility_fcurves,
             keep_ik_bones=self.keep_ik_bones,
-            do_bake=True,
         )
         try:
             result = bpy.ops.armature.expykit_bake_constrained_actions(
@@ -1661,121 +1681,9 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
         guided._invalidate_smash_viewport()
 
 
-class ULTIMATE_PT_retarget_spine(ui.VIEW3D_PT_expy_retarget_spine):
-    """Core panel in Ultimate tab"""
-    bl_category = 'Ultimate'
-    bl_parent_id = "ULTIMATE_PT_expy_retarget"
-    
-    @classmethod
-    def poll(cls, context):
-        # Always show the panel
-        return True
-
-
-class ULTIMATE_PT_retarget_arms(ui.VIEW3D_PT_expy_retarget_arms):
-    """Arms panel in Ultimate tab"""
-    bl_category = 'Ultimate'
-    bl_parent_id = "ULTIMATE_PT_expy_retarget"
-    
-    @classmethod
-    def poll(cls, context):
-        # Always show the panel
-        return True
-
-
-class ULTIMATE_PT_retarget_arms_IK(ui.VIEW3D_PT_expy_retarget_arms_IK):
-    """Arms IK panel in Ultimate tab"""
-    bl_category = 'Ultimate'
-    bl_parent_id = "ULTIMATE_PT_expy_retarget"
-    
-    @classmethod
-    def poll(cls, context):
-        return False
-
-
-class ULTIMATE_PT_retarget_legs(ui.VIEW3D_PT_expy_retarget_leg):
-    """Legs panel in Ultimate tab"""
-    bl_category = 'Ultimate'
-    bl_parent_id = "ULTIMATE_PT_expy_retarget"
-    
-    @classmethod
-    def poll(cls, context):
-        return True
-
-
-class ULTIMATE_PT_retarget_legs_IK(ui.VIEW3D_PT_expy_retarget_leg_IK):
-    """Legs IK panel in Ultimate tab"""
-    bl_category = 'Ultimate'
-    bl_parent_id = "ULTIMATE_PT_expy_retarget"
-    
-    @classmethod
-    def poll(cls, context):
-        return False
-
-
-class ULTIMATE_PT_retarget_fingers(ui.VIEW3D_PT_expy_retarget_fingers):
-    """Fingers panel in Ultimate tab"""
-    bl_category = 'Ultimate'
-    bl_parent_id = "ULTIMATE_PT_expy_retarget"
-    
-    @classmethod
-    def poll(cls, context):
-        return True
-
-
-class ULTIMATE_PT_retarget_face(ui.VIEW3D_PT_expy_retarget_face):
-    """Face panel in Ultimate tab"""
-    bl_category = 'Ultimate'
-    bl_parent_id = "ULTIMATE_PT_expy_retarget"
-    
-    @classmethod
-    def poll(cls, context):
-        return False
-
-
-class ULTIMATE_PT_retarget_root(ui.VIEW3D_PT_expy_retarget_root):
-    """Root panel in Ultimate tab"""
-    bl_category = 'Ultimate'
-    bl_parent_id = "ULTIMATE_PT_expy_retarget"
-    
-    @classmethod
-    def poll(cls, context):
-        return True
-
-
-class ULTIMATE_PT_retarget_custom(ui.VIEW3D_PT_expy_retarget_custom):
-    """Custom Bones panel in Ultimate tab - first item under Expy Mapping"""
-    bl_category = 'Ultimate'
-    bl_parent_id = "ULTIMATE_PT_expy_retarget"  # Under Expy Mapping, but first
-    
-    @classmethod
-    def poll(cls, context):
-        # Always show the panel
-        return True
-    
-    def draw(self, context):
-        # Call parent draw method
-        super().draw(context)
-        # Force UI refresh to update custom bones list immediately
-        for area in context.screen.areas:
-            if area.type == 'VIEW_3D':
-                area.tag_redraw()
-
-
 # List of custom panels to register (all in Ultimate tab under Retargeting)
 custom_panels = [
     SUB_PT_retargeting_main,
-    ULTIMATE_PT_BindPanel,  # Bind To + settings after bind
-    ULTIMATE_PT_expy_retarget,  # Expy Mapping panel
-    ULTIMATE_PT_retarget_custom,  # Custom Bones - first under Expy Mapping
-    ULTIMATE_PT_retarget_spine,
-    ULTIMATE_PT_retarget_arms,
-    ULTIMATE_PT_retarget_arms_IK,
-    ULTIMATE_PT_retarget_legs,
-    ULTIMATE_PT_retarget_legs_IK,
-    ULTIMATE_PT_retarget_fingers,
-    ULTIMATE_PT_retarget_face,
-    ULTIMATE_PT_retarget_root,
     ULTIMATE_PT_ActionsPanel,  # Actions panel
     ULTIMATE_PT_ActionsBinding,  # Binding sub-panel
     ULTIMATE_PT_ActionsConversion,  # Conversion sub-panel (actions)

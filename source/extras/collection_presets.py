@@ -232,7 +232,8 @@ def _related_objects(armature, include_descendants=True, include_shapes=False):
             for pose_bone in armature.pose.bones
             if pose_bone.custom_shape is not None
         )
-    return sorted(related, key=lambda obj: obj.name.casefold())
+    return sorted((obj for obj in related if not obj.get('sub_floor_owner')),
+                  key=lambda obj: obj.name.casefold())
 
 
 def _serialize_layer_collection(layer_collection, scoped_names):
@@ -342,6 +343,10 @@ def build_preset(name, armature, context):
         if serialized:
             collection_tree.append(serialized)
     sections = {}
+    from . import ik_floor_contact
+    calibration = ik_floor_contact.serialize(armature)
+    if calibration and props.use_floor_contact:
+        sections['floor_contact'] = calibration
     if props.use_scene_collections:
         sections["scene_collections"] = collection_tree
     if props.use_object_placement:
@@ -689,6 +694,12 @@ def apply_preset(preset, armature, context):
 
     if props.use_bone_display and sections.get("bone_display"):
         _apply_bone_display(armature, sections["bone_display"], bone_match, report)
+    if props.use_floor_contact and sections.get('floor_contact'):
+        from . import ik_floor_contact
+        try:
+            ik_floor_contact.load_calibration(context, armature, sections['floor_contact'])
+        except (ValueError, TypeError, RuntimeError) as error:
+            report['warnings'].append('Floor calibration: ' + str(error))
     return report
 
 
@@ -785,6 +796,7 @@ class SUB_PG_collection_preset_settings(PropertyGroup):
     use_materials: BoolProperty(name="Materials", default=True)
     use_bone_collections: BoolProperty(name="Bone Collections", default=True)
     use_bone_display: BoolProperty(name="Bone Colors and Shapes", default=True)
+    use_floor_contact: BoolProperty(name="IK Floor Calibration", default=True)
     use_armature_display: BoolProperty(name="Armature Display", default=True)
     use_fuzzy_matching: BoolProperty(
         name="Allow Fuzzy Matching", default=False,
@@ -1263,6 +1275,9 @@ class SUB_OP_collection_preset_import(Operator, ImportHelper):
         return {'FINISHED'} if imported else {'CANCELLED'}
 
 
+from ..export_progress import ExportProgress
+
+
 class SUB_OP_collection_preset_export(Operator, ExportHelper):
     bl_idname = "sub.collection_preset_export"
     bl_label = "Export Collection Preset"
@@ -1287,7 +1302,8 @@ class SUB_OP_collection_preset_export(Operator, ExportHelper):
         if not item or not os.path.isfile(item.path):
             self.report({'ERROR'}, "Preset file not found")
             return {'CANCELLED'}
-        shutil.copy2(item.path, self.filepath)
+        with ExportProgress(context):
+            shutil.copy2(item.path, self.filepath)
         self.report({'INFO'}, f"Exported {item.name!r}")
         return {'FINISHED'}
 
@@ -1301,6 +1317,7 @@ class SUB_PT_collection_presets(Panel):
     bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
+        self.layout.use_property_decorate = False
         layout = self.layout
         props = context.scene.sub_collection_presets
         row = layout.row(align=True)
@@ -1330,7 +1347,7 @@ class SUB_PT_collection_presets(Panel):
         actions.operator("sub.collection_preset_save", text="Save New", icon='ADD')
         actions.operator("sub.collection_preset_update", text="Update", icon='FILE_TICK')
         actions = layout.row(align=True)
-        actions.scale_y = 1.3
+        actions.scale_y = 1.0
         actions.operator("sub.collection_preset_preview", text="Preview", icon='HIDE_OFF')
         actions.operator("sub.collection_preset_apply", text="Apply", icon='CHECKMARK')
         item = _active_item(context)
@@ -1358,6 +1375,7 @@ class SUB_PT_collection_presets(Panel):
         grid.prop(props, "use_materials")
         grid.prop(props, "use_bone_collections")
         grid.prop(props, "use_bone_display")
+        grid.prop(props, "use_floor_contact")
         grid.prop(props, "use_armature_display")
         box.separator()
         box.prop(props, "include_descendants")
@@ -1369,6 +1387,10 @@ class SUB_PT_collection_presets(Panel):
         box.prop(props, "unmatched_behavior")
         if props.unmatched_behavior == 'MOVE':
             box.prop(props, "unmatched_collection")
+
+    def draw_header_preset(self, context):
+        from ..ui_help import draw_panel_help
+        draw_panel_help(self.layout, self)
 
 
 CLASSES = (

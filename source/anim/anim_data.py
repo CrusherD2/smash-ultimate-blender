@@ -159,14 +159,14 @@ def sync_sap_action_depsgraph_handler(scene, depsgraph):
     Alternative handler that runs on depsgraph updates.
     This catches more events including action changes.
     """
-    if not _sap_auto_sync_enabled:
-        return
-    sync_sap_action_handler(scene)
     try:
         from .import_anim import sync_anim_importer_to_active
         sync_anim_importer_to_active(bpy.context)
     except Exception:
         pass
+    if not _sap_auto_sync_enabled:
+        return
+    sync_sap_action_handler(scene)
     # Do NOT restyle visibility/eye F-Curves here. Writing RNA on every
     # depsgraph update (theme colors, bone palette, keyframe types) creates a
     # feedback loop that restarts EEVEE/Cycles viewport sampling forever.
@@ -335,7 +335,14 @@ class SUB_OP_sync_sap_action(Operator):
             self.report({'INFO'}, f"Synced SAP action to: {expected_sap_action_name}")
         else:
             self.report({'WARNING'}, f"No matching SAP action found: {expected_sap_action_name}")
-            
+
+        # Best effort: a missing motion list should not fail the SAP sync.
+        from . import motion_list_ui
+        try:
+            self.report({'INFO'}, motion_list_ui.load_into_action(context))
+        except Exception as error:
+            self.report({'WARNING'}, f"Motion list not synced: {error}")
+
         return {'FINISHED'}
 
 class SUB_PT_sub_smush_anim_data_main(Panel):
@@ -345,6 +352,10 @@ class SUB_PT_sub_smush_anim_data_main(Panel):
     bl_region_type = 'WINDOW'
     bl_context = "data"
     bl_options = {'DEFAULT_CLOSED'}
+
+    def draw_header_preset(self, context):
+        from ..ui_help import draw_panel_help
+        draw_panel_help(self.layout, self)
 
     @classmethod
     def poll(cls, context):
@@ -356,7 +367,8 @@ class SUB_PT_sub_smush_anim_data_main(Panel):
         layout = self.layout
         ssp = context.scene.sub_scene_properties
         
-        # Show auto-sync status and manual control
+        # Auto-sync toggles share one split row; manual sync spans both below them.
+        motion = context.scene.sub_motion_list
         box = layout.box()
         row = box.row(align=True)
         row.prop(
@@ -366,12 +378,20 @@ class SUB_PT_sub_smush_anim_data_main(Panel):
             toggle=True,
             icon='CHECKMARK' if ssp.sap_auto_sync_enabled else 'PAUSE',
         )
-        row.operator(SUB_OP_sync_sap_action.bl_idname, icon='FILE_REFRESH', text="Manual Sync")
-        if not ssp.sap_auto_sync_enabled:
+        row.prop(
+            motion,
+            "auto_sync",
+            text="Motion List Auto-Sync",
+            toggle=True,
+            icon='CHECKMARK' if motion.auto_sync else 'PAUSE',
+        )
+        box.row().operator(SUB_OP_sync_sap_action.bl_idname, icon='FILE_REFRESH', text="Manual Sync")
+        if not (ssp.sap_auto_sync_enabled and motion.auto_sync):
             col = box.column(align=True)
             col.scale_y = 0.85
             col.label(text="Off: use Manual Sync after switching actions.", icon='INFO')
         layout.operator("sub.face_picker_popup", text="Easy Facial Animation", icon="IMAGE_DATA")
+
 
 class SUB_PT_sub_smush_anim_data_vis_tracks(Panel):
     bl_label = "Ultimate Visibility Track Entries"
@@ -380,6 +400,10 @@ class SUB_PT_sub_smush_anim_data_vis_tracks(Panel):
     bl_context = "data"
     bl_options = {'DEFAULT_CLOSED'}
     bl_parent_id = SUB_PT_sub_smush_anim_data_main.bl_idname
+
+    def draw_header_preset(self, context):
+        from ..ui_help import draw_panel_help
+        draw_panel_help(self.layout, self)
 
     @classmethod
     def poll(cls, context):
@@ -416,6 +440,7 @@ class SUB_PT_sub_smush_anim_data_vis_tracks(Panel):
         op = row.operator(SUB_OP_purge_unused_vis_tracks.bl_idname, text="Purge All Anims", icon='TRASH')
         op.scope = 'ALL'
 
+
 class SUB_PT_sub_smush_anim_data_mat_tracks(Panel):
     bl_label = "Ultimate Material Tracks"
     bl_space_type = 'PROPERTIES'
@@ -423,6 +448,10 @@ class SUB_PT_sub_smush_anim_data_mat_tracks(Panel):
     bl_context = "data"
     bl_options = {'DEFAULT_CLOSED'}
     bl_parent_id = SUB_PT_sub_smush_anim_data_main.bl_idname
+
+    def draw_header_preset(self, context):
+        from ..ui_help import draw_panel_help
+        draw_panel_help(self.layout, self)
 
     @classmethod
     def poll(cls, context):
@@ -514,7 +543,9 @@ class SUB_PT_sub_smush_anim_data_mat_tracks(Panel):
         sr = split.row(align=True)
         sr.menu('SUB_MT_mat_entry_context_menu', text='Drivers...')      
 
+
 class SUB_OP_mat_track_add(Operator):
+    bl_description = 'Add an animated material track to the active armature'
     bl_idname = 'sub.mat_track_add'
     bl_label  = 'Add Mat Track'
 
@@ -527,6 +558,7 @@ class SUB_OP_mat_track_add(Operator):
         return {'FINISHED'}
 
 class SUB_OP_mat_track_remove(Operator):
+    bl_description = 'Remove the selected material animation track and its properties'
     bl_idname = 'sub.mat_track_remove'
     bl_label = 'Remove Mat Track'
 
@@ -582,6 +614,7 @@ class SUB_OP_mat_track_remove(Operator):
         return {'FINISHED'}
 
 class SUB_OP_mat_property_add(Operator):
+    bl_description = 'Add an animated shader property to the selected material track'
     bl_idname = 'sub.mat_prop_add'
     bl_label = 'Add Material Property'
     bl_property = "sub_type"
@@ -622,6 +655,7 @@ def refresh_material_drivers(context):
     setup_material_drivers(context.object)
 
 class SUB_OP_mat_property_remove(Operator):
+    bl_description = 'Remove the selected animated shader property from its material track'
     bl_idname = 'sub.mat_prop_remove'
     bl_label = 'Remove Material Property'
 
@@ -709,6 +743,7 @@ def swap_mat_property_fcurve_target_indices(fcurves, sap, index_a, index_b):
         change_mat_property_fcurve_target_index(fc, index_a)
           
 class SUB_OP_mat_property_shift(Operator):
+    bl_description = 'Move the selected material property up or down in the list'
     bl_idname = 'sub.mat_property_shift'
     bl_label = 'Shift Mat Propery'
 
@@ -749,6 +784,7 @@ class SUB_OP_mat_property_shift(Operator):
         return {'FINISHED'}
     
 class SUB_OP_vis_entry_add(Operator):
+    bl_description = 'Add a mesh visibility track to the active armature'
     bl_idname = 'sub.vis_entry_add'
     bl_label = 'Add Vis Track Entry'
 
@@ -767,6 +803,7 @@ def refresh_visibility_drivers(context):
     setup_visibility_drivers(context.object)
 
 class SUB_OP_vis_entry_remove(Operator):
+    bl_description = 'Remove the selected mesh visibility track'
     bl_idname = 'sub.vis_entry_remove'
     bl_label = 'Remove Vis Track Entry'
 
@@ -795,6 +832,7 @@ class SUB_OP_vis_entry_remove(Operator):
         return {'FINISHED'} 
     
 class SUB_OP_vis_entry_shift(Operator):
+    bl_description = 'Move the selected visibility track up or down in the list'
     bl_idname = 'sub.vis_entry_shift'
     bl_label = 'Shift Vis Entry'
 
@@ -833,6 +871,7 @@ class SUB_OP_vis_entry_shift(Operator):
         return {'FINISHED'}
 
 class SUB_OP_vis_drivers_refresh(Operator):
+    bl_description = 'Rebuild mesh visibility drivers from the armature visibility tracks'
     bl_idname = 'sub.vis_drivers_refresh'
     bl_label = 'Refresh Visibility Drivers'
 
@@ -841,6 +880,7 @@ class SUB_OP_vis_drivers_refresh(Operator):
         return {'FINISHED'} 
 
 class SUB_OP_vis_drivers_remove(Operator):
+    bl_description = 'Remove the drivers that connect mesh visibility to animation tracks'
     bl_idname = 'sub.vis_drivers_remove'
     bl_label = 'Remove Visibility Drivers'
 
@@ -912,6 +952,7 @@ class SUB_OP_purge_unused_vis_tracks(Operator):
         return {'FINISHED'}
 
 class SUB_OP_auto_fill_vis_entries(Operator):
+    bl_description = 'Create visibility tracks from meshes belonging to the active armature'
     bl_idname = 'sub.auto_fill_vis_entries'
     bl_label = 'Auto Fill Vis Entries'
 
@@ -937,6 +978,7 @@ class SUB_OP_auto_fill_vis_entries(Operator):
         return {'FINISHED'}
 
 class SUB_OP_set_all_vis_entries_false(Operator):
+    bl_description = 'Hide every mesh controlled by a visibility track'
     bl_idname = 'sub.set_all_vis_entries_false'
     bl_label = 'Set All Vis Entries False'
 
@@ -952,6 +994,7 @@ class SUB_OP_set_all_vis_entries_false(Operator):
         return {'FINISHED'}
 
 class SUB_OP_set_all_vis_entries_true(Operator):
+    bl_description = 'Show every mesh controlled by a visibility track'
     bl_idname = 'sub.set_all_vis_entries_true'
     bl_label = 'Set All Vis Entries True'
 
@@ -967,6 +1010,7 @@ class SUB_OP_set_all_vis_entries_true(Operator):
         return {'FINISHED'}
 
 class SUB_OP_insert_all_vis_entry_keyframes(Operator):
+    bl_description = 'Keyframe every visibility track at the current frame'
     bl_idname = 'sub.insert_all_vis_entry_keyframes'
     bl_label = 'Insert All Vis Entry Keyframes'
 
@@ -986,6 +1030,7 @@ class SUB_OP_insert_all_vis_entry_keyframes(Operator):
         return {'FINISHED'}
 
 class SUB_OP_organize_vis_entries_alphabetically(Operator):
+    bl_description = 'Sort visibility tracks alphabetically by their names'
     bl_idname = 'sub.organize_vis_entries_alphabetically'
     bl_label = 'Organize Vis Entries Alphabetically'
 
@@ -1014,6 +1059,7 @@ class SUB_OP_organize_vis_entries_alphabetically(Operator):
         return {'FINISHED'}
 
 class SUB_OP_organize_vis_entries_by_move(Operator):
+    bl_description = 'Group visibility tracks by the move names in their labels'
     bl_idname = 'sub.organize_vis_entries_by_move'
     bl_label = 'Organize Vis Entries by Move'
 
@@ -1064,6 +1110,7 @@ def remove_anim_material_drivers(arma:bpy.types.Object):
             setup_sub_matl_data_node_drivers(sub_matl_data)    
 
 class SUB_OP_mat_drivers_refresh(Operator):
+    bl_description = 'Rebuild material drivers so shader values follow animated material tracks'
     bl_idname = 'sub.mat_drivers_refresh'
     bl_label = 'Refresh Material Drivers'   
 
@@ -1072,6 +1119,7 @@ class SUB_OP_mat_drivers_refresh(Operator):
         return {'FINISHED'}  
 
 class SUB_OP_mat_drivers_remove(Operator):
+    bl_description = 'Remove the drivers connecting shaders to material animation tracks'
     bl_idname = 'sub.mat_drivers_remove'
     bl_label = 'Remove Material Drivers'
 
@@ -1356,6 +1404,8 @@ def cleanup_sap_auto_sync():
     unsubscribe_from_action_changes()
 
 def register():
+    from .import_anim import register_folder_sync
+    register_folder_sync()
     """Register only handlers and timers - classes are registered separately"""
     enabled = True
     try:
@@ -1394,6 +1444,8 @@ def register():
     """
 
 def unregister():
+    from .import_anim import unregister_folder_sync
+    unregister_folder_sync()
     """Unregister only handlers and timers - classes are unregistered separately"""
     set_sap_auto_sync_enabled(False)
     

@@ -63,13 +63,19 @@ class SUB_PT_refresh_bone_drawing_fallback(Panel):
     bl_context = "data"
     bl_options = {"DEFAULT_CLOSED"}
 
+    def draw_header_preset(self, context):
+        from ..ui_help import draw_panel_help
+        draw_panel_help(self.layout, self)
+
     @classmethod
     def poll(cls, context):
         obj = context.object
         return not _injected_ok and obj is not None and obj.type == "ARMATURE"
 
     def draw(self, _context):
+        self.layout.use_property_decorate = False
         _draw_button(self.layout)
+
 
 
 def _viewport_display_panels():

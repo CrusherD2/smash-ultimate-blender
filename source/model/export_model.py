@@ -40,6 +40,7 @@ class SUB_PT_export_model(Panel):
 
 
     def draw(self, context):
+        self.layout.use_property_decorate = False
         ssp: SubSceneProperties = context.scene.sub_scene_properties
         layout = self.layout
         layout.use_property_split = False
@@ -115,7 +116,25 @@ class SUB_PT_export_model(Panel):
         layout.row().operator('sub.vanilla_nusktb_selector', icon='FILE', text='Re-Select Vanilla Nusktb')
 
         layout.row().operator('sub.model_exporter', icon='EXPORT', text='Export Model Files to a Folder')
+
+    def draw_header_preset(self, context):
+        from ..ui_help import draw_panel_help
+        draw_panel_help(self.layout, self)
     
+def vanilla_reference_sibling(filepath, target):
+    """Keep the fighter, body folder and costume when switching reference types."""
+    path = Path(bpy.path.abspath(filepath))
+    parts = list(path.parts)
+    source, destination, filename = (
+        ('model', 'motion', 'update.prc') if target == 'prc'
+        else ('motion', 'model', 'model.nusktb'))
+    for index in range(len(parts) - 2, -1, -1):
+        if parts[index].lower() == source:
+            parts[index] = destination
+            return str(Path(*parts).with_name(filename))
+    return ''
+
+
 class SUB_OP_vanilla_update_prc_selector(Operator, ImportHelper):
     bl_idname = 'sub.vanilla_update_prc_selector'
     bl_label = 'Vanilla update.prc Selector'
@@ -125,8 +144,19 @@ class SUB_OP_vanilla_update_prc_selector(Operator, ImportHelper):
         default='*.prc',
         options={'HIDDEN'}
     )
+    def invoke(self, context, event):
+        ssp = context.scene.sub_scene_properties
+        self.filepath = (vanilla_reference_sibling(ssp.vanilla_nusktb, 'prc')
+                         if ssp.vanilla_nusktb else ssp.vanilla_update_prc)
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
     def execute(self, context):
-        context.scene.sub_scene_properties.vanilla_update_prc = self.filepath
+        ssp = context.scene.sub_scene_properties
+        ssp.vanilla_update_prc = self.filepath
+        sibling = vanilla_reference_sibling(self.filepath, 'skel')
+        if sibling and os.path.isfile(sibling):
+            ssp.vanilla_nusktb = sibling
         return {'FINISHED'}
 
 class SUB_OP_vanilla_nusktb_selector(Operator, ImportHelper):
@@ -142,7 +172,10 @@ class SUB_OP_vanilla_nusktb_selector(Operator, ImportHelper):
         from ..addon_preferences import get_addon_preferences
         prefs = get_addon_preferences(context)
         selected = context.scene.sub_scene_properties.vanilla_nusktb
-        if selected:
+        sibling = context.scene.sub_scene_properties.vanilla_update_prc
+        if sibling:
+            self.filepath = vanilla_reference_sibling(sibling, 'skel') or selected
+        elif selected:
             self.filepath = selected
         elif prefs and prefs.default_vanilla_nusktb_folder:
             self.filepath = os.path.join(bpy.path.abspath(prefs.default_vanilla_nusktb_folder), '')
@@ -150,7 +183,11 @@ class SUB_OP_vanilla_nusktb_selector(Operator, ImportHelper):
         return {'RUNNING_MODAL'}
 
     def execute(self, context):
-        context.scene.sub_scene_properties.vanilla_nusktb = self.filepath
+        ssp = context.scene.sub_scene_properties
+        ssp.vanilla_nusktb = self.filepath
+        sibling = vanilla_reference_sibling(self.filepath, 'prc')
+        if sibling and os.path.isfile(sibling):
+            ssp.vanilla_update_prc = sibling
         return {'FINISHED'}      
 
 class SUB_OP_model_exporter(Operator):
@@ -393,6 +430,10 @@ def weights_to_parent_bones(ssbh_mesh_data: ssbh_data_py.mesh_data.MeshData, ssb
         mesh_object.bone_influences.clear()
             
 
+from ..export_progress import export_progress
+
+
+@export_progress
 def export_model(operator: bpy.types.Operator, context, directory, include_numdlb, include_numshb, include_numshexb, include_nusktb,
                 include_numatb, include_nuhlpb, include_nutexb, linked_nusktb_settings, optimize_mesh_weights:str, armature_position: str,
                 apply_modifiers: str, split_shape_keys: str, ignore_underscore_meshes:str):
@@ -418,6 +459,7 @@ def export_model(operator: bpy.types.Operator, context, directory, include_numdl
     for selected_object in context.selected_objects:
         selected_object.select_set(False)
 
+    context.window_manager.progress_update(5)
     folder = Path(directory)
     # Create and save files individually to make this step more robust.
     # Users can avoid errors in generating a file by disabling export for that file.
@@ -463,6 +505,7 @@ def export_model(operator: bpy.types.Operator, context, directory, include_numdl
                 except Exception as e:
                     operator.report({'ERROR'}, f'Failed to make modl_data (.NUMDLB), but will try to make the rest. Error="{e}" ; Traceback=\n{traceback.format_exc()}')
             
+            context.window_manager.progress_update(35)
             if include_numatb:
                 just_export_meshes = set()
                 for unprocessed_meshes_to_export_meshes in group_name_to_unprocessed_meshes_to_export_meshes.values():
@@ -475,6 +518,7 @@ def export_model(operator: bpy.types.Operator, context, directory, include_numdl
                     trim_matl_texture_names(operator, ssbh_matl_data)
                 if ssbh_modl_data is not None and ssbh_matl_data is not None:
                     trim_material_labels(operator, ssbh_modl_data, ssbh_matl_data)
+                context.window_manager.progress_update(45)
                 if include_nutexb:
                     try:
                         materials = get_mesh_materials(operator, just_export_meshes)
@@ -496,6 +540,7 @@ def export_model(operator: bpy.types.Operator, context, directory, include_numdl
             for new_shape_key_mesh in new_shape_key_meshes:
                 bpy.data.meshes.remove(new_shape_key_mesh.data)
 
+    context.window_manager.progress_update(65)
     if include_nusktb:
         ssbh_skel_data, prc = create_skel_and_prc(operator, context, linked_nusktb_settings, folder)
 
@@ -567,6 +612,7 @@ def export_model(operator: bpy.types.Operator, context, directory, include_numdl
         from ..anim.import_anim import setup_visibility_drivers
         setup_visibility_drivers(arma)
 
+    context.window_manager.progress_update(100)
     arma.data.pose_position = old_pose_position
 
 def create_skel_and_prc(operator, context, linked_nusktb_settings, folder) -> tuple[ssbh_data_py.skel_data.SkelData | None, Any]:

@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 
 # Bone override list items used to filter which bones receive transform flags
 class SUB_PG_bone_override_item(bpy.types.PropertyGroup):
-    name: StringProperty(name="Bone Name")
+    name: StringProperty(name="Bone Name", description='Bone included in the transform override filter')
 
 class SUB_UL_bone_override_list(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
@@ -127,7 +127,8 @@ class SUB_OP_populate_override_from_armature(Operator):
     bl_idname = 'sub.populate_override_from_armature'
     bl_label = 'Populate From Armature'
     bl_description = 'Fill the override list with all bones from the active armature'
-    clear_existing: BoolProperty(name='Clear Existing', default=True)
+    clear_existing: BoolProperty(name='Clear Existing', default=True,
+        description='Replace the current override list instead of adding to it')
 
     def execute(self, context):
         ssp = context.scene.sub_scene_properties
@@ -189,22 +190,18 @@ class SUB_OP_apply_override_preset_thrown(Operator):
 
 # Action item for the batch export list
 class SUB_PG_anim_action_item(bpy.types.PropertyGroup):
-    name: StringProperty(name="Name")
-    action: PointerProperty(type=bpy.types.Action)
-    export: BoolProperty(name="Export", default=True)
+    name: StringProperty(name="Name", description='Animation filename used for this batch export entry')
+    action: PointerProperty(type=bpy.types.Action, description='Blender action to sample for this animation')
+    export: BoolProperty(name="Export", default=True, description='Include this animation in the next batch export')
 
 # UI List for displaying available actions
 class SUB_UL_action_export_list(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        from .selection import visible_list_indices
+        visible = ','.join(map(str, visible_list_indices(self, data.action_export_list)))
         layout.operator_context = 'INVOKE_DEFAULT'
         if self.layout_type in {'DEFAULT', 'COMPACT'}:
-            checkbox = layout.operator(
-                SUB_OP_toggle_action_export_selection.bl_idname,
-                text="", icon='CHECKBOX_HLT' if item.export else 'CHECKBOX_DEHLT',
-                emboss=False,
-            )
-            checkbox.index = index
-            checkbox.toggle = True
+            layout.prop(item, "export", text="")
             op = layout.operator(
                 SUB_OP_toggle_action_export_selection.bl_idname,
                 text=item.name,
@@ -212,6 +209,7 @@ class SUB_UL_action_export_list(UIList):
                 depress=item.export,
             )
             op.index = index
+            op.visible_indices = visible
         elif self.layout_type in {'GRID'}:
             layout.alignment = 'CENTER'
             op = layout.operator(
@@ -220,6 +218,7 @@ class SUB_UL_action_export_list(UIList):
                 depress=item.export,
             )
             op.index = index
+            op.visible_indices = visible
 
 
 class SUB_OP_toggle_action_export_selection(Operator):
@@ -229,6 +228,7 @@ class SUB_OP_toggle_action_export_selection(Operator):
     bl_options = {'INTERNAL'}
 
     index: IntProperty(options={'HIDDEN'})
+    visible_indices: StringProperty(options={'HIDDEN'})
     toggle: BoolProperty(default=False, options={'HIDDEN'})
 
     def invoke(self, context, event):
@@ -240,6 +240,7 @@ class SUB_OP_toggle_action_export_selection(Operator):
         from .selection import select_range
         ssp.action_export_selection_anchor = select_range(
             items, 'export', self.index, ssp.action_export_selection_anchor,
+            visible_indices=[int(i) for i in self.visible_indices.split(',') if i] or None,
             shift=event.shift, toggle=event.ctrl or event.oskey or (self.toggle and not event.shift),
         )
         ssp.action_export_list_index = self.index
@@ -269,6 +270,7 @@ class SUB_PT_export_anim(Panel):
         return False
     
     def draw(self, context: bpy.types.Context):
+        self.layout.use_property_decorate = False
         layout = self.layout
         layout.use_property_split = False
         
@@ -306,7 +308,7 @@ class SUB_PT_export_anim(Panel):
                     row.template_list("SUB_UL_action_export_list", "", ssp, "action_export_list", 
                                      ssp, "action_export_list_index", rows=5)
 
-                    box.label(text="Checkboxes include animations independently")
+                    box.label(text="Drag checkboxes to include or exclude")
                     help_row = box.row()
                     help_row.scale_y = 0.8
                     help_row.label(text="Name: select  Ctrl: toggle  Shift: range", icon='INFO')
@@ -318,7 +320,7 @@ class SUB_PT_export_anim(Panel):
                     
                     # Batch export button
                     row = box.row()
-                    row.scale_y = 1.2
+                    row.scale_y = 1.0
                     selected_count = sum(1 for item in ssp.action_export_list if item.export)
                     row.operator(
                         SUB_OP_batch_export_anim.bl_idname,
@@ -327,6 +329,10 @@ class SUB_PT_export_anim(Panel):
                     )
         else:
             row.label(text=f'The selected {obj.type.lower()} is not an armature or a camera.')
+
+    def draw_header_preset(self, context):
+        from ..ui_help import draw_panel_help
+        draw_panel_help(self.layout, self)
 
 class SUB_OP_refresh_actions(Operator):
     bl_idname = 'sub.refresh_actions'
@@ -377,7 +383,55 @@ class SUB_OP_deselect_all_actions(Operator):
             action.export = False
         return {'FINISHED'}
 
-class SUB_OP_batch_export_anim(Operator):
+class AnimationExport:
+    """Run exports synchronously, as before 5d3d8da, and restore scene state."""
+
+    def execute(self, context):
+        obj = context.active_object
+        scene = context.scene
+        frame = (scene.frame_current, scene.frame_subframe)
+        actions = []
+        for owner in (obj, obj.data):
+            anim = owner.animation_data
+            actions.append((owner, anim is not None, anim.action if anim else None,
+                            getattr(anim, 'action_slot', None) if anim else None))
+        auto_key = scene.tool_settings.use_keyframe_insert_auto
+        scene.tool_settings.use_keyframe_insert_auto = False
+        steps = None
+        try:
+            steps = self.export_steps(context)
+            while True:
+                try:
+                    next(steps)
+                except StopIteration as done:
+                    return done.value or {'FINISHED'}
+        finally:
+            # Attempt every restoration even when a datablock was removed or a
+            # generator finalizer fails. There is no persistent export job state.
+            errors = []
+            def restore(callback):
+                try:
+                    callback()
+                except Exception as exc:
+                    errors.append(exc)
+            if steps is not None:
+                restore(steps.close)
+            for owner, had_animation, action, slot in actions:
+                def restore_action():
+                    if had_animation:
+                        owner.animation_data.action = action
+                        if slot is not None:
+                            owner.animation_data.action_slot = slot
+                    elif owner.animation_data:
+                        owner.animation_data_clear()
+                restore(restore_action)
+            restore(lambda: scene.frame_set(frame[0], subframe=frame[1]))
+            restore(lambda: setattr(scene.tool_settings, 'use_keyframe_insert_auto', auto_key))
+            for error in errors:
+                self.report({'WARNING'}, f'Could not restore animation state: {error}')
+
+
+class SUB_OP_batch_export_anim(AnimationExport, Operator):
     bl_idname = 'sub.batch_export_anim'
     bl_label = 'Batch Export Animations'
     bl_description = 'Export the selected actions as .nuanmb animation files'
@@ -444,7 +498,7 @@ class SUB_OP_batch_export_anim(Operator):
         default=True,
     )
     
-    directory: StringProperty(subtype="DIR_PATH")
+    directory: StringProperty(subtype="DIR_PATH", description='Destination folder for exported animations and the starting point for motion-list detection')
     
     @classmethod
     def poll(cls, context):
@@ -536,7 +590,7 @@ class SUB_OP_batch_export_anim(Operator):
                         last_frame = int(keyframe.co[0])
         return max(last_frame, 1)  # Ensure we always have at least 1 frame
     
-    def execute(self, context):
+    def export_steps(self, context):
         from ..doctor import preflight
         if not preflight(context, self, 'ANIM'):
             return {'CANCELLED'}
@@ -555,7 +609,7 @@ class SUB_OP_batch_export_anim(Operator):
         # Save directory for future use
         ssp.last_anim_export_dir = self.directory
         
-        # Count selected actions for progress reporting
+        # Collect the actions selected for export.
         selected_actions = [item for item in ssp.action_export_list if item.export]
         total_count = len(selected_actions)
         
@@ -567,7 +621,7 @@ class SUB_OP_batch_export_anim(Operator):
         start_time = time.perf_counter()
         
         export_count = 0
-        for i, item in enumerate(selected_actions):
+        for item in selected_actions:
             if not item.export:
                 continue
                 
@@ -578,7 +632,8 @@ class SUB_OP_batch_export_anim(Operator):
             # --- SAP Data Sync: Set the SAP action to match this animation ---
             expected_sap_action_name = f"{obj.name} {action_name} SAP Data"
             expected_sap_action = bpy.data.actions.get(expected_sap_action_name)
-            if expected_sap_action:
+            if expected_sap_action or obj.data.animation_data:
+                # Clear a previous clip's SAP action when this clip has none.
                 # Ensure animation_data exists on the armature data
                 if obj.data.animation_data is None:
                     obj.data.animation_data_create()
@@ -599,7 +654,7 @@ class SUB_OP_batch_export_anim(Operator):
             
             try:
                 if obj.type == 'ARMATURE':
-                    export_model_anim_fast(
+                    yield from export_model_anim_fast_steps(
                         context, self, obj, filepath,
                         self.include_transform_track, self.include_material_track,
                         self.include_visibility_track, self.first_blender_frame,
@@ -613,7 +668,7 @@ class SUB_OP_batch_export_anim(Operator):
                         ssp.anim_override_use_exclude_list)
                 else:
                     # Camera export
-                    export_camera_anim(context, self, obj, filepath,
+                    yield from export_camera_anim_steps(context, self, obj, filepath,
                         self.first_blender_frame, last_blender_frame,
                         self.transform_compensate_scale,
                         self.transform_override_translation,
@@ -622,9 +677,6 @@ class SUB_OP_batch_export_anim(Operator):
                         self.transform_override_compensate_scale)
                 
                 export_count += 1
-                # Report progress
-                progress = (i + 1) / total_count * 100
-                self.report({'INFO'}, f"Exported {i+1}/{total_count} ({progress:.1f}%): {action_name}")
                 
             except Exception as e:
                 self.report({'ERROR'}, f"Failed to export {safe_name}: {str(e)}")
@@ -640,7 +692,7 @@ class SUB_OP_batch_export_anim(Operator):
         end_time = time.perf_counter()
         self.report({'INFO'}, f"Successfully exported {export_count}/{total_count} animations in {end_time - start_time:.2f} seconds")
         
-        return {'FINISHED'}
+        return {'FINISHED'} if export_count == total_count else {'CANCELLED'}
 
 # Add this function to sanitize filenames - place it before the SUB_OP_anim_export class
 def sanitize_filename(filename):
@@ -789,7 +841,7 @@ class SUB_OP_raw_anim_export(Operator):
         return {'FINISHED'}
 
 
-class SUB_OP_anim_export(Operator):
+class SUB_OP_anim_export(AnimationExport, Operator):
     bl_idname = 'sub.anim_export'
     bl_label = 'Export Anim'
     bl_description = 'Export the active action as a .nuanmb animation file'
@@ -951,7 +1003,7 @@ class SUB_OP_anim_export(Operator):
         layout.prop(self, "first_blender_frame")
         layout.prop(self, "last_blender_frame")
 
-    def execute(self, context):
+    def export_steps(self, context):
         from ..doctor import preflight
         if not preflight(context, self, 'ANIM'):
             return {'CANCELLED'}
@@ -977,7 +1029,7 @@ class SUB_OP_anim_export(Operator):
         obj: bpy.types.Object = context.active_object
         
         if obj.type == 'ARMATURE':
-            export_model_anim_fast(
+            yield from export_model_anim_fast_steps(
             context, self, obj, filepath,
                 self.include_transform_track, self.include_material_track,
                 self.include_visibility_track, self.first_blender_frame,
@@ -991,7 +1043,7 @@ class SUB_OP_anim_export(Operator):
                 ssp.anim_override_use_exclude_list)
         else:
         # Camera export
-            export_camera_anim(context, self, obj, filepath,
+            yield from export_camera_anim_steps(context, self, obj, filepath,
                 self.first_blender_frame, self.last_blender_frame,
                 self.transform_compensate_scale,
                 self.transform_override_translation,
@@ -1126,7 +1178,20 @@ def transform_group_fix_floating_point_inaccuracies(trans_group: ssbh_data_py.an
                 if isclose(current_transform.translation[i], first_transform.translation[i], abs_tol=.00001):
                     track.values[current_transform_index].translation[i] = first_transform.translation[i]
 
-def save_ssbh_anim_data(ssbh_anim_data, filepath, operator=None):
+def save_ssbh_anim_data(ssbh_anim_data, filepath, operator=None, action=None):
+    """Validate optional motion edits before export, then commit after saving."""
+    from .motion_list_ui import prepare, commit
+    settings = getattr(bpy.context.scene, 'sub_motion_list', None)
+    prepared = prepare(settings, filepath, action) if settings else None
+    saved_path = _save_ssbh_anim_data(ssbh_anim_data, filepath, operator)
+    if os.path.abspath(saved_path) == os.path.abspath(filepath):
+        commit(prepared, operator)
+    elif prepared is not None and operator is not None:
+        operator.report({'WARNING'}, 'Motion list unchanged because animation was saved under an alternate filename')
+    return saved_path
+
+
+def _save_ssbh_anim_data(ssbh_anim_data, filepath, operator=None):
     """Write a .nuanmb, recovering from Windows file locks when possible."""
     filepath = os.path.abspath(os.fspath(filepath))
     directory = os.path.dirname(filepath)
@@ -1212,7 +1277,14 @@ def does_armature_data_have_fcurves(arma: bpy.types.Object) -> bool:
     
     return len(get_all_action_fcurves(arma.data.animation_data.action)) > 0
 
-def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.types.Object, filepath, include_transform_track, include_material_track, include_visibility_track, first_blender_frame, last_blender_frame, transform_compensate_scale: bool = False, transform_override_translation: bool = False, transform_override_rotation: bool = False, transform_override_scale: bool = False, transform_override_compensate_scale: bool = False, override_bone_names: list[str] | None = None, use_exclude_list: bool = True):
+def export_model_anim_fast(*args, **kwargs):
+    for _ in export_model_anim_fast_steps(*args, **kwargs):
+        pass
+
+
+def export_model_anim_fast_steps(context, operator: bpy.types.Operator, arma: bpy.types.Object, filepath, include_transform_track, include_material_track, include_visibility_track, first_blender_frame, last_blender_frame, transform_compensate_scale: bool = False, transform_override_translation: bool = False, transform_override_rotation: bool = False, transform_override_scale: bool = False, transform_override_compensate_scale: bool = False, override_bone_names: list[str] | None = None, use_exclude_list: bool = True):
+    if last_blender_frame < first_blender_frame:
+        raise ValueError('End frame must be greater than or equal to start frame')
     # SSBH Anim Setup
     ssbh_anim_data =  ssbh_data_py.anim_data.AnimData()
     final_frame_index = last_blender_frame - first_blender_frame
@@ -1236,6 +1308,7 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
 
         # Fill value dicts with default values. Not every bone will be animated, so for these the default values of a matrix basis will be needed
         for pose_bone in reordered_pose_bones:
+            yield
             bone_name_to_location_values[pose_bone.name] = [Location(0.0, 0.0, 0.0) for _ in range(first_blender_frame, last_blender_frame + 1)]
             bone_name_to_rotation_values[pose_bone.name] = [Rotation(1.0, 0.0, 0.0, 0.0) for _ in range(first_blender_frame, last_blender_frame + 1)]
             bone_name_to_euler_values[pose_bone.name] = [EulerXYZ(0.0, 0.0, 0.0) for _ in range(first_blender_frame, last_blender_frame + 1)]
@@ -1260,6 +1333,7 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
 
         object_level_transform_reported = False
         for fcurve in get_all_action_fcurves(arma.animation_data.action):
+            yield
             regex = r'pose\.bones\[\"(.*)\"\]\.(.*)'
             matches = re.match(regex, fcurve.data_path)
             if matches is None: # A fcurve in the action that isn't a bone transform, such as the user keyframing the Armature Object itself.
@@ -1280,6 +1354,7 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
             transform_subtype = matches.groups()[1]
             if transform_subtype == 'location':
                 for index, frame in enumerate(range(first_blender_frame, last_blender_frame+1)):
+                    yield
                     _ensure_export_bone(bone_name)
                     if fcurve.array_index == 0:
                         bone_name_to_location_values[bone_name][index].x = fcurve.evaluate(frame)
@@ -1290,6 +1365,7 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
             elif transform_subtype == 'rotation_quaternion':
                 bones_with_quat.add(bone_name)
                 for index, frame in enumerate(range(first_blender_frame, last_blender_frame+1)):
+                    yield
                     _ensure_export_bone(bone_name)
                     if fcurve.array_index == 0:
                         bone_name_to_rotation_values[bone_name][index].w = fcurve.evaluate(frame)
@@ -1302,6 +1378,7 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
             elif transform_subtype == 'rotation_euler':
                 bones_with_euler.add(bone_name)
                 for index, frame in enumerate(range(first_blender_frame, last_blender_frame+1)):
+                    yield
                     _ensure_export_bone(bone_name)
                     if fcurve.array_index == 0:
                         bone_name_to_euler_values[bone_name][index].x = fcurve.evaluate(frame)
@@ -1311,6 +1388,7 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
                         bone_name_to_euler_values[bone_name][index].z = fcurve.evaluate(frame)
             elif transform_subtype == 'scale':
                 for index, frame in enumerate(range(first_blender_frame, last_blender_frame+1)):
+                    yield
                     _ensure_export_bone(bone_name)
                     if fcurve.array_index == 0:
                         bone_name_to_scale_values[bone_name][index].x = fcurve.evaluate(frame)
@@ -1325,7 +1403,9 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
         # Detect Negative Scale, Fix Zero Scale
         zero_scale_reported = False
         for bone_name, scale_values_list in bone_name_to_scale_values.items():
+            yield
             for index, frame in enumerate(range(first_blender_frame, last_blender_frame+1)):
+                yield
                 scale = scale_values_list[index]
                 negative_axis: set[str] = set()
                 if scale.x < 0.0:
@@ -1336,7 +1416,7 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
                     negative_axis.add('Z')
                 if negative_axis:
                     operator.report(type={'ERROR'}, message=f"Negative Scale Detected! Negative scale is not supported, and so the export was cancelled! The first instance was on bone {bone_name} on blender frame {frame} in the {negative_axis} axis.")
-                    return
+                    raise ValueError('Animation contains unsupported negative scale')
                 zero_axis: set[str] = set()
                 # Use a larger clamping value to avoid numerical instability in matrix inversion
                 clamp_value = 0.001
@@ -1365,6 +1445,7 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
         override_name_set = set(override_bone_names) if override_bone_names else set()
 
         for bone in animated_pose_bones:
+            yield
             node = ssbh_data_py.anim_data.NodeData(bone.name)
             track = ssbh_data_py.anim_data.TrackData('Transform')
             # Determine if overrides should apply to this bone
@@ -1393,7 +1474,9 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
         # Need to calculate the final_matrix of each bone at each frame, even the un-animated ones, so that the child bones can be properly calculated.
         bone_to_world_matrix = {}
         for bone in reordered_pose_bones:
+            yield
             for index, _ in enumerate(range(first_blender_frame, last_blender_frame+1)):
+                yield
                 # Get the matrix basis from the stored values of this frame.
                 trans_basis_vec = bone_name_to_location_values[bone.name][index]
                 trans_basis_mat = Matrix.Translation([trans_basis_vec.x, trans_basis_vec.y, trans_basis_vec.z])
@@ -1449,7 +1532,7 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
                         frame_number = frame if 'frame' in locals() else first_blender_frame + index
                         parent_info = f" (parent: {bone.parent.name})" if bone.parent else ""
                         operator.report(type={'ERROR'}, message=f"Failed to export {bone.name}{parent_info}: Matrix is not invertible at frame {frame_number}. This usually happens when a bone or its parent has zero scale on all axes. Please fix the animation data.")
-                        return
+                        raise ValueError('Animation contains a non-invertible bone matrix') from e
         # Pre-Saving Optimizations
         transform_group_fix_floating_point_inaccuracies(trans_group)
         # Vanilla anims sort the nodes alphabetically. 
@@ -1465,6 +1548,7 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
         vis_track_index_to_values: dict[int, list[bool]] = {}
         fcurve: bpy.types.FCurve
         for fcurve in get_all_action_fcurves(arma.data.animation_data.action):
+            yield
             regex = r'.*\[(\d*)\]\.value'
             matches = re.match(regex, fcurve.data_path)
             if matches is None: # Not a visibility fcurve, its probably a material track fcurve
@@ -1490,6 +1574,7 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
 
         # Create nodes
         for vis_track_name, values in named_values:
+            yield
             node = ssbh_data_py.anim_data.NodeData(vis_track_name)
             track = ssbh_data_py.anim_data.TrackData('Visibility')
             track.values = values.copy()
@@ -1506,6 +1591,7 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
         # Example: mat_name_prop_name_to_values['EyeL']['CustomVector31'] -> [[1.0,1.0,1.0,1.0], ...]
         mat_name_prop_name_to_values: dict[str, dict[str, list[CustomVector|CustomFloat|CustomBool|PatternIndex|TextureTransform]]] = {}
         for fcurve in get_all_action_fcurves(arma.data.animation_data.action):
+            yield
             regex = r"sub_anim_properties\.mat_tracks\[(\d+)\]\.properties\[(\d+)\](\.\w+)"
             matches = re.match(regex, fcurve.data_path)
             if matches is None: # The vis and mat track fcurves are in the same action, so its normal to not match every fcurve
@@ -1553,6 +1639,7 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
                     mat_name_prop_name_to_values[material_name][property_name] = []
             # Finally can add the values at each frame
             for index, frame in enumerate(range(first_blender_frame, last_blender_frame+1)):
+                yield
                 if mat_track_property.sub_type == 'VECTOR':
                     mat_name_prop_name_to_values[material_name][property_name][index][fcurve.array_index] = fcurve.evaluate(frame)
                 elif mat_track_property.sub_type == 'BOOL':
@@ -1577,21 +1664,27 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
         ssbh_anim_data.groups.append(mat_group)
         # Create the nodes and tracks
         for mat_name in mat_name_prop_name_to_values:
+            yield
             node = ssbh_data_py.anim_data.NodeData(mat_name)
             mat_group.nodes.append(node)
             for prop_name in mat_name_prop_name_to_values[mat_name]:
+                yield
                 track = ssbh_data_py.anim_data.TrackData(prop_name)
                 node.tracks.append(track)
                 track.values.extend(mat_name_prop_name_to_values[mat_name][prop_name])
         # Sort the nodes and tracks by their user-defined position
         mat_group.nodes.sort(key= lambda x: sap.mat_tracks.find(x.name))
         for node in mat_group.nodes:
+            yield
             node.tracks.sort(key= lambda x: sap.mat_tracks[node.name].properties.find(x.name))
 
     # Pre-Saving Optimizations
     for group in ssbh_anim_data.groups:
+        yield
         for node in group.nodes:
+            yield
             for track in node.tracks:
+                yield
                 if type(track.values[0]) == ssbh_data_py.anim_data.UvTransform:
                     if all(uv_transform_equality(value, track.values[0]) for value in track.values):
                         track.values = [track.values[0]]
@@ -1599,9 +1692,17 @@ def export_model_anim_fast(context, operator: bpy.types.Operator, arma: bpy.type
                     track.values = [track.values[0]]
     
     # Done!
-    save_ssbh_anim_data(ssbh_anim_data, filepath, operator) 
+    save_ssbh_anim_data(ssbh_anim_data, filepath, operator,
+                        action=arma.animation_data.action if arma.animation_data else None)
                 
-def export_camera_anim(context, operator, camera: bpy.types.Object, filepath, first_blender_frame, last_blender_frame, transform_compensate_scale: bool = False, transform_override_translation: bool = False, transform_override_rotation: bool = False, transform_override_scale: bool = False, transform_override_compensate_scale: bool = False):
+def export_camera_anim(*args, **kwargs):
+    for _ in export_camera_anim_steps(*args, **kwargs):
+        pass
+
+
+def export_camera_anim_steps(context, operator, camera: bpy.types.Object, filepath, first_blender_frame, last_blender_frame, transform_compensate_scale: bool = False, transform_override_translation: bool = False, transform_override_rotation: bool = False, transform_override_scale: bool = False, transform_override_compensate_scale: bool = False):
+    if last_blender_frame < first_blender_frame:
+        raise ValueError('End frame must be greater than or equal to start frame')
     ssbh_anim_data = ssbh_data_py.anim_data.AnimData()
     ssbh_anim_data.final_frame_index = last_blender_frame - first_blender_frame
     
@@ -1626,6 +1727,7 @@ def export_camera_anim(context, operator, camera: bpy.types.Object, filepath, fi
         override_compensate_scale=transform_override_compensate_scale
     )
     for index, frame in enumerate(range(first_blender_frame, last_blender_frame + 1)):
+        yield
         context.scene.frame_set(frame)
         track_name_to_track['FieldOfView'].values.append(camera.data.angle_y)
         track_name_to_track['FarClip'].values.append(camera.data.clip_end)
@@ -1651,4 +1753,5 @@ def export_camera_anim(context, operator, camera: bpy.types.Object, filepath, fi
     ssbh_anim_data.groups.append(transform_group)
     ssbh_anim_data.groups.append(camera_group)
 
-    save_ssbh_anim_data(ssbh_anim_data, filepath, operator)
+    save_ssbh_anim_data(ssbh_anim_data, filepath, operator,
+                        action=camera.animation_data.action if camera.animation_data else None)

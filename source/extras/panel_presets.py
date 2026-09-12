@@ -19,6 +19,7 @@ from bpy.props import (
     StringProperty,
 )
 from bpy.types import Operator, Panel, PropertyGroup, UIList
+from ..ui_help import merged_panel_id
 
 from ..panel_order import (
     PRESETS_PANEL_ID as _PRESETS_PANEL_ID,
@@ -39,7 +40,6 @@ _MODELING_DEFAULT_VISIBLE = {
     "SUB_PT_import_model",
     "SUB_PT_export_model",
     "SUB_PT_model_tools",
-    "SUB_PT_ultimate_exo_skel",
 }
 
 _wrapped_polls: dict[str, object] = {}
@@ -110,6 +110,11 @@ def _sync_preset_panels(preset, *, default_enabled=True, enabled_ids=None):
     """
     known = discover_controllable_panels()
     known_ids = {pid for pid, _cls, _label in known}
+    merged_order = list(dict.fromkeys(merged_panel_id(e.panel_id) for e in preset.panels))
+    merged_enabled = {merged_panel_id(e.panel_id) for e in preset.panels
+                      if e.enabled and merged_panel_id(e.panel_id) != e.panel_id}
+    if enabled_ids is not None:
+        enabled_ids = {merged_panel_id(pid) for pid in enabled_ids}
 
     for i in range(len(preset.panels) - 1, -1, -1):
         if preset.panels[i].panel_id not in known_ids:
@@ -126,6 +131,10 @@ def _sync_preset_panels(preset, *, default_enabled=True, enabled_ids=None):
             else:
                 entry.enabled = bool(default_enabled)
         entry.label = label
+        if panel_id in merged_enabled:
+            entry.enabled = True
+
+    _reorder_preset_panels(preset, merged_order)
 
     if len(preset.panels):
         preset.panel_index = max(0, min(preset.panel_index, len(preset.panels) - 1))
@@ -207,7 +216,7 @@ def apply_presets_payload(scene, payload: dict):
         preset.show_all = bool(item.get("show_all", False))
         preset.is_builtin = bool(item.get("is_builtin", False))
         enabled_ids = {
-            str(p.get("panel_id"))
+            merged_panel_id(str(p.get("panel_id")))
             for p in (item.get("panels") or [])
             if p.get("enabled")
         }
@@ -217,11 +226,12 @@ def apply_presets_payload(scene, payload: dict):
             _sync_preset_panels(preset, enabled_ids=enabled_ids)
             by_id = {e.panel_id: e for e in preset.panels}
             for p in item.get("panels") or []:
-                entry = by_id.get(str(p.get("panel_id")))
+                entry = by_id.get(merged_panel_id(str(p.get("panel_id"))))
                 if entry is not None:
-                    entry.enabled = bool(p.get("enabled", False))
+                    entry.enabled = entry.panel_id in enabled_ids
         _reorder_preset_panels(
-            preset, [str(p.get("panel_id")) for p in (item.get("panels") or [])]
+            preset, list(dict.fromkeys(merged_panel_id(str(p.get("panel_id")))
+                                      for p in (item.get("panels") or [])))
         )
 
     if not len(presets):
@@ -505,6 +515,7 @@ class SUB_OP_panel_preset_duplicate(Operator):
 
 
 class SUB_OP_panel_preset_select_all(Operator):
+    bl_description = 'Enable every available panel in the active sidebar preset'
     bl_idname = "sub.panel_preset_select_all"
     bl_label = "Enable All Panels"
     bl_options = {"REGISTER", "UNDO"}
@@ -646,6 +657,7 @@ class SUB_PT_panel_presets(Panel):
     bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
+        self.layout.use_property_decorate = False
         layout = self.layout
         scene = context.scene
         presets = getattr(scene, "sub_panel_presets", None)
@@ -732,6 +744,10 @@ class SUB_PT_panel_presets(Panel):
             text="Changes apply immediately. Save Presets for other .blend files.",
             icon="INFO",
         )
+
+    def draw_header_preset(self, context):
+        from ..ui_help import draw_panel_help
+        draw_panel_help(self.layout, self)
 
 
 classes = (
