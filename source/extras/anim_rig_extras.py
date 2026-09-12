@@ -60,6 +60,7 @@ def _draw_ik_stretch_rows(layout, arm, has_arms=None, has_legs=None):
         row.operator('sub.key_ik_stretch', text='IK Stretch Arms',
                      depress=arm.data.sub_ik_stretch_arms).limbs = 'ARMS'
         row.prop(arm.data, 'sub_ik_stretch_chain_arms', text='Stretch Chain')
+        layout.prop(arm.data, 'sub_ik_progressive_scale_arms')
         from .ik_channels import ARM_PULL_PROPERTY, chains
         for _kind, _names, _target, pole_name in chains(arm, 'ARMS'):
             pole = arm.pose.bones.get(pole_name)
@@ -74,6 +75,7 @@ def _draw_ik_stretch_rows(layout, arm, has_arms=None, has_legs=None):
         row.operator('sub.key_ik_stretch', text='IK Stretch Legs',
                      depress=arm.data.sub_ik_stretch_legs).limbs = 'LEGS'
         row.prop(arm.data, 'sub_ik_stretch_chain_legs', text='Stretch Chain')
+        layout.prop(arm.data, 'sub_ik_progressive_scale_legs')
 
 
 def _draw_ik_fk_switch_rows(layout, arm):

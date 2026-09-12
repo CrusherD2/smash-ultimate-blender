@@ -318,6 +318,7 @@ class SUB_OP_bulk_ik_match_all(bpy.types.Operator):
         original_action = None
         if armature_object.animation_data:
             original_action = armature_object.animation_data.action
+        original_slot = armature_object.animation_data.action_slot if armature_object.animation_data else None
         original_frame = context.scene.frame_current
         original_frame_start = context.scene.frame_start
         original_frame_end = context.scene.frame_end
@@ -384,11 +385,13 @@ class SUB_OP_bulk_ik_match_all(bpy.types.Operator):
         finally:
             context.window_manager.progress_end()
             context.window.cursor_modal_restore()
-            context.scene.frame_set(original_frame)
             context.scene.frame_start = original_frame_start
             context.scene.frame_end = original_frame_end
             if original_action and armature_object.animation_data:
                 assign_action(armature_object.animation_data, original_action)
+                if original_slot is not None:
+                    armature_object.animation_data.action_slot = original_slot
+            context.scene.frame_set(original_frame)
 
 
 class SUB_OP_bulk_ik_bake_all(bpy.types.Operator):
@@ -431,6 +434,7 @@ class SUB_OP_bulk_ik_bake_all(bpy.types.Operator):
         original_action = None
         if armature_object.animation_data:
             original_action = armature_object.animation_data.action
+        original_slot = armature_object.animation_data.action_slot if armature_object.animation_data else None
         original_frame = context.scene.frame_current
         original_frame_start = context.scene.frame_start
         original_frame_end = context.scene.frame_end
@@ -450,26 +454,50 @@ class SUB_OP_bulk_ik_bake_all(bpy.types.Operator):
         context.window_manager.progress_begin(0, total_actions)
         context.window.cursor_modal_set("WAIT")
 
+        data = armature_object.data
+        had_data_animation = data.animation_data is not None
+        data.animation_data_create()
+        data_action, data_slot = data.animation_data.action, data.animation_data.action_slot
+        data_nla = data.animation_data.use_nla
+        data_values = {name: getattr(data, name) for name in (
+            'sub_use_ik', 'sub_use_ik_arms', 'sub_use_ik_legs',
+            'sub_ik_stretch_arms', 'sub_ik_stretch_legs',
+            'sub_ik_stretch_chain_arms', 'sub_ik_stretch_chain_legs',
+            'sub_ik_progressive_scale_arms', 'sub_ik_progressive_scale_legs')}
         processed = 0
         removed_fcurves_total = 0
         try:
-            for action_index, action in enumerate(actions):
-                progress = action_index / total_actions
-                _update_progress_cursor(context, progress)
+            with anim_layers_compat.bind_driving_action_for_bake(armature_object, context):
+                for action_index, action in enumerate(actions):
+                    progress = action_index / total_actions
+                    _update_progress_cursor(context, progress)
 
-                assign_action(armature_object.animation_data, action)
-                fr_start = int(action.frame_range[0])
-                fr_end = int(action.frame_range[1])
-                context.scene.frame_start = fr_start
-                context.scene.frame_end = fr_end
+                    assign_action(armature_object.animation_data, action)
+                    # Switch animation and its keyed IK/FK settings together.
+                    for name, value in data_values.items():
+                        setattr(data, name, value)
+                    data.animation_data.use_nla = False
+                    assign_action(data.animation_data,
+                                  bpy.data.actions.get(f'{armature_object.name} {action.name} SAP Data'))
+                    fr_start = int(action.frame_range[0])
+                    fr_end = int(action.frame_range[1])
+                    context.scene.frame_start = fr_start
+                    context.scene.frame_end = fr_end
 
-                bake_action_visual(context, armature_object, fr_start, fr_end)
-                removed_fcurves_total += remove_ik_fcurves_from_action(action, ik_bone_names)
-                processed += 1
+                    # Each action must see exactly the same live rig. A non-destructive
+                    # bake disables its outputs, so restore them before the next clip.
+                    states = [(con, con.mute) for pb in armature_object.pose.bones for con in pb.constraints]
+                    try:
+                        bake_action_visual(context, armature_object, fr_start, fr_end,
+                                           bone_names=fk_bone_names, clear_constraints=False)
+                    finally:
+                        for con, mute in states:
+                            con.mute = mute
+                    removed_fcurves_total += remove_ik_fcurves_from_action(action, ik_bone_names)
+                    processed += 1
 
-            remove_constraints_from_bones(armature_object, fk_bone_names)
-            delete_ik_bones_from_armature(armature_object)
-
+                remove_constraints_from_bones(armature_object, fk_bone_names)
+                delete_ik_bones_from_armature(armature_object)
             _update_progress_cursor(context, 1.0)
             self.report(
                 {"INFO"},
@@ -483,13 +511,21 @@ class SUB_OP_bulk_ik_bake_all(bpy.types.Operator):
             return {"CANCELLED"}
 
         finally:
+            assign_action(data.animation_data, data_action)
+            if data_slot is not None and data_action is not None:
+                data.animation_data.action_slot = data_slot
+            data.animation_data.use_nla = data_nla
+            if not had_data_animation:
+                data.animation_data_clear()
             context.window_manager.progress_end()
             context.window.cursor_modal_restore()
-            context.scene.frame_set(original_frame)
             context.scene.frame_start = original_frame_start
             context.scene.frame_end = original_frame_end
             if original_action and armature_object.animation_data:
                 assign_action(armature_object.animation_data, original_action)
+                if original_slot is not None:
+                    armature_object.animation_data.action_slot = original_slot
+            context.scene.frame_set(original_frame)
 
 
 def register():

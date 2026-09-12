@@ -1,7 +1,60 @@
 import bpy
+from contextlib import contextmanager
 
 from ..anim.fcurve_compat import get_all_action_fcurves, remove_fcurve
 from ..blender_compat import set_pose_bone_select
+
+
+@contextmanager
+def temporary_export_bake(context, obj, start, end):
+    """Export FK keys from a disposable action; preserve the editable IK rig."""
+    from . import anim_layers_compat
+    from ..blender_compat import assign_action
+
+    limbs = present_ik_limbs(obj)
+    if not limbs:
+        yield
+        return
+    obj.animation_data_create()
+    anim = obj.animation_data
+    original_action, original_slot = anim.action, anim.action_slot
+    original_frame, subframe = context.scene.frame_current, context.scene.frame_subframe
+    original_mode = obj.mode
+    active = context.view_layer.objects.active
+    selected = list(context.selected_objects)
+    bases = {pb.name: pb.matrix_basis.copy() for pb in obj.pose.bones}
+    constraints = [(con, con.mute) for pb in obj.pose.bones for con in pb.constraints]
+    temporary = None
+    try:
+        with anim_layers_compat.bind_driving_action_for_bake(obj, context):
+            temporary = anim.action.copy() if anim.action else bpy.data.actions.new('IK Export Bake')
+            assign_action(anim, temporary)
+            if context.object and context.object.mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode='OBJECT')
+            context.view_layer.objects.active = obj
+            obj.select_set(True)
+            bake_action_visual(context, obj, start, end, clear_constraints=False)
+            yield
+    finally:
+        assign_action(anim, original_action)
+        if original_slot is not None and original_action is not None:
+            anim.action_slot = original_slot
+        for con, mute in constraints:
+            con.mute = mute
+        for name, matrix in bases.items():
+            obj.pose.bones[name].matrix_basis = matrix
+        if temporary is not None:
+            bpy.data.actions.remove(temporary)
+        if context.object and context.object.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        for other in context.selected_objects:
+            other.select_set(False)
+        for other in selected:
+            other.select_set(True)
+        context.view_layer.objects.active = active
+        if active == obj and original_mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode=original_mode)
+        context.scene.frame_set(original_frame, subframe=subframe)
 
 
 def get_ik_bone_names(armature_data):
@@ -58,14 +111,12 @@ def _ik_constraint_chain_bone_names(armature_object, limbs="BOTH"):
 def collect_fk_bone_names(armature_object, leg_bone_map=None, limbs=None):
     """FK bones to bake/clear — only for limbs that actually have IK on the rig."""
     if armature_object.data.get("sub_independent_ik"):
-        from .ik_channels import chains
+        from .ik_channels import chains, limb_path, connected_toe_bones
         selected = list(chains(armature_object, limbs or present_ik_limbs(armature_object) or 'BOTH'))
-        names = [n for _, chain, _, _ in selected for n in chain]
+        names = [n for _, chain, _, _ in selected for n in limb_path(armature_object, chain)]
         for kind, chain, _, _ in selected:
             if kind == 'LEGS':
-                toe = 'Toe' + chain[2][4:]
-                if toe in armature_object.pose.bones:
-                    names.append(toe)
+                names.extend(connected_toe_bones(armature_object, chain))
         return list(dict.fromkeys(names))
     from .create_animation_rig import _ik_driven_fk_bone_names, _ik_limb_kind
 
@@ -283,7 +334,7 @@ def bake_ik_driven_fk_visual(
             anim = armature_object.animation_data
             keyed_action = getattr(anim, "action", None) if anim else None
             keyed_slot = getattr(anim, "action_slot", None) if anim else None
-            if keyed_action is not None and anim is not None:
+            if clear_constraints and keyed_action is not None and anim is not None:
                 for track in getattr(anim, "nla_tracks", []) or []:
                     if not track.strips:
                         continue

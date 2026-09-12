@@ -178,6 +178,7 @@ class SUB_PT_animation_tools(Panel):
             # Checkboxes
             row = box.row(align=True)
             row.prop(ssp, "idle_pose_include_trans", text="Include Trans Bone")
+            box.prop(ssp, "idle_pose_ik_enabled")
 
             row = box.row(align=True)
             row.prop(ssp, "idle_pose_mirrored", text="Mirrored")

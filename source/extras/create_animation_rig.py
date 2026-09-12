@@ -1426,6 +1426,32 @@ def _ensure_extra_arm_ik(armature_obj):
 
 def _set_ik_bone_visibility(armature_obj, visible, limbs='BOTH'):
     from ..blender_compat import is_pose_bone_selected, set_pose_bone_select
+    if armature_obj.data.get('sub_independent_ik'):
+        from . import ik_channels
+        for kind, names, target, pole in ik_channels.chains(armature_obj, limbs):
+            factor = _effective_limb_ik_factor(armature_obj, kind)
+            for name in ik_channels.limb_path(armature_obj, names):
+                armature_obj.data.bones[name].hide = factor >= 1.0 - _FK_ON_EPSILON
+            controls = [target, pole]
+            foot = ik_channels.foot_controls(names, armature_obj) if kind == 'LEGS' else None
+            if foot:
+                controls.extend(foot[:2])
+                articulation = ik_channels.toe_articulation(armature_obj, names)
+                if articulation:
+                    controls.append(articulation[0])
+            for name in controls:
+                if name in armature_obj.data.bones:
+                    armature_obj.data.bones[name].hide = not visible
+        if visible:
+            _set_collection_visible(armature_obj.data, 'IK Bones', True)
+        return
+    from .apply_ik_animation import collect_fk_bone_names
+    for kind in ('ARMS', 'LEGS'):
+        if limbs not in (kind, 'BOTH'):
+            continue
+        fully_ik = _effective_limb_ik_factor(armature_obj, kind) >= 1.0 - _FK_ON_EPSILON
+        for name in collect_fk_bone_names(armature_obj, limbs=kind):
+            armature_obj.data.bones[name].hide = fully_ik
     selected = [
         pose_bone.name
         for pose_bone in armature_obj.pose.bones
@@ -1932,6 +1958,8 @@ def _sync_ik_fk_visibility(scene, depsgraph=None):
             if not armature_has_ik(obj):
                 continue
             if obj.data.get("sub_independent_ik"):
+                for kind in ('ARMS', 'LEGS'):
+                    _set_ik_bone_visibility(obj, _effective_limb_ik_factor(obj, kind) > _FK_ON_EPSILON, kind)
                 continue
             data = obj.data
             if not data.get(ARMATURE_FLAG):
@@ -1966,6 +1994,10 @@ def _sync_ik_fk_visibility(scene, depsgraph=None):
 
 def _apply_ik_fk_state(armature_obj, enabled, limbs='BOTH'):
     """Apply IK vs FK as a hard switch for the requested limbs."""
+    if armature_obj.data.get('sub_independent_ik'):
+        for kind in ('ARMS', 'LEGS'):
+            _set_ik_bone_visibility(armature_obj, _effective_limb_ik_factor(armature_obj, kind) > _FK_ON_EPSILON, kind)
+        return
     del enabled  # limb on/off comes from the switch props (already set by caller)
     _strip_competing_ik_influence_keys(armature_obj)
     # Sync ALL limbs from their props so Arms-only toggles cannot leave Legs live.
@@ -3540,7 +3572,7 @@ def _unregister_ik_fk_props():
         for name in ("sub_use_ik", "sub_use_ik_arms", "sub_use_ik_legs",
                      "sub_ik_stretch_arms", "sub_ik_stretch_legs",
                      "sub_ik_stretch_chain_arms", "sub_ik_stretch_chain_legs",
-                     "sub_ik_arm_pull"):
+                     "sub_ik_arm_pull", "sub_ik_progressive_scale_arms", "sub_ik_progressive_scale_legs"):
             if hasattr(cls, name):
                 try:
                     delattr(cls, name)
@@ -3560,6 +3592,10 @@ def register():
         options={'ANIMATABLE'},
     )
     for kind in ('arms', 'legs'):
+        setattr(bpy.types.Armature, 'sub_ik_progressive_scale_' + kind, bpy.props.FloatProperty(
+            name='Progressive Scale', default=0.0, min=0.0, max=1.0, subtype='FACTOR',
+            description='Blend bone scale progressively from the chain root to the IK target',
+            update=_update_stretch_chain))
         setattr(bpy.types.Armature, 'sub_ik_stretch_chain_' + kind, bpy.props.BoolProperty(
             name='Stretch Chain',
             description='Progressively pull bone positions toward the IK target without adding scale',
