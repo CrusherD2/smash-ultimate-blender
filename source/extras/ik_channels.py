@@ -246,6 +246,11 @@ def create_controls(context, obj, limbs='BOTH', custom_only=False, custom_target
             rig._key_use_ik(obj, context.scene.frame_current, limbs=limbs, enabled=True)
             rig._set_ik_enabled(context, obj, True, limbs=limbs)
             context.view_layer.update()
+    # Animation-rig widgets stay on Create Animation Rig / Add IK. IK Tools
+    # keeps octahedral bones unless this armature already has that rig.
+    if rig.armature_has_animation_rig(obj):
+        from .control_appearance import style_ik_controls
+        style_ik_controls(context, obj)
     return len(jobs)
 
 

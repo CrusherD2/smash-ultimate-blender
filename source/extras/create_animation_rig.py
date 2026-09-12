@@ -637,6 +637,11 @@ def _shape_rotation_world_up(pose_bone, armature_obj):
 
 
 def _assign_shape(pose_bone, widget, scale, color, center_on_bone, armature_obj=None, world_flat=False, rotation_euler=None):
+    override = pose_bone.bone.get('sub_shape_override')
+    if override:
+        from .control_appearance import apply_override
+        apply_override(pose_bone)
+        return
     pose_bone.custom_shape = widget
     pose_bone.use_custom_shape_bone_size = False
     if isinstance(scale, (int, float)):
@@ -666,7 +671,7 @@ def _assign_shape(pose_bone, widget, scale, color, center_on_bone, armature_obj=
 def _should_hide_bone(base_name):
     if base_name.startswith('H_') or base_name.startswith('S_'):
         return True
-    return base_name.endswith(('_eff', '_null', '_offset')) or base_name == 'Rot'
+    return base_name.endswith(('_eff', '_null', '_offset')) or base_name in {'Rot', 'LegC', 'ClavicleC'}
 
 
 def _ensure_trans_aim_bone(context, armature_obj):
@@ -858,6 +863,8 @@ def _apply_shapes(context, armature_obj):
             except Exception:
                 pass
         shaped += 1
+    from .control_appearance import style_ik_controls
+    style_ik_controls(context, armature_obj)
     return shaped
 
 
@@ -1502,7 +1509,8 @@ def _ik_fk_chain_bones(armature_obj):
 
 
 def _ik_control_bone_names(armature_obj, limbs='BOTH'):
-    names = []
+    from .control_appearance import controls
+    names = [n for n, info in controls(armature_obj).items() if limbs in {'BOTH', info[0]}]
     for bone in armature_obj.pose.bones:
         match = _IK_BONE.match(canonical_bone_name(bone.name))
         if match is None:
@@ -1511,7 +1519,8 @@ def _ik_control_bone_names(armature_obj, limbs='BOTH'):
         kind = 'ARMS' if part in {'Hand', 'Arm'} else 'LEGS'
         if limbs != 'BOTH' and kind != limbs:
             continue
-        names.append(bone.name)
+        if bone.name not in names:
+            names.append(bone.name)
     return names
 
 
@@ -1596,6 +1605,9 @@ def _iter_armature_actions(armature_obj):
 
 def _bone_ik_fk_role(bone_name, armature_obj=None):
     """Return ('fk'|'ik', 'ARMS'|'LEGS') or None for bones involved in the switch."""
+    bone = armature_obj.data.bones.get(bone_name) if armature_obj is not None else None
+    if bone is not None and bone.get('sub_ik_control_kind') in {'ARMS', 'LEGS'}:
+        return 'ik', bone['sub_ik_control_kind']
     base = canonical_bone_name(bone_name)
     ik_match = _IK_BONE.match(base)
     if ik_match:
@@ -1723,6 +1735,12 @@ def finalize_ik_controls(armature_obj, context=None):
         return
     context = context or bpy.context
     ik_channels.ensure(armature_obj, context)
+    from .control_appearance import style_ik_controls
+    style_ik_controls(context, armature_obj)
+    for bone in armature_obj.data.bones:
+        if canonical_bone_name(bone.name) in {'LegC', 'ClavicleC'}:
+            bone.hide = True
+            bone.hide_select = True
     armature_obj.data[ARMATURE_FLAG] = True
 
 
@@ -3005,6 +3023,10 @@ class SUB_OP_create_animation_rig(Operator):
                 slider_count = finger_sliders.build_finger_sliders(context, armature_obj)
                 progress.update(0.7)
 
+            for bone in armature_obj.data.bones:
+                if canonical_bone_name(bone.name) in {'LegC', 'ClavicleC'}:
+                    bone.hide = True
+                    bone.hide_select = True
             if self.hide_helpers:
                 _hide_clutter(armature_obj)
 
@@ -3557,7 +3579,14 @@ def _ensure_ik_drivers_on_loaded_rigs():
         upgrade_finger_curl(obj)
         if not (obj.data.get(ARMATURE_FLAG) or obj.data.get('sub_independent_ik')):
             continue
+        for bone in obj.data.bones:
+            if canonical_bone_name(bone.name) in {'LegC', 'ClavicleC'}:
+                bone.hide = True
+                bone.hide_select = True
         if armature_has_ik(obj):
+            if obj.data.get(ARMATURE_FLAG):
+                from .control_appearance import style_ik_controls
+                style_ik_controls(bpy.context, obj)
             if obj.data.get('sub_independent_ik') and obj.name in bpy.context.view_layer.objects:
                 from .ik_channels import upgrade_pull_controls
                 upgrade_pull_controls(bpy.context, obj)

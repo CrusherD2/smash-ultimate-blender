@@ -65,7 +65,11 @@ def create_from_settings(context, obj, settings):
         records.pop()
         obj['sub_custom_ik_chains'] = json.dumps(records)
         raise
-    from .create_animation_rig import _assign_shape, _widget_object
+    from .create_animation_rig import (
+        _assign_shape,
+        _widget_object,
+        armature_has_animation_rig,
+    )
 
     for name, shape, tool in (
         (target, 'box', 'builtin.transform'),
@@ -74,6 +78,8 @@ def create_from_settings(context, obj, settings):
         pb = obj.pose.bones[name]
         pb.bone['sub_component_control'] = True
         pb.bone['sub_component_tool'] = tool
+        if not armature_has_animation_rig(obj):
+            continue
         _assign_shape(
             pb,
             _widget_object(context, shape),

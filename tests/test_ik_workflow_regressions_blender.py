@@ -59,6 +59,8 @@ def compare(a,b,label,tol=0.0003):
 
 fk = capture()
 ik.create_controls(bpy.context, obj, 'ARMS')
+assert obj.pose.bones['HandIKL'].custom_shape is None
+assert obj.pose.bones['ArmIKL'].custom_shape is None
 ik.match(bpy.context, obj, 'ARMS', entire=True)
 rig._set_ik_enabled(bpy.context,obj,True,'ARMS')
 matched = capture()
