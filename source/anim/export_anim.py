@@ -1285,7 +1285,7 @@ def export_model_anim_fast(*args, **kwargs):
 def export_model_anim_fast_steps(context, operator: bpy.types.Operator, arma: bpy.types.Object, filepath, include_transform_track, include_material_track, include_visibility_track, first_blender_frame, last_blender_frame, transform_compensate_scale: bool = False, transform_override_translation: bool = False, transform_override_rotation: bool = False, transform_override_scale: bool = False, transform_override_compensate_scale: bool = False, override_bone_names: list[str] | None = None, use_exclude_list: bool = True):
     from contextlib import nullcontext
     from ..extras.apply_ik_animation import temporary_export_bake
-    bake = temporary_export_bake(context, arma, first_blender_frame, last_blender_frame) if include_transform_track else nullcontext()
+    bake = temporary_export_bake(context, arma, first_blender_frame, last_blender_frame, include_transform_track, include_material_track) if include_transform_track or include_material_track else nullcontext()
     with bake:
         yield from _export_model_anim_fast_steps(context, operator, arma, filepath, include_transform_track, include_material_track, include_visibility_track, first_blender_frame, last_blender_frame, transform_compensate_scale, transform_override_translation, transform_override_rotation, transform_override_scale, transform_override_compensate_scale, override_bone_names, use_exclude_list)
 
@@ -1293,17 +1293,8 @@ def export_model_anim_fast_steps(context, operator: bpy.types.Operator, arma: bp
 def _export_model_anim_fast_steps(context, operator: bpy.types.Operator, arma: bpy.types.Object, filepath, include_transform_track, include_material_track, include_visibility_track, first_blender_frame, last_blender_frame, transform_compensate_scale: bool = False, transform_override_translation: bool = False, transform_override_rotation: bool = False, transform_override_scale: bool = False, transform_override_compensate_scale: bool = False, override_bone_names: list[str] | None = None, use_exclude_list: bool = True):
     if last_blender_frame < first_blender_frame:
         raise ValueError('End frame must be greater than or equal to start frame')
-    from ..extras.apply_ik_animation import get_ik_bone_names
-    from ..extras.ik_channels import chains, foot_controls, toe_articulation
-    ik_controls = set(get_ik_bone_names(arma.data))
-    for kind, names, target, pole in chains(arma):
-        ik_controls.update((target, pole))
-        foot = foot_controls(names, arma) if kind == 'LEGS' else None
-        if foot:
-            ik_controls.update(foot[:2])
-            articulation = toe_articulation(arma, names)
-            if articulation:
-                ik_controls.add(articulation[0])
+    from ..extras.rig_export import export_bone_names
+    export_names = set(export_bone_names(arma))
     # SSBH Anim Setup
     ssbh_anim_data =  ssbh_data_py.anim_data.AnimData()
     final_frame_index = last_blender_frame - first_blender_frame
@@ -1322,7 +1313,7 @@ def _export_model_anim_fast_steps(context, operator: bpy.types.Operator, arma: b
         bone_to_rel_matrix_local = {}
         reordered_pose_bones = [
             bone for bone in get_hierarchy_order(list(arma.pose.bones))
-            if not bone.name.startswith('BL_') and bone.name not in ik_controls
+            if bone.name in export_names
         ]
 
         # Fill value dicts with default values. Not every bone will be animated, so for these the default values of a matrix basis will be needed
@@ -1368,7 +1359,7 @@ def _export_model_anim_fast_steps(context, operator: bpy.types.Operator, arma: b
                 operator.report(type={'WARNING'}, message=f"The fcurve with data path {fcurve.data_path} will not be exported, its format only partially matched the expected pattern of a bone fcurve.")
                 continue
             bone_name = matches.groups()[0]
-            if bone_name.startswith('BL_') or bone_name in ik_controls:
+            if bone_name not in export_names:
                 continue
             transform_subtype = matches.groups()[1]
             if transform_subtype == 'location':

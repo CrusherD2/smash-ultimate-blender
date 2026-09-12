@@ -6,55 +6,11 @@ from ..blender_compat import set_pose_bone_select
 
 
 @contextmanager
-def temporary_export_bake(context, obj, start, end):
-    """Export FK keys from a disposable action; preserve the editable IK rig."""
-    from . import anim_layers_compat
-    from ..blender_compat import assign_action
-
-    limbs = present_ik_limbs(obj)
-    if not limbs:
+def temporary_export_bake(context, obj, start, end, include_transform=True, include_material=True):
+    """Backward-compatible entry point for the complete rig export bake."""
+    from .rig_export import temporary_rig_bake
+    with temporary_rig_bake(context, obj, start, end, include_transform, include_material):
         yield
-        return
-    obj.animation_data_create()
-    anim = obj.animation_data
-    original_action, original_slot = anim.action, anim.action_slot
-    original_frame, subframe = context.scene.frame_current, context.scene.frame_subframe
-    original_mode = obj.mode
-    active = context.view_layer.objects.active
-    selected = list(context.selected_objects)
-    bases = {pb.name: pb.matrix_basis.copy() for pb in obj.pose.bones}
-    constraints = [(con, con.mute) for pb in obj.pose.bones for con in pb.constraints]
-    temporary = None
-    try:
-        with anim_layers_compat.bind_driving_action_for_bake(obj, context):
-            temporary = anim.action.copy() if anim.action else bpy.data.actions.new('IK Export Bake')
-            assign_action(anim, temporary)
-            if context.object and context.object.mode != 'OBJECT':
-                bpy.ops.object.mode_set(mode='OBJECT')
-            context.view_layer.objects.active = obj
-            obj.select_set(True)
-            bake_action_visual(context, obj, start, end, clear_constraints=False)
-            yield
-    finally:
-        assign_action(anim, original_action)
-        if original_slot is not None and original_action is not None:
-            anim.action_slot = original_slot
-        for con, mute in constraints:
-            con.mute = mute
-        for name, matrix in bases.items():
-            obj.pose.bones[name].matrix_basis = matrix
-        if temporary is not None:
-            bpy.data.actions.remove(temporary)
-        if context.object and context.object.mode != 'OBJECT':
-            bpy.ops.object.mode_set(mode='OBJECT')
-        for other in context.selected_objects:
-            other.select_set(False)
-        for other in selected:
-            other.select_set(True)
-        context.view_layer.objects.active = active
-        if active == obj and original_mode != 'OBJECT':
-            bpy.ops.object.mode_set(mode=original_mode)
-        context.scene.frame_set(original_frame, subframe=subframe)
 
 
 def get_ik_bone_names(armature_data):

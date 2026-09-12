@@ -44,6 +44,7 @@ class SUB_PT_animation_tools(Panel):
         row.scale_y = 1.0
         row.operator("sub.create_animation_rig", text="Create Animation Rig", icon="OUTLINER_OB_ARMATURE")
         row.operator("sub.remove_animation_rig", text="", icon="X")
+        layout.operator("sub.custom_components", text="Make Custom Components", icon="PREFERENCES")
         layout.prop(ssp, "clean_keyframes_after_rig", text="Clean keyframes after creation")
 
         arm = find_anim_rig_armature(context)

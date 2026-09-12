@@ -41,6 +41,7 @@ from . import refresh_bone_drawing
 from . import collection_presets
 from . import ik_floor_contact
 from . import custom_ik
+from . import custom_components
 
 # Explicit registration function for the package
 def register():
@@ -63,6 +64,7 @@ def register():
     collection_presets.register()
     ik_floor_contact.register()
     custom_ik.register()
+    custom_components.register()
     viewport_capture.register()
     face_picker.register()
     eye_rig.register()
@@ -84,6 +86,7 @@ def register():
     ik_pole_alignment.register()
     
 def unregister():
+    custom_components.unregister()
     custom_ik.unregister()
     face_picker.unregister()
     smash_viewport.unregister()

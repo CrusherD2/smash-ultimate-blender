@@ -187,7 +187,7 @@ def solve_bone(obj, names):
     return obj.pose.bones[PREFIX + limb_path(obj, names)[-2]]
 
 
-def create_controls(context, obj, limbs='BOTH', custom_only=False):
+def create_controls(context, obj, limbs='BOTH', custom_only=False, custom_targets=None):
     """One idempotent creation path for IK Tools and the Animation Rig."""
     from . import create_animation_rig as rig, anim_layers_compat
     rig._activate_armature(context, obj)
@@ -204,7 +204,8 @@ def create_controls(context, obj, limbs='BOTH', custom_only=False):
         if all(n in obj.data.bones for n in names) and limb_path(obj, names):
             jobs.append((kind, names, ('FootIK' if kind == 'LEGS' else 'HandIK') + suffix,
                          ('KneeIK' if kind == 'LEGS' else 'ArmIK') + suffix))
-    jobs.extend(job for job in custom_jobs(obj) if limbs in (job[0], 'BOTH'))
+    jobs.extend(job for job in custom_jobs(obj) if limbs in (job[0], 'BOTH')
+                and (custom_targets is None or job[2] in custom_targets))
     # Existing controls may have user-authored dependencies or animation. Only
     # freshly generated controls are eligible for the independent fast path.
     fresh_controls = all(
@@ -241,7 +242,7 @@ def create_controls(context, obj, limbs='BOTH', custom_only=False):
                 obj.data.bones[n].color.palette = 'THEME01'
         if jobs:
             # Seed the new controls from the current FK pose before enabling IK.
-            match(context, obj, limbs, entire=False, key=True, _batch=fresh_controls)
+            match(context, obj, limbs, entire=False, key=True, _batch=fresh_controls, _targets={job[2] for job in jobs})
             rig._key_use_ik(obj, context.scene.frame_current, limbs=limbs, enabled=True)
             rig._set_ik_enabled(context, obj, True, limbs=limbs)
             context.view_layer.update()
@@ -569,6 +570,12 @@ def wire(obj):
             for label, subtarget, sign in (
                     (PULL_TARGET, endpoint_target(obj, names, target), 1.0),
                     (PULL_END, PREFIX + path[-1], -1.0)):
+                if abs(weight) < 1e-8:
+                    old = pull.constraints.get(label)
+                    if old:
+                        old.driver_remove('influence')
+                        pull.constraints.remove(old)
+                    continue
                 con = pull.constraints.get(label) or pull.constraints.new('TRANSFORM')
                 con.name = label
                 con.target, con.subtarget = obj, subtarget
@@ -700,6 +707,12 @@ def wire_arm_pulls(obj):
             )
             for suffix, subtarget, factor in terms:
                 label = 'SUB IK Arm Pull ' + suffix
+                if abs(factor) < 1e-8:
+                    old = pull.constraints.get(label)
+                    if old:
+                        old.driver_remove('influence')
+                        pull.constraints.remove(old)
+                    continue
                 con = pull.constraints.get(label) or pull.constraints.new('TRANSFORM')
                 con.name = label
                 con.target, con.subtarget = obj, subtarget
@@ -1177,12 +1190,12 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
                              con.pole_angle, solver[-2].name)
 
 
-def match(context, obj, limbs='BOTH', entire=True, key=True, clean=False, _batch=False):
+def match(context, obj, limbs='BOTH', entire=True, key=True, clean=False, _batch=False, _targets=None):
     from . import create_animation_rig as rig, anim_layers_compat
     from ..anim.fcurve_compat import get_all_action_fcurves
     from ..anim import fcurve_bulk
     ensure(obj, context, limbs)
-    jobs = list(chains(obj, limbs))
+    jobs = [job for job in chains(obj, limbs) if _targets is None or job[2] in _targets]
     if not jobs:
         raise RuntimeError('No complete IK chains for the requested limbs')
     scene = context.scene
@@ -1342,10 +1355,11 @@ def bake(context, obj, names, start, end, clear_constraints=True):
     return len(samples) * len(names)
 
 
-def remove(context, obj, limbs='BOTH'):
+def remove(context, obj, limbs='BOTH', targets=None):
     from . import create_animation_rig as rig
     from ..anim.fcurve_compat import get_all_action_fcurves, remove_fcurve
-    jobs = list(chains(obj, limbs))
+    jobs = [job for job in chains(obj, limbs) if targets is None or job[2] in targets]
+    affected = {n for _,group,_,_ in jobs for n in limb_path(obj,group)}
     for _, group, _, _ in jobs:
         for name in limb_path(obj, group):
             obj.data.bones[name].hide = False
@@ -1370,6 +1384,8 @@ def remove(context, obj, limbs='BOTH'):
                     con.driver_remove('influence')
                     toe.constraints.remove(con)
     for pb, con, _ in list(outputs(obj, limbs)):
+        if pb.name not in affected:
+            continue
         con.driver_remove('influence')
         pb.constraints.remove(con)
     for name in names:
@@ -1387,7 +1403,8 @@ def remove(context, obj, limbs='BOTH'):
         for fc in list(get_all_action_fcurves(action, id_type='OBJECT')):
             if paths and fc.data_path.startswith(paths):
                 remove_fcurve(action, fc, id_type='OBJECT')
-    rig._remove_ik_fk_switch_keys(obj, limbs)
+    if targets is None:
+        rig._remove_ik_fk_switch_keys(obj, limbs)
     bpy.ops.object.mode_set(mode='EDIT')
     for n in names:
         if n in obj.data.edit_bones:
@@ -1396,7 +1413,9 @@ def remove(context, obj, limbs='BOTH'):
     rig._IK_FK_APPLYING = True
     try:
         for kind in ('ARMS', 'LEGS'):
-            if limbs in (kind, 'BOTH'):
+            if limbs in (kind, 'BOTH') and (targets is None or not list(chains(obj,kind))):
+                if targets is not None:
+                    rig._remove_ik_fk_switch_keys(obj,kind)
                 setattr(obj.data, rig._limb_switch_prop(kind), 0.0)
     finally:
         rig._IK_FK_APPLYING = False
@@ -1405,5 +1424,6 @@ def remove(context, obj, limbs='BOTH'):
     except (ValueError, TypeError):
         records = []
     obj['sub_custom_ik_chains'] = json.dumps(
-        [record for record in records if limbs not in (record.get('kind'), 'BOTH')])
+        [record for record in records if (record.get('target') not in targets if targets is not None
+                                        else limbs not in (record.get('kind'), 'BOTH'))])
     return list(names)

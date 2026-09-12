@@ -63,7 +63,8 @@ SPREAD_FACTORS = {1: 1.0, 2: 0.35, 3: -0.35, 4: -1.0, THUMB_DIGIT: 0.8}
 
 MAX_CURL_DEGREES = 90.0
 MAX_SPREAD_DEGREES = 12.0
-MAX_SIDE_DEGREES = 60.0
+MAX_SIDE_DEGREES = 45.0
+MAX_THUMB_CURL_DEGREES = 55.0
 
 # 1D sliders, except Thumb which is a 2D square-in-square pad.
 SLIDER_KINDS = (
@@ -267,32 +268,20 @@ def _finger_bend_axis(armature, side, digit, across, suffix, up=None, digits="")
         else:
             along = along.normalized()
 
-    # Thumb does not share the other fingers' hinge. Fold it toward the palm
-    # (down the dorsal axis of the hand box) instead of auto-detecting a
-    # sideways opposition axis from the rest pose.
-    if digit == THUMB_DIGIT and along is not None and up is not None:
-        hinge = along.cross(-up)
+    if along is not None and up is not None:
+        # A hinge is an axial vector: mirroring the across-hand direction alone
+        # reverses flexion. Derive it from the desired palmward displacement.
+        toward = -up
+        if digit == THUMB_DIGIT and root is not None:
+            middle = _finger_head(armature, side, 2, suffix, digits=digits)
+            if middle is not None:
+                opposition = middle - root.head_local
+                if opposition.length > 1e-6:
+                    toward = (toward + opposition.normalized()).normalized()
+        hinge = along.cross(toward)
         if hinge.length > 1e-6:
             return hinge.normalized()
 
-    if len(phalanges) >= 3:
-        first = phalanges[1].head_local - phalanges[0].head_local
-        second = phalanges[2].head_local - phalanges[1].head_local
-        if first.length > 1e-6 and second.length > 1e-6:
-            normal = first.normalized().cross(second.normalized())
-            if normal.length > 0.087:
-                return normal.normalized()
-    elif len(phalanges) >= 2:
-        first = phalanges[1].head_local - phalanges[0].head_local
-        if first.length > 1e-6 and along is not None:
-            normal = along.cross(first.normalized())
-            if normal.length > 0.087:
-                return normal.normalized()
-
-    if digit == THUMB_DIGIT and root is not None and across is not None and along is not None:
-        palm_normal = across.cross(along)
-        if palm_normal.length > 1e-6:
-            return palm_normal.normalized()
     return across
 
 
@@ -663,14 +652,6 @@ def _cascade_rot_range(weight):
 
 
 def _curl_axis_for_finger(bone, digit, bend_vector):
-    if digit == THUMB_DIGIT:
-        local = Vector((0.0, 0.0, 1.0))
-        if bend_vector is not None:
-            try:
-                local = bone.matrix_local.to_3x3().inverted() @ bend_vector
-            except ValueError:
-                pass
-        return 2, (1.0 if local.z >= 0.0 else -1.0)
     if bend_vector is not None:
         return _axis_from_vector(bone, bend_vector, exclude=1)
     return 2, 1.0
@@ -757,7 +738,8 @@ def _drive_fingers(armature_obj, side, suffix, half_travel, digits=""):
                 continue
             curl_axis, curl_sign = _curl_axis_for_finger(bone, digit, bend_vector)
 
-            weight = SEGMENT_WEIGHTS.get(segment, 1.0) * max_curl * curl_sign
+            curl_range = math.radians(MAX_THUMB_CURL_DEGREES) if digit == THUMB_DIGIT else max_curl
+            weight = SEGMENT_WEIGHTS.get(segment, 1.0) * curl_range * curl_sign
             pose_bone["sub_finger_curl_axis"] = curl_axis
             pose_bone["sub_finger_curl_weight"] = weight
             if digit == THUMB_DIGIT:
@@ -840,7 +822,7 @@ def _drive_fingers(armature_obj, side, suffix, half_travel, digits=""):
             if side_vector.length <= 1e-6:
                 continue
 
-            if digit == THUMB_DIGIT:
+            if digit == THUMB_DIGIT and segment == driveable[0][0]:
                 side_axis, side_sign = _axis_from_vector(
                     bone, side_vector.normalized(), exclude=curl_axis
                 )
@@ -860,7 +842,7 @@ def _drive_fingers(armature_obj, side, suffix, half_travel, digits=""):
                     )
                 continue
 
-            if segment != spread_segment:
+            if digit == THUMB_DIGIT or segment != spread_segment:
                 continue
             spread_axis, spread_sign = _axis_from_vector(
                 bone, side_vector.normalized(), exclude=curl_axis
@@ -1013,6 +995,7 @@ def build_finger_sliders(context, armature_obj):
             continue
         _drive_fingers(armature_obj, side, suffix, half_travel, digits=digits)
 
+    armature_obj["sub_finger_curl_version"] = 2
     armature_obj.data["sub_finger_slider_travel"] = half_travel
     set_finger_slider_mode(armature_obj, True)
     return created
@@ -1020,6 +1003,27 @@ def build_finger_sliders(context, armature_obj):
 
 FINGER_SLIDER_USE_KEY = "sub_use_finger_sliders"
 _HELD_FINGER_MUTE_KEY = "sub_held_finger_fcurves"
+
+
+def upgrade_finger_curl(armature_obj):
+    """Repair saved sliders in place; keep controller transforms and keys."""
+    if armature_obj.get('sub_finger_curl_version',0)>=2 or not has_finger_sliders(armature_obj):
+        return
+    from .create_animation_rig import _iter_armature_actions
+    from ..anim.fcurve_compat import get_all_action_fcurves
+    # Older key-all operations accidentally animated the generated calibration
+    # metadata. Preserve those curves but stop them restoring obsolete axes.
+    for action in _iter_armature_actions(armature_obj):
+        for fc in get_all_action_fcurves(action,id_type='OBJECT'):
+            if re.fullmatch(r'pose\.bones\["[^"\]]+"\]\["sub_finger_(?:curl_axis|curl_weight|curl_cascade_weight|spread_axis|spread_weight|side_axis|side_weight)"\]',fc.data_path):
+                fc.mute=True
+    half=armature_obj.data.get('sub_finger_slider_travel',_estimate_character_scale(armature_obj)*0.12*0.18)
+    mutes={(pb.name,con.name):con.mute for pb,con in _iter_finger_slider_constraints(armature_obj)}
+    for side,digits,suffix in iter_hand_slots(armature_obj):
+        _drive_fingers(armature_obj,side,suffix,half,digits=digits)
+    for pb,con in _iter_finger_slider_constraints(armature_obj):
+        con.mute=mutes.get((pb.name,con.name),False)
+    armature_obj['sub_finger_curl_version']=2
 
 
 def finger_sliders_are_enabled(armature_obj):

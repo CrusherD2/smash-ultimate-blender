@@ -1431,7 +1431,10 @@ def _set_ik_bone_visibility(armature_obj, visible, limbs='BOTH'):
         for kind, names, target, pole in ik_channels.chains(armature_obj, limbs):
             factor = _effective_limb_ik_factor(armature_obj, kind)
             for name in ik_channels.limb_path(armature_obj, names):
-                armature_obj.data.bones[name].hide = factor >= 1.0 - _FK_ON_EPSILON
+                bone = armature_obj.data.bones[name]
+                hidden = factor >= 1.0 - _FK_ON_EPSILON
+                if bone.hide != hidden:
+                    bone.hide = hidden
             controls = [target, pole]
             foot = ik_channels.foot_controls(names, armature_obj) if kind == 'LEGS' else None
             if foot:
@@ -1441,7 +1444,9 @@ def _set_ik_bone_visibility(armature_obj, visible, limbs='BOTH'):
                     controls.append(articulation[0])
             for name in controls:
                 if name in armature_obj.data.bones:
-                    armature_obj.data.bones[name].hide = not visible
+                    bone = armature_obj.data.bones[name]
+                    if bone.hide == visible:
+                        bone.hide = not visible
         if visible:
             _set_collection_visible(armature_obj.data, 'IK Bones', True)
         return
@@ -1955,11 +1960,17 @@ def _sync_ik_fk_visibility(scene, depsgraph=None):
         for obj in scene.objects:
             if obj.type != 'ARMATURE':
                 continue
-            if not armature_has_ik(obj):
-                continue
             if obj.data.get("sub_independent_ik"):
-                for kind in ('ARMS', 'LEGS'):
-                    _set_ik_bone_visibility(obj, _effective_limb_ik_factor(obj, kind) > _FK_ON_EPSILON, kind)
+                # Unchanged visibility must not dirty the armature's depsgraph.
+                state = (obj.data.as_pointer(), len(obj.data.bones),
+                         _ik_mode_bucket(obj.data.sub_use_ik_arms),
+                         _ik_mode_bucket(obj.data.sub_use_ik_legs))
+                if cache.get(obj.name) != state:
+                    for kind in ('ARMS', 'LEGS'):
+                        _set_ik_bone_visibility(obj, _effective_limb_ik_factor(obj, kind) > _FK_ON_EPSILON, kind)
+                    cache[obj.name] = state
+                continue
+            if not armature_has_ik(obj):
                 continue
             data = obj.data
             if not data.get(ARMATURE_FLAG):
@@ -3295,6 +3306,8 @@ def _tool_id_for_pose_bone(pose_bone):
     from .eye_rig import EYE_CTRL_BONE, EYE_OPT_INVERT_X, EYE_OPT_INVERT_Y
     from .finger_sliders import is_finger_pad_bone, is_finger_slider_bone, is_thumb_slider_bone
     name = canonical_bone_name(pose_bone.name)
+    if pose_bone.bone.get('sub_component_control'):
+        return pose_bone.bone.get('sub_component_tool', 'builtin.move')
     if is_finger_pad_bone(pose_bone.name):
         return None
     if is_finger_slider_bone(pose_bone.name) or is_thumb_slider_bone(pose_bone.name) or name in {EYE_OPT_INVERT_X, EYE_OPT_INVERT_Y}:
@@ -3540,6 +3553,8 @@ def _ensure_ik_drivers_on_loaded_rigs():
     for obj in bpy.data.objects:
         if obj.type != 'ARMATURE':
             continue
+        from .finger_sliders import upgrade_finger_curl
+        upgrade_finger_curl(obj)
         if not (obj.data.get(ARMATURE_FLAG) or obj.data.get('sub_independent_ik')):
             continue
         if armature_has_ik(obj):
