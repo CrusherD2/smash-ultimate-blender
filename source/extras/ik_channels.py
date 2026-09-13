@@ -555,6 +555,14 @@ def wire(obj):
             for label, subtarget, sign in (
                     (PULL_TARGET, endpoint_target(obj, names, target), 1.0),
                     (PULL_END, PREFIX + path[-1], -1.0)):
+                # A zero weight contributes nothing at any influence. Drop the
+                # constraint and its driver instead of evaluating both per frame.
+                if abs(weight) < 1e-8:
+                    old = pull.constraints.get(label)
+                    if old:
+                        old.driver_remove('influence')
+                        pull.constraints.remove(old)
+                    continue
                 con = pull.constraints.get(label) or pull.constraints.new('TRANSFORM')
                 con.name = label
                 con.target, con.subtarget = obj, subtarget
@@ -662,6 +670,12 @@ def wire_arm_pulls(obj):
             )
             for suffix, subtarget, factor in terms:
                 label = 'SUB IK Arm Pull ' + suffix
+                if abs(factor) < 1e-8:
+                    old = pull.constraints.get(label)
+                    if old:
+                        old.driver_remove('influence')
+                        pull.constraints.remove(old)
+                    continue
                 con = pull.constraints.get(label) or pull.constraints.new('TRANSFORM')
                 con.name = label
                 con.target, con.subtarget = obj, subtarget
