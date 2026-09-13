@@ -7,6 +7,7 @@ import math
 import json
 import uuid
 import re
+import os
 import sys
 from contextlib import contextmanager, nullcontext
 import bpy
@@ -1187,46 +1188,57 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
     delta = _angle(zero[bend_index].translation-root, mid-root, axis)
     if (mid-root-axis*(mid-root).dot(axis)).length < 1e-5:
         delta = _angle(zero[0].to_3x3().col[0], matrices[names[0]].to_3x3().col[0], axis)
-    angle = yield from best([delta, -delta, entry['angle'] or 0.0])
-    # Refine both bone orientations, not just the knee position. This handles
-    # axial twist and near-straight chains where a position-only pole test has
-    # almost no useful signal.
-    #
-    # This search is the bulk of what a match still costs -- about 18 of its
-    # evaluations per chain per frame -- but it is kept.
-    #
-    # Its objective looks analytically solvable: changing the pole angle
-    # should rotate the solved chain rigidly about the root-to-target axis,
-    # making the residual exactly C + A*cos(t) + B*sin(t), which three samples
-    # would pin down. In practice it is not. Solving it that way finds angles
-    # that score *lower* on this measure yet drift the end effector further
-    # from the FK pose (worst-case limb error on the benchmark rig 0.415 ->
-    # 0.622, median 0.039 -> 0.049), and clamping the closed form to this same
-    # bracket does not fix it. The likely cause is that Blender's IK solver
-    # warm-starts from the previous evaluation, so the residual depends on the
-    # path taken through angles, not just the angle -- which makes a
-    # small-step local search meaningful and a three-probe fit not.
-    #
-    # The iteration count *was* cut, from 18 to 12, once there was multi-clip
-    # evidence for it -- see _POLE_REFINE_STEPS. The rest of the speedups in
-    # this module come from not evaluating the *placement*, which is exact
-    # arithmetic.
-    if (yield from error(angle)) > _POLE_TOLERANCE:
-        lo, hi = angle - .2, angle + .2
-        ratio = (math.sqrt(5.0)-1.0)*.5
-        a, b = hi-ratio*(hi-lo), lo+ratio*(hi-lo)
-        fa = yield from error(a)
-        fb = yield from error(b)
-        for _ in range(_POLE_REFINE_STEPS):
-            if fa < fb:
-                hi, b, fb = b, a, fa
-                a = hi-ratio*(hi-lo)
-                fa = yield from error(a)
-            else:
-                lo, a, fa = a, b, fb
-                b = lo+ratio*(hi-lo)
-                fb = yield from error(b)
-        angle = yield from best((angle, a, b))
+    seeds = [delta, -delta, entry['angle'] or 0.0]
+    # One native call per chain and frame instead of one crossing per
+    # candidate. Verification mode keeps the per-candidate path, because its
+    # whole purpose is comparing each candidate against Blender.
+    found = None
+    if (native is not None and os.environ.get('SUB_NATIVE_SEARCH', '1') == '1'
+            and os.environ.get('SUB_NATIVE_IK') == 'experimental'):
+        found = native.search(reference_columns, seeds, _POLE_TOLERANCE, _POLE_REFINE_STEPS)
+    if found is not None:
+        angle = found[0]
+    else:
+        angle = yield from best(seeds)
+        # Refine both bone orientations, not just the knee position. This handles
+        # axial twist and near-straight chains where a position-only pole test has
+        # almost no useful signal.
+        #
+        # This search is the bulk of what a match still costs -- about 18 of its
+        # evaluations per chain per frame -- but it is kept.
+        #
+        # Its objective looks analytically solvable: changing the pole angle
+        # should rotate the solved chain rigidly about the root-to-target axis,
+        # making the residual exactly C + A*cos(t) + B*sin(t), which three samples
+        # would pin down. In practice it is not. Solving it that way finds angles
+        # that score *lower* on this measure yet drift the end effector further
+        # from the FK pose (worst-case limb error on the benchmark rig 0.415 ->
+        # 0.622, median 0.039 -> 0.049), and clamping the closed form to this same
+        # bracket does not fix it. The likely cause is that Blender's IK solver
+        # warm-starts from the previous evaluation, so the residual depends on the
+        # path taken through angles, not just the angle -- which makes a
+        # small-step local search meaningful and a three-probe fit not.
+        #
+        # The iteration count *was* cut, from 18 to 12, once there was multi-clip
+        # evidence for it -- see _POLE_REFINE_STEPS. The rest of the speedups in
+        # this module come from not evaluating the *placement*, which is exact
+        # arithmetic.
+        if (yield from error(angle)) > _POLE_TOLERANCE:
+            lo, hi = angle - .2, angle + .2
+            ratio = (math.sqrt(5.0)-1.0)*.5
+            a, b = hi-ratio*(hi-lo), lo+ratio*(hi-lo)
+            fa = yield from error(a)
+            fb = yield from error(b)
+            for _ in range(_POLE_REFINE_STEPS):
+                if fa < fb:
+                    hi, b, fb = b, a, fa
+                    a = hi-ratio*(hi-lo)
+                    fa = yield from error(a)
+                else:
+                    lo, a, fa = a, b, fb
+                    b = lo+ratio*(hi-lo)
+                    fb = yield from error(b)
+            angle = yield from best((angle, a, b))
     if native is not None:
         native.close()
     entry['angle'] = angle

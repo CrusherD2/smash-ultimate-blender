@@ -87,22 +87,34 @@ pub type Columns = [[f32; 4]; 4];
 
 /// Score one solved chain against the FK reference.
 ///
-/// mathutils stores Vector and Matrix components as float32 and computes
-/// `length_squared` as a left-to-right float32 dot product, while Python's
-/// `sum()` accumulates in double. Reproducing that split matters: the score
-/// only decides which candidate angle wins, so a different rounding can
-/// select a different angle.
+/// This has to reproduce `Vector.length_squared` exactly, because the score
+/// decides which candidate angle wins. mathutils reaches it through
+/// `len_squared_vn`, which squares each component in float32 and then
+/// accumulates in double **iterating from the last component to the first**:
+///
+/// ```c
+/// double len_squared_vn(const float *array, int size) {
+///   double d = 0.0f;
+///   const float *array_end = array + size;
+///   while (array != array_end) { d += (double)square_f(*(--array_end)); }
+///   return d;
+/// }
+/// ```
+///
+/// Accumulating the squares in float32, or running forwards, rounds
+/// differently. On a rig with large coordinates that was enough to pick a
+/// different angle on 9 of 157 frames.
 fn score(matrices: &[Mat4], reference: &[Columns]) -> f64 {
     let mut total = 0.0f64;
     for (matrix, columns) in matrices.iter().zip(reference.iter()) {
         let mut bone = 0.0f64;
         for i in 0..4 {
-            let mut squared = 0.0f32;
-            for r in 0..4 {
+            let mut squared = 0.0f64;
+            for r in (0..4).rev() {
                 let d = matrix[r][i] - columns[i][r];
-                squared += d * d;
+                squared += (d * d) as f64;
             }
-            bone += squared as f64;
+            bone += squared;
         }
         total += bone;
     }
