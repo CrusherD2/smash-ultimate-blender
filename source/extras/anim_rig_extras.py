@@ -129,7 +129,8 @@ def draw_anim_rig_extras(layout, context, arm):
     """UI under Create Animation Rig: detect missing/present extras."""
     from .create_animation_rig import armature_has_animation_rig
 
-    if arm is None or not armature_has_animation_rig(arm):
+    from .component_workflow import has_components
+    if arm is None or not (armature_has_animation_rig(arm) or has_components(arm)):
         return
 
     has_ik = armature_has_ik(arm)
@@ -171,6 +172,15 @@ def draw_anim_rig_extras(layout, context, arm):
     else:
         row.label(text="Missing")
         row.operator("sub.anim_rig_add_fingers", text="Add Fingers", icon="DRIVER")
+
+    from .component_workflow import has_components
+    row = box.row(align=True)
+    row.label(text='Custom Components')
+    if has_components(arm):
+        row.operator('sub.components_bake_remove', text='Bake & Remove', icon='ACTION').bake = True
+        row.operator('sub.components_bake_remove', text='', icon='X').bake = False
+    else:
+        row.operator('sub.custom_components', text='Add Components')
 
 
 class SUB_OP_match_ik_to_animation(Operator):

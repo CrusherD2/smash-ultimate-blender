@@ -2709,6 +2709,8 @@ def strip_animation_rig(context, armature_obj):
 
     cleared = 0
     for pose_bone in armature_obj.pose.bones:
+        if pose_bone.bone.get('sub_face_owner') or pose_bone.bone.get('sub_component_id'):
+            continue
         widget = pose_bone.custom_shape
         if widget is None or not widget.name.startswith(WIDGET_PREFIX):
             continue
@@ -2771,6 +2773,13 @@ class SUB_OP_create_animation_rig(Operator):
         description="Add the BL_EyeLook bone in front of the head and set up CustomVector31 so posing it aims the eyes",
         default=True,
     )
+    def _component_presets(self, context):
+        from .component_workflow import preset_items
+        return preset_items(self, context)
+
+    setup_custom_components: bpy.props.BoolProperty(name='Custom Components', default=False)
+    custom_component_preset: bpy.props.EnumProperty(name='Component Preset', items=_component_presets)
+
     setup_finger_sliders: bpy.props.BoolProperty(
         name="Add Finger Sliders",
         description="Add finger sliders on each hand, including extra hands. The thumb is a 2D pad. Turn off to pose Smash finger bones only",
@@ -2885,6 +2894,8 @@ class SUB_OP_create_animation_rig(Operator):
             "ik_limbs": self.ik_limbs,
             "setup_eye_look": self.setup_eye_look,
             "setup_finger_sliders": self.setup_finger_sliders,
+            "setup_custom_components": self.setup_custom_components,
+            "custom_component_preset": self.custom_component_preset,
             "hide_helpers": self.hide_helpers,
             "match_position": self.match_position,
             "ik_entire_animation": self.ik_entire_animation,
@@ -2932,6 +2943,9 @@ class SUB_OP_create_animation_rig(Operator):
                 layout.prop(self, "ik_limbs")
             layout.prop(self, "setup_eye_look")
             layout.prop(self, "setup_finger_sliders")
+            layout.prop(self, "setup_custom_components")
+            if self.setup_custom_components:
+                layout.prop(self, "custom_component_preset")
             layout.prop(self, "hide_helpers")
             return
         if self.stage == 'IK':
@@ -2970,6 +2984,13 @@ class SUB_OP_create_animation_rig(Operator):
             )
             return {'CANCELLED'}
 
+        if self.setup_custom_components:
+            from .component_workflow import validate_preset_for_object
+            try:
+                validate_preset_for_object(armature_obj, self.custom_component_preset)
+            except (ValueError, OSError) as exc:
+                self.report({'ERROR'}, str(exc))
+                return {'CANCELLED'}
         _activate_armature(context, armature_obj)
         cleaned = 0
         with ProgressCursor(context) as progress:
@@ -3045,6 +3066,9 @@ class SUB_OP_create_animation_rig(Operator):
                         show_progress=False,
                     )
                 finalize_ik_controls(armature_obj, context)
+            if self.setup_custom_components:
+                from .component_workflow import build_preset
+                build_preset(context, armature_obj, self.custom_component_preset)
             cleaned = 0
             if ssp is not None and ssp.clean_keyframes_after_rig:
                 from .finger_sliders import is_finger_match_fcurve_path
@@ -3085,6 +3109,9 @@ class SUB_OP_remove_animation_rig(Operator):
             return {'CANCELLED'}
 
         _activate_armature(context, armature_obj)
+        from .component_workflow import bake_remove, has_components
+        if has_components(armature_obj):
+            bake_remove(context, armature_obj, False)
         cleared = strip_animation_rig(context, armature_obj)
         self.report({'INFO'}, f"Removed animation rig shapes from {armature_obj.name} ({cleared} bones).")
         return {'FINISHED'}
@@ -3097,6 +3124,8 @@ class SUB_OP_bake_and_remove_rig(Operator):
         "Bake selected animation-rig extras to Smash bones / CustomVector31, then remove the extra controls"
     )
     bl_options = {'REGISTER', 'UNDO'}
+
+    bake_custom_components: bpy.props.BoolProperty(name='Custom Components', default=True)
 
     bake_fingers: bpy.props.BoolProperty(
         name="Fingers",
@@ -3127,6 +3156,8 @@ class SUB_OP_bake_and_remove_rig(Operator):
         self.bake_fingers = has_finger_sliders(armature_obj)
         self.bake_eyes = armature_obj.pose.bones.get(EYE_CTRL_BONE) is not None
         self.bake_ik = armature_has_ik(armature_obj)
+        from .component_workflow import has_components
+        self.bake_custom_components = has_components(armature_obj)
         return context.window_manager.invoke_props_dialog(self, width=320)
 
     def draw(self, context):
@@ -3135,6 +3166,7 @@ class SUB_OP_bake_and_remove_rig(Operator):
         layout.prop(self, "bake_fingers")
         layout.prop(self, "bake_eyes")
         layout.prop(self, "bake_ik")
+        layout.prop(self, "bake_custom_components")
         layout.separator()
         layout.label(text="Then the extra rig controls will be removed.")
 
@@ -3148,6 +3180,10 @@ class SUB_OP_bake_and_remove_rig(Operator):
             bpy.ops.object.mode_set(mode='POSE')
 
         parts = []
+        if self.bake_custom_components:
+            from .component_workflow import bake_remove
+            count = bake_remove(context, armature_obj, True)
+            parts.append(f'{count} custom component bones')
         with ProgressCursor(context) as progress:
             steps = int(self.bake_fingers) + int(self.bake_eyes) + int(self.bake_ik) + 1
             done = 0

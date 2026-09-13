@@ -19,10 +19,17 @@ from .create_animation_rig import (
 TYPES = [
     (
         'EYES',
-        'Bone Eyes / Look Target',
+        'Bone Eyes (Captured Poses)',
         'Aim one or several eye bones at a shared target',
     ),
+    ('LOOK_TARGET', 'Look Target', 'Aim bones at a movable target'),
+    (
+        'ISOLATED',
+        'Isolated Bones',
+        'Independent controls that stay still when Hip or Trans moves',
+    ),
     ('IK', 'Custom IK Chain', 'A target and bend control for a connected bone chain'),
+    ('MOUTH', 'Mouth Expressions', 'Capture and blend any number of mouth poses'),
     ('JAW', 'Jaw', 'Open and close selected jaw bones'),
     ('LIDS', 'Eyelids / Blink', 'One slider with independently signed lid weights'),
     ('CURL', 'Tail / Tentacle Curl', 'Distribute bending through a selected chain'),
@@ -33,6 +40,32 @@ AXES = [('X', 'Local X', ''), ('Y', 'Local Y', ''), ('Z', 'Local Z', '')]
 FORMAT = 'smash_custom_components'
 VERSION = 1
 COLLECTION = 'Custom Components'
+SHAPES = [
+    (k, k.replace('_', ' ').title(), '')
+    for k in (
+        'circle',
+        'square',
+        'slider',
+        'box',
+        'diamond',
+        'sphere',
+        'crosshair',
+        'arrow',
+        'foot',
+        'knob',
+    )
+]
+EXTRA_DEFAULTS = {
+    'control_offset': [0.0, 0.0, 0.0],
+    'control_rotation': [0.0, 0.0, 0.0],
+    'look_plane': 'XY',
+    'show_orbit': True,
+    'shape': 'circle',
+    'shape_scale': 1.0,
+    'face_data': '{}',
+    'pose_name': 'Closed',
+    'pivot_at_cursor': False,
+}
 
 
 def preset_dir():
@@ -58,6 +91,31 @@ class SUB_PG_component_bone(bpy.types.PropertyGroup):
 
 
 class SUB_PG_rig_component(bpy.types.PropertyGroup):
+    control_offset: bpy.props.FloatVectorProperty(
+        name='Control Position Offset', subtype='TRANSLATION', size=3
+    )
+    control_rotation: bpy.props.FloatVectorProperty(
+        name='Control Orientation', subtype='EULER', size=3
+    )
+    look_plane: bpy.props.EnumProperty(
+        name='Movement Plane',
+        items=[
+            ('XZ', 'Side / Up-Down (XZ)', ''),
+            ('XY', 'Side / Front-Back (XY)', ''),
+            ('YZ', 'Front / Up-Down (YZ)', ''),
+        ],
+        default='XZ',
+    )
+    show_orbit: bpy.props.BoolProperty(name='Show Rotation Controller', default=False)
+    shape: bpy.props.EnumProperty(name='Control Shape', items=SHAPES, default='circle')
+    shape_scale: bpy.props.FloatProperty(
+        name='Shape Size', default=1.0, min=0.01, max=100
+    )
+    face_data: bpy.props.StringProperty(default='{}')
+    pose_name: bpy.props.StringProperty(name='Pose / Expression', default='Closed')
+    pivot_at_cursor: bpy.props.BoolProperty(
+        name='Place Eye Pivot at 3D Cursor', default=False
+    )
     uid: bpy.props.StringProperty()
     name: bpy.props.StringProperty(name='Component Name', default='Component')
     kind: bpy.props.EnumProperty(name='Component', items=TYPES)
@@ -101,6 +159,30 @@ class SUB_PG_rig_component(bpy.types.PropertyGroup):
 
 
 class SUB_PG_component_editor(bpy.types.PropertyGroup):
+    show_placement: bpy.props.BoolProperty(
+        name='Advanced Placement & Behavior', default=False
+    )
+    show_appearance: bpy.props.BoolProperty(
+        name='Selected Control Appearance', default=False
+    )
+    show_pose_manage: bpy.props.BoolProperty(name='Manage Saved Poses', default=False)
+    show_pose_preview: bpy.props.BoolProperty(name='Preview & Animate', default=True)
+
+    page: bpy.props.EnumProperty(
+        name='Step',
+        items=[
+            ('BONES', '1  Bones', 'Choose a component and its bones'),
+            ('CONTROLS', '2  Controls', 'Build and customize handles'),
+            ('ANIMATE', '3  Animate', 'Capture poses and animate'),
+        ],
+        default='BONES',
+    )
+    appearances: bpy.props.StringProperty(default='{}')
+    auto_save_appearance: bpy.props.BoolProperty(
+        name='Auto-save Appearance', default=True
+    )
+    appearance_status: bpy.props.StringProperty()
+
     armature: bpy.props.PointerProperty(
         type=bpy.types.Object, poll=lambda self, obj: obj.type == 'ARMATURE'
     )
@@ -127,6 +209,7 @@ def editor_armature(context):
 
 def serialize(component):
     fields = (
+        *EXTRA_DEFAULTS,
         'uid',
         'name',
         'kind',
@@ -141,7 +224,14 @@ def serialize(component):
         'switch_group',
     )
     return {
-        **{name: getattr(component, name) for name in fields},
+        **{
+            name: (
+                list(getattr(component, name))
+                if name in {'control_offset', 'control_rotation'}
+                else getattr(component, name)
+            )
+            for name in fields
+        },
         'bones': [
             {'bone': b.bone, 'weight': b.weight, 'axis': b.axis}
             for b in component.bones
@@ -176,12 +266,45 @@ def validate_preset(payload):
         'switch_group',
         'bones',
     }
+    from .component_appearance_presets import validate as validate_appearances
+
+    validate_appearances(payload.get('appearances', {}))
     seen = set()
     for item in payload['components']:
         if not isinstance(item, dict) or item.get('kind') not in allowed:
             raise ValueError('Unknown component type')
-        if set(item) != fields:
+        for key, default in EXTRA_DEFAULTS.items():
+            item.setdefault(key, default)
+        if set(item) != fields | set(EXTRA_DEFAULTS):
             raise ValueError('Invalid component fields')
+        if (
+            item['shape'] not in {v[0] for v in SHAPES}
+            or not isinstance(item['shape_scale'], (int, float))
+            or not math.isfinite(item['shape_scale'])
+            or item['shape_scale'] <= 0
+        ):
+            raise ValueError('Invalid control shape')
+        for key in ('control_offset', 'control_rotation'):
+            if (
+                not isinstance(item[key], (list, tuple))
+                or len(item[key]) != 3
+                or any(
+                    not isinstance(v, (int, float)) or not math.isfinite(v)
+                    for v in item[key]
+                )
+            ):
+                raise ValueError('Invalid control placement')
+        if item['look_plane'] not in {'XY', 'XZ', 'YZ'} or not isinstance(
+            item['show_orbit'], bool
+        ):
+            raise ValueError('Invalid eye control settings')
+        from .face_components import validate_data
+
+        validate_data(item['face_data'])
+        if not isinstance(item['pose_name'], str) or not isinstance(
+            item['pivot_at_cursor'], bool
+        ):
+            raise ValueError('Invalid facial settings')
         for field in ('uid', 'name', 'parent', 'root', 'middle', 'end'):
             if not isinstance(item.get(field), str):
                 raise ValueError('Invalid component names')
@@ -223,7 +346,10 @@ def save_preset(editor):
     name = bpy.path.clean_name(editor.preset_name.strip())[:80]
     if not name:
         raise ValueError('Enter a preset name')
+    from .component_appearance_presets import capture
+
     payload = {
+        'appearances': capture(editor),
         'format': FORMAT,
         'version': VERSION,
         'name': editor.preset_name,
@@ -241,6 +367,9 @@ def load_preset(editor, payload):
     validate_preset(payload)  # Validate completely before replacing the editor.
     editor.components.clear()
     editor.preset_name = payload['name']
+    editor.appearances = json.dumps(payload.get('appearances', {}))
+    editor.appearance_status = ''
+    editor.page = 'BONES'
     for record in payload['components']:
         c = editor.components.add()
         for name, value in record.items():
@@ -281,7 +410,7 @@ def validate_component(obj, c):
         raise ValueError(f'{c.name}: assign existing bones to every row')
     if len(names) != len(set(names)):
         raise ValueError(f'{c.name}: each bone can appear only once')
-    if c.parent and c.parent not in obj.data.bones:
+    if c.kind != 'ISOLATED' and c.parent and c.parent not in obj.data.bones:
         raise ValueError(f'{c.name}: control parent does not exist')
     if any(n.startswith('BL_CC_') for n in names):
         raise ValueError('Choose skeleton bones, not component controls')
@@ -324,10 +453,16 @@ def validate_build(obj, components):
         names = validate_component(obj, c)
         built_ik = next((r for r in records if r.get('component_id') == c.uid), None)
         built_control = obj.data.bones.get(control_name(obj, c))
+        if built_control and built_control.get('sub_component_kind', c.kind) != c.kind:
+            raise ValueError(
+                f'{c.name}: remove the built component before changing its type'
+            )
         if (built_ik and c.kind != 'IK') or (built_control and c.kind == 'IK'):
             raise ValueError(
                 f'{c.name}: remove the built component before switching between IK and other types'
             )
+        if c.kind == 'ISOLATED':
+            continue
         if c.kind != 'IK':
             _control_parent(obj, c, names)
             existing = obj.data.bones.get(control_name(obj, c))
@@ -392,6 +527,14 @@ def build_component(context, obj, c):
                 raise ValueError(
                     f'{c.name}: existing IK chain differs; bake/remove it before changing its bones'
                 )
+            pb = obj.pose.bones[previous['target']]
+            _assign_shape(
+                pb,
+                _widget_object(context, c.shape),
+                max(pb.length, 0.1) * c.shape_scale,
+                'THEME04',
+                False,
+            )
             return previous['target']
         record = custom_ik.create_from_settings(
             context,
@@ -407,7 +550,23 @@ def build_component(context, obj, c):
         records = json.loads(obj.get('sub_custom_ik_chains', '[]'))
         records[-1]['component_id'] = c.uid
         obj['sub_custom_ik_chains'] = json.dumps(records)
+        pb = obj.pose.bones[record['target']]
+        _assign_shape(
+            pb,
+            _widget_object(context, c.shape),
+            max(pb.length, 0.1) * c.shape_scale,
+            'THEME04',
+            False,
+        )
         return record['target']
+    if c.kind == 'ISOLATED':
+        from .component_workflow import build_isolated
+
+        return build_isolated(context, obj, c)
+    if c.kind in {'EYES', 'LIDS', 'MOUTH'}:
+        from .face_components import build_face
+
+        return build_face(context, obj, c)
     parent = _control_parent(obj, c, names)
     target_name = control_name(obj, c)
     if target_name in names:
@@ -430,7 +589,7 @@ def build_component(context, obj, c):
         control = obj.data.edit_bones.new(target_name)
         control.head = (
             center + direction * size * c.distance
-            if c.kind == 'EYES'
+            if c.kind == 'LOOK_TARGET'
             else center + Vector((0, 0, size * c.distance))
         )
         control.tail = control.head + Vector((0, size * 0.3, 0))
@@ -441,6 +600,7 @@ def build_component(context, obj, c):
         control['sub_component_travel'] = size * 0.5
         bpy.ops.object.mode_set(mode='POSE')
     pb = obj.pose.bones[target_name]
+    pb.bone['sub_component_kind'] = c.kind
     pb['component_name'] = c.name
     collection = obj.data.collections.get(COLLECTION) or obj.data.collections.new(
         COLLECTION
@@ -448,7 +608,11 @@ def build_component(context, obj, c):
     collection.assign(pb.bone)
     collection.is_visible = True
     _assign_shape(
-        pb, _widget_object(context, 'circle'), max(pb.length, 0.1), 'THEME04', False
+        pb,
+        _widget_object(context, c.shape),
+        max(pb.length, 0.1) * c.shape_scale,
+        'THEME04',
+        False,
     )
     for bone in obj.pose.bones:
         for con in list(bone.constraints):
@@ -458,8 +622,8 @@ def build_component(context, obj, c):
         if con.name == 'Component Slider Range':
             pb.constraints.remove(con)
     half = float(pb.bone.get('sub_component_travel', 1.0))
-    if c.kind == 'EYES':
-        pb.lock_location = (False, False, False)
+    if c.kind == 'LOOK_TARGET':
+        pb.lock_location = (False, False, True)
         pb.lock_rotation = pb.lock_scale = (True, True, True)
     else:
         pb.lock_location = (True, False, True)
@@ -471,7 +635,7 @@ def build_component(context, obj, c):
         limit.min_y, limit.max_y = -half, half
     for assignment in c.bones:
         bone = obj.pose.bones[assignment.bone]
-        if c.kind == 'EYES':
+        if c.kind == 'LOOK_TARGET':
             con = bone.constraints.new('DAMPED_TRACK')
             con.name = prefix
             con.target, con.subtarget = obj, target_name
@@ -490,6 +654,9 @@ def build_component(context, obj, c):
                 'XYZ'.index(axis),
                 c.angle * assignment.weight,
             )
+    from .component_workflow import place_controls
+
+    place_controls(context, obj, c, [target_name], plane=c.kind == 'LOOK_TARGET')
     context.view_layer.update()
     return target_name
 
@@ -505,6 +672,9 @@ def remove_component(context, obj, c):
         if target:
             ik_channels.remove(context, obj, c.switch_group, targets={target})
         return
+    from .face_components import remove_face_helpers
+
+    remove_face_helpers(context, obj, c)
     name = control_name(obj, c)
     prefix = 'SUB Component ' + c.uid
     for pb in obj.pose.bones:
@@ -577,8 +747,17 @@ class SUB_UL_component_bones(bpy.types.UIList):
         row = layout.row(align=True)
         if obj:
             row.prop_search(item, 'bone', obj.data, 'bones', text='')
-        row.prop(item, 'weight', text='Weight')
-        if c and c.kind != 'EYES':
+        if (
+            c
+            and context.scene.sub_component_editor.page == 'CONTROLS'
+            and c.kind not in {'EYES', 'LIDS', 'MOUTH', 'ISOLATED', 'LOOK_TARGET'}
+        ):
+            row.prop(item, 'weight', text='Weight')
+        if (
+            c
+            and context.scene.sub_component_editor.page == 'CONTROLS'
+            and c.kind not in {'EYES', 'LIDS', 'MOUTH', 'ISOLATED', 'LOOK_TARGET'}
+        ):
             row.prop(item, 'axis', text='')
 
 
@@ -616,6 +795,7 @@ class SUB_OP_component_edit(bpy.types.Operator):
                 c.uid = uuid.uuid4().hex
                 c.name = f'Component {len(editor.components)}'
                 editor.active_index = len(editor.components) - 1
+                editor.page = 'BONES'
             elif self.action == 'REMOVE' and c:
                 editor.components.remove(editor.active_index)
                 editor.active_index = max(0, editor.active_index - 1)
@@ -655,6 +835,8 @@ class SUB_OP_component_edit(bpy.types.Operator):
                     from ..blender_compat import set_pose_bone_select
 
                     target = control_name(obj, c)
+                    if c.kind == 'EYES' and target + '_Look' in obj.pose.bones:
+                        target += '_Look'
                     if c.kind == 'IK':
                         records = json.loads(obj.get('sub_custom_ik_chains', '[]'))
                         target = next(
@@ -711,6 +893,10 @@ class SUB_OP_component_preset(bpy.types.Operator):
                         (preset_dir() / self.filename).read_text(encoding='utf-8')
                     ),
                 )
+                if editor.armature:
+                    from .component_appearance_presets import apply
+
+                    apply(context, editor.armature, json.loads(editor.appearances))
             return {'FINISHED'}
         except (OSError, ValueError, TypeError, KeyError) as exc:
             self.report({'ERROR'}, str(exc))
@@ -733,6 +919,8 @@ class SUB_MT_component_presets(bpy.types.Menu):
 class SUB_OP_component_build(bpy.types.Operator):
     bl_idname = 'sub.component_build'
     bl_label = 'Build Custom Components'
+    active_only: bpy.props.BoolProperty(default=False)
+    advance: bpy.props.BoolProperty(default=False)
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
@@ -743,23 +931,36 @@ class SUB_OP_component_build(bpy.types.Operator):
             return {'CANCELLED'}
         try:
             # Validate every assignment before building anything.
-            validate_build(obj, editor.components)
+            components = (
+                [active_component(context)]
+                if self.active_only
+                else list(editor.components)
+            )
+            validate_build(obj, components)
             from . import create_animation_rig as rig, anim_layers_compat
 
             with rig.defer_pose_tool_updates(), rig._disable_autokey(
                 context
             ), anim_layers_compat.anim_layers_paused():
                 _activate_armature(context, obj)
-                for c in editor.components:
+                for c in components:
                     build_component(context, obj, c)
+                from .component_appearance_presets import apply
+
+                apply(context, obj, json.loads(editor.appearances))
+            updated = {c.uid for c in components}
+            existing = json.loads(obj.get('sub_custom_components', '[]'))
             obj['sub_custom_components'] = json.dumps(
-                [serialize(c) for c in editor.components]
+                [r for r in existing if r['uid'] not in updated]
+                + [serialize(c) for c in components]
             )
+            if self.advance:
+                editor.page = 'ANIMATE'
             if editor.save_on_build:
                 save_preset(editor)
             self.report(
                 {'INFO'},
-                f'Built {len(editor.components)} components'
+                f'Built {len(components)} components'
                 + (' and saved preset' if editor.save_on_build else ''),
             )
             return {'FINISHED'}
@@ -768,102 +969,186 @@ class SUB_OP_component_build(bpy.types.Operator):
             return {'CANCELLED'}
 
 
+class SUB_OP_component_step(bpy.types.Operator):
+    bl_idname = 'sub.component_step'
+    bl_label = 'Next Setup Step'
+    page: bpy.props.StringProperty()
+
+    def execute(self, context):
+        context.scene.sub_component_editor.page = self.page
+        return {'FINISHED'}
+
+
+def disclosure(layout, editor, property_name, label):
+    # Explicit state keeps Properties search from expanding every advanced panel.
+    expanded = getattr(editor, property_name)
+    row = layout.row()
+    row.prop(
+        editor,
+        property_name,
+        text=label,
+        icon='TRIA_DOWN' if expanded else 'TRIA_RIGHT',
+        emboss=False,
+    )
+    return layout.column() if expanded else None
+
+
 def draw_editor(layout, context):
     editor = context.scene.sub_component_editor
     obj = editor_armature(context)
-    layout.prop(editor, 'armature')
+    layout.use_property_split = False
     row = layout.row(align=True)
-    row.prop(editor, 'preset_name')
-    row.menu('SUB_MT_component_presets', text='Load Preset')
-    row.operator('sub.component_preset', text='Save', icon='FILE_TICK').action = 'SAVE'
+    row.prop(editor, 'preset_name', text='Preset')
+    row.menu('SUB_MT_component_presets', text='Load', icon='FILE_FOLDER')
+    row.operator(
+        'sub.component_preset', text='Save Preset', icon='FILE_TICK'
+    ).action = 'SAVE'
     row = layout.row()
     row.template_list(
-        'SUB_UL_components', '', editor, 'components', editor, 'active_index', rows=4
+        'SUB_UL_components', '', editor, 'components', editor, 'active_index', rows=3
     )
     buttons = row.column(align=True)
     buttons.operator('sub.component_edit', text='', icon='ADD').action = 'ADD'
     buttons.operator('sub.component_edit', text='', icon='REMOVE').action = 'REMOVE'
     c = active_component(context)
-    if c:
-        box = layout.box()
-        box.prop(c, 'kind')
-        row = box.row(align=True)
-        row.prop(c, 'name')
-        row.operator(
-            'sub.component_edit', text='Select Control', icon='RESTRICT_SELECT_OFF'
-        ).action = 'SELECT_CONTROL'
-        row.operator('sub.component_remove', text='', icon='TRASH')
-        if obj and c.kind == 'IK':
-            box.label(
-                text='1. Select the start and end in Pose Mode, then use selection.'
-            )
-            box.operator(
-                'sub.component_edit',
-                text='Use Selected Chain',
-                icon='RESTRICT_SELECT_OFF',
+    if c is None:
+        layout.label(text='Add a component to get started.', icon='INFO')
+        layout.operator(
+            'sub.component_edit', text='Add Component', icon='ADD'
+        ).action = 'ADD'
+        return
+    layout.prop(editor, 'page', expand=True)
+    layout.separator()
+    if editor.page == 'BONES':
+        layout.prop(editor, 'armature', text='Rig')
+        layout.prop(c, 'name', text='Name')
+        layout.prop(c, 'kind', text='Component Type')
+        if obj is None:
+            layout.label(text='Choose the armature to continue.', icon='INFO')
+            return
+        if c.kind == 'IK':
+            layout.label(text='Select the start and end bones in the viewport.')
+            layout.operator(
+                'sub.component_edit', text='Use Selected Chain', icon='EYEDROPPER'
             ).action = 'CHAIN'
-            for field, label in (
-                ('root', '2. Chain Start'),
-                ('middle', '3. Bend Joint'),
-                ('end', '4. Chain End'),
-            ):
-                row = box.row(align=True)
+            for field, label in (('root', 'Start'), ('middle', 'Bend'), ('end', 'End')):
+                row = layout.row(align=True)
                 row.prop_search(c, field, obj.data, 'bones', text=label)
                 row.operator(
                     'sub.component_edit', text='', icon='EYEDROPPER'
                 ).action = ('PICK_' + field.upper())
-            path = ik_channels.chain_path(obj, c.root, c.end, c.middle)
-            box.label(
-                text=(
-                    f'{len(path)} bones in chain (intermediate bones included)'
-                    if path
-                    else 'Choose bones along one parent chain'
-                ),
-                icon='CHECKMARK' if path else 'INFO',
-            )
-            box.prop(c, 'switch_group')
-        elif obj:
-            box.prop_search(c, 'parent', obj.data, 'bones')
-            if c.kind == 'EYES':
-                box.prop(c, 'aim_axis')
-                box.label(text='Move the shared target to look around.')
-            else:
-                row = box.row(align=True)
-                row.prop(c, 'axis')
-                row.prop(c, 'angle')
-                box.label(
-                    text='Move the slider on local Y. Negative bone weights reverse motion.'
-                )
-            box.prop(c, 'distance')
-            row = box.row(align=True)
-            row.operator('sub.component_edit', text='Add Selected Bones').action = (
-                'SELECTED'
-            )
-            row.operator('sub.component_edit', text='Add Bone', icon='ADD').action = (
-                'BONE_ADD'
-            )
-            if c.kind in {'CURL', 'FAN'}:
-                row.operator('sub.component_edit', text='Distribute Weights').action = (
-                    'WEIGHTS'
-                )
-            row = box.row()
+        else:
+            layout.label(text='Select the bones this component should control.')
+            row = layout.row(align=True)
+            row.operator(
+                'sub.component_edit', text='Use Selected Bones', icon='EYEDROPPER'
+            ).action = 'SELECTED'
+            row.operator(
+                'sub.component_edit', text='Add by Name', icon='ADD'
+            ).action = 'BONE_ADD'
+            row = layout.row()
             row.template_list(
-                'SUB_UL_component_bones', '', c, 'bones', c, 'bone_index', rows=5
+                'SUB_UL_component_bones', '', c, 'bones', c, 'bone_index', rows=3
             )
-            buttons = row.column(align=True)
-            buttons.operator('sub.component_edit', text='', icon='ADD').action = (
-                'BONE_ADD'
-            )
-            op = buttons.operator('sub.component_edit', text='', icon='REMOVE')
+            op = row.column().operator('sub.component_edit', text='', icon='REMOVE')
             op.action, op.index = 'BONE_REMOVE', c.bone_index
-            if not c.bones:
-                box.label(
-                    text='Assign bones with search, or select bones before reopening the editor.',
-                    icon='INFO',
+        valid = False
+        try:
+            names = validate_component(obj, c)
+            valid = True
+            layout.label(text=f'{len(names)} bones assigned', icon='CHECKMARK')
+        except ValueError:
+            layout.label(text='Assign the bones above to continue.', icon='INFO')
+        row = layout.row()
+        row.enabled = valid
+        row.operator(
+            'sub.component_step', text='Next: Create Controls', icon='FORWARD'
+        ).page = 'CONTROLS'
+        return
+    if obj is None:
+        layout.label(text='Choose a rig in the Bones step.', icon='INFO')
+        return
+    if editor.page == 'CONTROLS':
+        layout.label(text=c.name, icon='BONE_DATA')
+        row = layout.row(align=True)
+        row.prop(c, 'shape', text='Default Shape')
+        row.prop(c, 'shape_scale', text='Size')
+        if c.kind in {'EYES', 'LOOK_TARGET'}:
+            layout.prop(c, 'look_plane')
+            layout.prop(c, 'aim_axis')
+        if c.kind == 'EYES':
+            layout.prop(c, 'show_orbit')
+        elif c.kind == 'IK':
+            layout.prop(c, 'switch_group')
+        elif c.kind not in {'LIDS', 'MOUTH', 'LOOK_TARGET', 'ISOLATED'}:
+            row = layout.row(align=True)
+            row.prop(c, 'axis')
+            row.prop(c, 'angle')
+        body = disclosure(
+            layout, editor, 'show_placement', 'Advanced Placement & Behavior'
+        )
+        if body is not None:
+            if c.kind not in {'ISOLATED', 'IK'}:
+                body.prop_search(c, 'parent', obj.data, 'bones')
+                body.prop(c, 'distance')
+            if c.kind != 'IK':
+                body.prop(c, 'control_offset')
+                body.prop(c, 'control_rotation')
+            if c.kind == 'EYES':
+                body.prop(c, 'pivot_at_cursor')
+            if c.kind not in {'EYES', 'LIDS', 'MOUTH', 'ISOLATED', 'LOOK_TARGET', 'IK'}:
+                body.template_list(
+                    'SUB_UL_component_bones',
+                    'weights',
+                    c,
+                    'bones',
+                    c,
+                    'bone_index',
+                    rows=3,
                 )
-    layout.prop(editor, 'save_on_build')
+            if c.kind in {'CURL', 'FAN'}:
+                body.operator(
+                    'sub.component_edit', text='Distribute Bone Weights'
+                ).action = 'WEIGHTS'
+            body.prop(editor, 'save_on_build')
+        op = layout.operator(
+            'sub.component_build', text='Build Controls & Continue', icon='MOD_BUILD'
+        )
+        op.active_only, op.advance = True, True
+        layout.operator(
+            'sub.component_edit',
+            text='Select Built Control',
+            icon='RESTRICT_SELECT_OFF',
+        ).action = 'SELECT_CONTROL'
+        body = disclosure(
+            layout, editor, 'show_appearance', 'Selected Control Appearance'
+        )
+        if body is not None:
+            from .control_appearance import draw_appearance
+
+            draw_appearance(body, context, obj)
+        layout.operator(
+            'sub.component_step', text='Back to Bones', icon='BACK'
+        ).page = 'BONES'
+        return
     layout.operator(
-        'sub.component_build', text='Build / Update Components', icon='MOD_BUILD'
+        'sub.component_edit',
+        text='Select Control in Viewport',
+        icon='RESTRICT_SELECT_OFF',
+    ).action = 'SELECT_CONTROL'
+    if c.kind in {'EYES', 'LIDS', 'MOUTH'}:
+        from .face_components import draw_face
+
+        draw_face(layout, context, obj, c)
+    else:
+        text = (
+            'Move each handle independently, then insert transform keyframes.'
+            if c.kind == 'ISOLATED'
+            else 'Pose the control in the viewport, then insert transform keyframes.'
+        )
+        layout.label(text=text, icon='INFO')
+    layout.operator('sub.component_step', text='Adjust Controls', icon='BACK').page = (
+        'CONTROLS'
     )
 
 
@@ -894,13 +1179,46 @@ class SUB_OP_custom_components(bpy.types.Operator):
             c = editor.components.add()
             c.uid = uuid.uuid4().hex
             c.name = 'Eye Look'
-        return context.window_manager.invoke_popup(self, width=720)
+        if bpy.app.background:
+            return {'FINISHED'}
+        before = set(context.window_manager.windows)
+        bpy.ops.wm.window_new()
+        window = next(
+            (w for w in context.window_manager.windows if w not in before), None
+        )
+        if window is None:
+            self.report({'ERROR'}, 'Blender could not create the components window')
+            return {'CANCELLED'}
+        window.scene = context.scene
+        window.screen['sub_components_window'] = True
+        area = max(window.screen.areas, key=lambda a: a.width * a.height)
+        area.type = 'PROPERTIES'
+        area.spaces.active.context = 'DATA'
+        if obj:
+            area.spaces.active.pin_id = obj
+        area.spaces.active.search_filter = 'Custom Rig Components'
+        return {'FINISHED'}
 
     def draw(self, context):
         draw_editor(self.layout, context)
 
     def execute(self, context):
         return {'FINISHED'}
+
+
+class SUB_PT_component_window(bpy.types.Panel):
+    bl_label = 'Custom Rig Components'
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_context = 'data'
+    bl_order = -100
+
+    @classmethod
+    def poll(cls, context):
+        return bool(context.screen and context.screen.get('sub_components_window'))
+
+    def draw(self, context):
+        draw_editor(self.layout, context)
 
 
 CLASSES = (
@@ -914,19 +1232,51 @@ CLASSES = (
     SUB_OP_component_preset,
     SUB_MT_component_presets,
     SUB_OP_component_build,
+    SUB_OP_component_step,
     SUB_OP_custom_components,
+    SUB_PT_component_window,
 )
 
 
 def register():
+    from . import (
+        face_components,
+        control_appearance,
+        ik_gizmos,
+        component_workflow,
+        component_appearance_presets,
+    )
+
     for cls in CLASSES:
         bpy.utils.register_class(cls)
+    from . import component_appearance_presets
+
+    component_workflow.register()
+    component_appearance_presets.register()
+    face_components.register()
+    control_appearance.register()
+    ik_gizmos.register()
     bpy.types.Scene.sub_component_editor = bpy.props.PointerProperty(
         type=SUB_PG_component_editor
     )
 
 
 def unregister():
+    from . import (
+        face_components,
+        control_appearance,
+        ik_gizmos,
+        component_workflow,
+        component_appearance_presets,
+    )
+
+    from . import component_appearance_presets
+
+    component_appearance_presets.unregister()
+    component_workflow.unregister()
+    ik_gizmos.unregister()
+    control_appearance.unregister()
+    face_components.unregister()
     del bpy.types.Scene.sub_component_editor
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)

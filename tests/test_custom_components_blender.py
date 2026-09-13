@@ -137,6 +137,9 @@ assert len(editor.components) == 7
 
 # UI draws all component options, with no unresolved RNA fields.
 class Layout:
+    def panel(self, *args, **kwargs):
+        return self, self
+
     def __getattr__(self, name):
         if name in {'prop', 'prop_search'}:
             return lambda owner, field, *args, **kwargs: getattr(owner, field)
@@ -147,7 +150,9 @@ class Layout:
 
 for index in range(len(editor.components)):
     editor.active_index = index
-    cc.draw_editor(Layout(), bpy.context)
+    for page in ('BONES', 'CONTROLS', 'ANIMATE'):
+        editor.page = page
+        cc.draw_editor(Layout(), bpy.context)
 # Export must collapse source modifiers and handle axis-angle bones as well.
 pb = obj.pose.bones['Tail0']
 pb.rotation_mode = 'AXIS_ANGLE'
