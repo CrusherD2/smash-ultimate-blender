@@ -203,6 +203,8 @@ mod tests {
     fn backend_defaults_to_approximate() {
         assert_eq!(Backend::default(), Backend::Approximate);
     }
+    // Only meaningful in a build that has the Eigen headers.
+    #[cfg(not(no_eigen))]
     #[test]
     fn eigen_reconstructs_the_input() {
         let a = vec![
@@ -220,6 +222,8 @@ mod tests {
             }
         }
     }
+    // Only meaningful in a build that has the Eigen headers.
+    #[cfg(not(no_eigen))]
     #[test]
     fn eigen_orders_singular_values_descending() {
         let a = vec![[0.3, -1.2, 0.7], [2.0, 0.1, -0.4], [-0.6, 0.9, 1.5]];

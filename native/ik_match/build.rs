@@ -12,14 +12,13 @@ fn main() {
     let eigen = std::env::var("SUB_IK_EIGEN_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("vendor/eigen"));
+    // The Eigen backend is an opt-in comparison control, not a requirement.
+    // Without headers the crate still builds and math::Backend::Eigen panics
+    // with an explanation, rather than making the whole crate unbuildable.
+    println!("cargo:rustc-check-cfg=cfg(no_eigen)");
     if !eigen.join("Eigen/SVD").exists() {
-        // Without Eigen the crate still builds; math::Backend::Eigen then
-        // fails to link only if something calls it, so make that loud here
-        // instead of producing a mysterious linker error.
-        panic!(
-            "Eigen headers not found at {}. Set SUB_IK_EIGEN_DIR to the directory containing the Eigen folder.",
-            eigen.display()
-        );
+        println!("cargo:rustc-cfg=no_eigen");
+        return;
     }
     let mut build = cc::Build::new();
     build

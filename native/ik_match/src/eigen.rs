@@ -2,8 +2,17 @@
 //! Bridge to Blender's own Eigen::JacobiSVD, compiled from Eigen's headers.
 use crate::math::{M, V};
 
+#[cfg(not(no_eigen))]
 extern "C" {
     fn sub_ik_eigen_svd(jacobian: *const f64, ndof: usize, u: *mut f64, w: *mut f64, v: *mut f64);
+}
+
+/// Built without Eigen headers. Selecting this backend is a configuration
+/// error rather than a fallback: silently using the approximate solver under
+/// the name "eigen" would invalidate any comparison made against it.
+#[cfg(no_eigen)]
+pub fn eigen_svd(_columns: &[V]) -> (M, V, Vec<V>) {
+    panic!("this build has no Eigen backend; rebuild with SUB_IK_EIGEN_DIR set")
 }
 
 /// `columns` is ndof rows of 3, that is, the TRANSPOSE of Blender's Jacobian.
@@ -12,6 +21,7 @@ extern "C" {
 /// before handing it over. Feeding Eigen this crate's orientation would swap
 /// the roles of U and V and change the rounding, which is exactly the class of
 /// difference the Eigen backend exists to eliminate.
+#[cfg(not(no_eigen))]
 pub fn eigen_svd(columns: &[V]) -> (M, V, Vec<V>) {
     let ndof = columns.len();
     assert!(ndof > 0, "the Jacobian must have at least one degree of freedom");
