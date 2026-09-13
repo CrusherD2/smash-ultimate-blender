@@ -65,11 +65,43 @@ So the native path's known divergence is confined to float32 noise on
 mathematical zeros in synthetic degenerate poses, and does not appear in
 practice on this fixture.
 
+## Widened evidence: ten rig configurations, both versions
+
+The single-rig result above was extended across the configurations
+`tests/test_ik_match_fast_blender.py` constructs, plus limb subsets, via
+`tests/test_native_ik_residual_matrix_blender.py`.
+
+| Configuration | Limbs | Native solves | Frames worse | Max pose difference |
+|---|---|---:|---:|---:|
+| normal | BOTH | 632 | 0 | 0.0 |
+| normal | ARMS | 318 | 0 | 0.0 |
+| normal | LEGS | 318 | 0 | 0.0 |
+| object_scale (non-uniform scale + rotation) | BOTH | 632 | 0 | 0.0 |
+| parent_scale (animated non-uniform parent scale) | BOTH | 632 | 0 | 0.0 |
+| inheritance (`ALIGNED` scale inheritance) | BOTH | 632 | 0 | 0.0 |
+| stretch (stretch + stretch chain) | BOTH | 632 | 0 | 0.0 |
+| arm_pull (0.7) | BOTH | 632 | 0 | 0.0 |
+| animated_stretch (toggled per frame) | BOTH | 632 | 0 | 0.0 |
+| foot_controls (rotated foot/toe) | BOTH | 632 | 0 | 0.0 |
+
+Identical on **both** Blender 4.5.7 LTS and 5.2.1 LTS: 10 configurations each,
+`native_engaged: 10`, `guards_declined: []`.
+
+Every configuration actually exercised the native solver, including ones that
+could plausibly have been rejected by the guards -- non-uniform object scale,
+animated parent scale, and `ALIGNED` scale inheritance. None of the twenty runs
+is a vacuous pass, and in none of them does the native output differ from
+Blender's by any amount at all.
+
+Reports: `.tests/benchmarks/native_ik/residual_matrix_4.5.json`,
+`residual_matrix_5.2.json`.
+
 ## Scope and limits of this evidence
 
-This is one fixture, 157 frames, two limbs, on two Blender versions. It is strong
-evidence that the native backend is safe for content like this one, and it is not
-a universal proof. The singular suite demonstrates that inputs exist where the
+This is one source rig across ten configurations, 157 frames, on two Blender
+versions. It is strong evidence that the native backend is safe for content like
+this, and it is not a universal proof: every configuration derives from the same
+baseline animation, so the frame content itself is not varied. The singular suite demonstrates that inputs exist where the
 two backends differ, and the existing per-frame guards and fallbacks remain the
 reason that is survivable.
 
