@@ -7,6 +7,8 @@ import math
 import json
 import uuid
 import re
+import sys
+from contextlib import contextmanager, nullcontext
 import bpy
 from mathutils import Matrix, Vector
 
@@ -808,41 +810,79 @@ def clean_animation(obj, limbs='BOTH', tolerance=1e-4):
 def _can_batch_match(obj, jobs):
     """Only combine evaluations when each limb reads independent pose inputs.
 
-    Custom drivers, external constraints, and cross-limb dependencies retain the
-    sequential path. Output constraints have already been muted by match().
+    External constraints, pose-dependent drivers and cross-limb dependencies
+    retain the sequential path. Generated stretch/pull property drivers are
+    safe. Output constraints have already been muted by match().
     """
     if len(jobs) < 2 or obj.parent or obj.constraints:
         return False
+    all_jobs = list(chains(obj, 'BOTH'))
     owners = {}
-    for index, (_, names, target, pole) in enumerate(jobs):
-        for name in (*(PREFIX + n for n in names), target, pole):
+    muted_outputs = {con.as_pointer() for _, con, _ in
+                     (*outputs(obj, 'BOTH'), *toe_outputs(obj, 'BOTH')) if con.mute}
+    # Include unselected limbs: their solvers also evaluate, but do not make
+    # otherwise independent selected chains unsafe to schedule together.
+    for index, (_, names, target, pole) in enumerate(all_jobs):
+        path = limb_path(obj, names)
+        # A mixed/legacy rig may have controls on an unselected limb without
+        # the independent solver generation. Do not upgrade it just to batch.
+        if any(PREFIX + name not in obj.pose.bones for name in path):
+            return False
+        if solve_bone(obj, names).constraints.get('SUB IK Solve') is None:
+            return False
+        controls = foot_controls(names, obj)
+        articulation = toe_articulation(obj, names)
+        owned = [*path, *(PREFIX + n for n in path),
+                 *(PULL_PREFIX + n for n in path), target, pole]
+        if controls:
+            owned.extend(controls)
+        if articulation:
+            owned.extend(articulation)
+        for name in dict.fromkeys(owned):
             if name in owners:
                 return False
             owners[name] = index
+    # Descendants (fingers and toe tips, for example) belong to the same
+    # dependency island. A separately owned descendant is checked below.
+    for bone in obj.pose.bones:
+        if bone.name in owners:
+            continue
+        parent = bone.parent
+        while parent is not None and parent.name not in owners:
+            parent = parent.parent
+        if parent is not None:
+            owners[bone.name] = owners[parent.name]
     props = {'sub_use_ik_arms', 'sub_use_ik_legs',
-             'sub_ik_stretch_arms', 'sub_ik_stretch_legs'}
+             'sub_ik_stretch_arms', 'sub_ik_stretch_legs',
+             'sub_ik_stretch_chain_arms', 'sub_ik_stretch_chain_legs'}
+    props.update(obj.data.bones[pole].path_from_id() + '.' + ARM_PULL_PROPERTY
+                 for kind, _, _, pole in chains(obj, 'ARMS'))
     if obj.data.animation_data and obj.data.animation_data.drivers:
         return False
     if obj.animation_data and obj.animation_data.action:
         from ..anim.fcurve_compat import get_all_action_fcurves
+        pole_paths = {solve_bone(obj, names).constraints['SUB IK Solve'].path_from_id() + '.pole_angle'
+                      for _, names, _, _ in all_jobs}
         for curve in get_all_action_fcurves(obj.animation_data.action, id_type='OBJECT'):
             # Animated constraint settings can change dependencies after the
             # initial check. Our own pole-angle keys only affect their own limb.
             if '.constraints[' in curve.data_path:
-                if not any(
-                    curve.data_path == solve_bone(obj, names).constraints['SUB IK Solve'].path_from_id() + '.pole_angle'
-                    for _, names, _, _ in jobs
-                ):
+                if curve.data_path not in pole_paths:
                     return False
     for curve in obj.animation_data.drivers if obj.animation_data else ():
         driver = curve.driver
-        if not curve.data_path.endswith('.influence') or len(driver.variables) != 1:
+        if not curve.data_path.endswith('.influence') or not driver.variables:
             return False
-        var = driver.variables[0]
-        if (driver.type != 'SCRIPTED' or driver.expression != var.name
-                or var.type != 'SINGLE_PROP' or var.targets[0].id != obj.data
-                or var.targets[0].data_path not in props):
+        # Only pure expressions emitted by our wiring helpers. All inputs are
+        # armature properties, so none can read another chain's evaluated pose.
+        expressions = {driver.variables[0].name, 'stretch * chain',
+                       'stretch * (1-chain)', 'pull * stretch * chain', '0'}
+        if driver.type != 'SCRIPTED' or driver.expression not in expressions:
             return False
+        for var in driver.variables:
+            if (var.type != 'SINGLE_PROP' or var.targets[0].id != obj.data
+                    or var.targets[0].data_path not in props):
+                return False
     for bone in obj.pose.bones:
         owner = owners.get(bone.name)
         if bone.parent and bone.parent.name in owners:
@@ -851,17 +891,24 @@ def _can_batch_match(obj, jobs):
         for con in bone.constraints:
             # Only the output blends stay muted throughout matching. Check all
             # other constraints, including ones animated from muted to active.
-            if (con.mute and con.name == OUTPUT and con.type == 'COPY_TRANSFORMS'
-                    and con.target == obj and con.subtarget == PREFIX + bone.name):
+            if con.as_pointer() in muted_outputs:
                 continue
             if con.type not in {'COPY_TRANSFORMS', 'COPY_LOCATION', 'COPY_ROTATION',
-                                'COPY_SCALE', 'DAMPED_TRACK', 'IK'}:
+                                'COPY_SCALE', 'DAMPED_TRACK', 'IK', 'TRANSFORM'}:
                 return False
             if getattr(con, 'use_bbone_shape', False):
                 return False
-            if con.type == 'IK' and (owner is None or con.chain_count != 2):
+            if con.type == 'IK' and (owner is None or con.chain_count < 1):
                 return False
+            if con.type == 'IK':
+                ancestor = bone
+                for _ in range(con.chain_count):
+                    if ancestor is None or owners.get(ancestor.name) != owner:
+                        return False
+                    ancestor = ancestor.parent
             targets = [(con.target, con.subtarget)]
+            if getattr(con, 'space_object', None) is not None:
+                targets.append((con.space_object, con.space_subtarget))
             if con.type == 'IK':
                 targets.append((con.pole_target, con.pole_subtarget))
             for target, name in targets:
@@ -880,18 +927,66 @@ def _evaluate_match_steps(context, steps, batch):
             for _ in step:
                 context.view_layer.update()
         return
-    pending = steps
-    while pending:
-        waiting = []
-        for step in pending:
-            try:
-                next(step)
-            except StopIteration:
+    from .ik_native import evaluate_steps
+    evaluate_steps(context, steps, batch)
+
+
+@contextmanager
+def _defer_match_meshes(context, obj, enabled):
+    """Defer downstream geometry only after proving the rig is independent.
+
+    hide_viewport removes mesh evaluation from the graph; disabling just the
+    Armature modifier still evaluates the rest of the mesh stack. Never mute
+    shared actions or user visibility animation. The caller restores the frame
+    and evaluates after this scope, including when a solve raises.
+    """
+    from ..anim.fcurve_compat import get_all_action_fcurves
+    hidden = []
+    drivers = []
+    try:
+        for mesh in context.scene.objects if enabled else ():
+            if (mesh.type != 'MESH' or mesh.library is not None
+                    or (mesh.parent != obj and not any(
+                        mod.type == 'ARMATURE' and mod.object == obj for mod in mesh.modifiers))):
                 continue
-            waiting.append(step)
-        if waiting:
-            context.view_layer.update()
-        pending = waiting
+            animation = mesh.animation_data
+            visibility = []
+            if animation:
+                if animation.nla_tracks or (animation.action and any(
+                    fc.data_path == 'hide_viewport'
+                    for fc in get_all_action_fcurves(animation.action, id_type='OBJECT')
+                )):
+                    continue
+                visibility = [fc for fc in animation.drivers if fc.data_path == 'hide_viewport']
+                # Imported Smash visibility is pure armature-property input.
+                # Leave custom visibility drivers entirely alone.
+                safe = True
+                for fc in visibility:
+                    driver = fc.driver
+                    if driver.type != 'SCRIPTED' or len(driver.variables) != 1:
+                        safe = False
+                        break
+                    var = driver.variables[0]
+                    target = var.targets[0]
+                    if (var.type != 'SINGLE_PROP' or target.id != obj.data
+                            or not target.data_path.startswith('sub_anim_properties.vis_track_entries[')
+                            or not target.data_path.endswith('].value')
+                            or driver.expression != '1 - ' + var.name):
+                        safe = False
+                        break
+                if not safe:
+                    continue
+            hidden.append((mesh, mesh.hide_viewport))
+            for fc in visibility:
+                drivers.append((fc, fc.mute))
+                fc.mute = True
+            mesh.hide_viewport = True
+        yield
+    finally:
+        for fc, mute in reversed(drivers):
+            fc.mute = mute
+        for mesh, value in reversed(hidden):
+            mesh.hide_viewport = value
 
 
 # Residual at or below which the solved chain is treated as matching the
@@ -944,17 +1039,17 @@ def _sample_names(obj, jobs, cache):
 
 
 
-def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_pole):
+def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_pole, _native=None):
     """Yield at evaluation barriers; preserve each chain's original solve order.
 
-    Once the chain's pole angle is known, a frame costs a single barrier: the
-    seed, target and pole are placed arithmetically, and the one evaluation is
-    the solve whose residual confirms the cached angle still holds.
+    Seed, target and pole placement use arithmetic where possible. Independent
+    chains share evaluations during the pole search without changing its order
+    or convergence tolerance.
     """
     kind, names, target, pole = job
     path = entry['path']
     solver = [obj.pose.bones[PREFIX + name] for name in path]
-    con = solve_bone(obj, names).constraints['SUB IK Solve']
+    con = solver[-2].constraints['SUB IK Solve']
     endpoints = end_constraints(solver[-1])
 
     # Place the solver seed. Every target matrix is already sampled, so these
@@ -1043,16 +1138,33 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
         endpoint.mute = False
 
     # Repeated candidates do not need another scene evaluation.
+    native = None
+    if _native is not None:
+        # Capture the exact pre-IK pose once, sharing this barrier across limbs.
+        con.mute = True
+        yield
+        native = _native(obj, job, solver[:-1], con, frame)
+        con.mute = False
+    reference_columns = [tuple(matrices[name].col[i].copy() for i in range(4))
+                         for name in path[:-1]]
     errors = {}
     def error(angle):
         if angle in errors:
             return errors[angle]
         con.pole_angle = math.atan2(math.sin(angle), math.cos(angle))
-        yield
-        score = sum(
-            sum((solver[j].matrix.col[i] - matrices[path[j]].col[i]).length_squared
-                for i in range(4))
-            for j in range(len(path) - 1))
+        if native is not None:
+            from .ik_native import Request
+            request = Request(native, con.pole_angle)
+            yield request
+            evaluated = request.matrices
+        else:
+            yield
+            evaluated = [bone.matrix for bone in solver[:-1]]
+        # Read each evaluated RNA matrix once; keep the original arithmetic
+        # and summation order so even tie-breaking in the search stays exact.
+        score = sum(sum((matrix.col[i] - reference[i]).length_squared for i in range(4))
+                    for matrix, reference in
+                    zip(evaluated, reference_columns))
         errors[angle] = score
         return score
     def best(candidates):
@@ -1062,12 +1174,19 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
         return min(scores, key=lambda pair: pair[1])[0]
 
     con.pole_angle = 0.0
-    yield
+    if native is not None:
+        from .ik_native import Request
+        request = Request(native, 0.0)
+        yield request
+        zero = request.matrices
+    else:
+        yield
+        zero = [bone.matrix for bone in solver[:-1]]
     # Angle from the zero-angle solve to the desired bend plane.
     bend_index = path.index(middle)
-    delta = _angle(solver[bend_index].matrix.translation-root, mid-root, axis)
+    delta = _angle(zero[bend_index].translation-root, mid-root, axis)
     if (mid-root-axis*(mid-root).dot(axis)).length < 1e-5:
-        delta = _angle(solver[0].matrix.to_3x3().col[0], matrices[names[0]].to_3x3().col[0], axis)
+        delta = _angle(zero[0].to_3x3().col[0], matrices[names[0]].to_3x3().col[0], axis)
     angle = yield from best([delta, -delta, entry['angle'] or 0.0])
     # Refine both bone orientations, not just the knee position. This handles
     # axial twist and near-straight chains where a position-only pole test has
@@ -1108,6 +1227,8 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
                 b = lo+ratio*(hi-lo)
                 fb = yield from error(b)
         angle = yield from best((angle, a, b))
+    if native is not None:
+        native.close()
     entry['angle'] = angle
 
     con.pole_angle = math.atan2(math.sin(angle), math.cos(angle))
@@ -1124,7 +1245,7 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
                              con.pole_angle, solver[-2].name)
 
 
-def match(context, obj, limbs='BOTH', entire=True, key=True, clean=False, _batch=False):
+def match(context, obj, limbs='BOTH', entire=True, key=True, clean=False, _batch=False, _fast=True):
     from . import create_animation_rig as rig, anim_layers_compat
     from ..anim.fcurve_compat import get_all_action_fcurves
     from ..anim import fcurve_bulk
@@ -1144,24 +1265,43 @@ def match(context, obj, limbs='BOTH', entire=True, key=True, clean=False, _batch
     samples = {}
     previous_pole = {}
     writer = fcurve_bulk.PoseKeyWriter(obj) if key else None
+    native_factory = None
     try:
-        with rig.defer_pose_tool_updates(), rig._disable_autokey(context), anim_layers_compat.bind_driving_action_for_bake(obj, context):
+        from . import ik_match_fast
+        with rig.defer_pose_tool_updates(), rig._disable_autokey(context), anim_layers_compat.bind_driving_action_for_bake(obj, context), ik_match_fast.suspend_viewport_handlers():
             for con, _ in states:
                 con.mute = True
             batch = _batch and _can_batch_match(obj, jobs)
+            if batch:
+                from . import ik_native
+                native_factory = ik_native.get_factory()
             # Capture the entire source before writing any destination channels.
-            for frame in frames:
-                scene.frame_set(frame)
-                context.view_layer.update()
-                samples[frame] = {name: obj.pose.bones[name].matrix.copy() for name in sampled}
-            for frame, matrices in samples.items():
-                scene.frame_set(frame)
-                steps = [
-                    _match_chain_steps(obj, job, matrices, frame, key, writer,
-                                       cache[job[2]], previous_pole)
-                    for job in jobs
-                ]
-                _evaluate_match_steps(context, steps, batch)
+            with _defer_match_meshes(context, obj, batch and len(frames) > 1):
+                fast = (_fast and batch and key and entire and len(frames) >= 16
+                        and bpy.app.version[:2] in {(4, 5), (5, 2)})
+                if fast:
+                    from . import ik_match_fast
+                    samples = ik_match_fast.sample_fk(obj, frames, sampled,
+                        get_all_action_fcurves(obj.animation_data.action, id_type='OBJECT')
+                        if obj.animation_data and obj.animation_data.action else ())
+                if not samples:
+                    samples = {}
+                    for frame in frames:
+                        scene.frame_set(frame)
+                        context.view_layer.update()
+                        samples[frame] = {name: obj.pose.bones[name].matrix.copy() for name in sampled}
+                solve_context = (ik_match_fast.isolated(context, obj, jobs, sys.modules[__name__])
+                                 if fast and ik_match_fast.can_isolate(obj, jobs, sys.modules[__name__])
+                                 else nullcontext((context, obj, scene)))
+                with solve_context as (work_context, work_obj, work_scene):
+                    for frame, matrices in samples.items():
+                        work_scene.frame_set(frame)
+                        steps = [
+                            _match_chain_steps(work_obj, job, matrices, frame, key, writer,
+                                               cache[job[2]], previous_pole, native_factory)
+                            for job in jobs
+                        ]
+                        _evaluate_match_steps(work_context, steps, batch)
             if writer is not None:
                 writer.flush()
             if key and obj.animation_data and obj.animation_data.action:
@@ -1178,6 +1318,8 @@ def match(context, obj, limbs='BOTH', entire=True, key=True, clean=False, _batch
                 from .anim_rig_extras import mark_ik_matched
                 mark_ik_matched(obj, limbs)
     finally:
+        if native_factory is not None:
+            native_factory.close()
         for con, mute in states:
             con.mute = mute
         rig.pause_ik_fk_mute_sync(paused)
