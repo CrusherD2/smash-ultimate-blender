@@ -20,7 +20,7 @@ class Solver:
             path = Path(__file__).resolve().parents[2] / 'native/bin/sub_ik_match_native.dll'
             library = ctypes.CDLL(str(path))
             library.sub_ik_abi_version.restype = ctypes.c_uint32
-            if library.sub_ik_abi_version() != 2:
+            if library.sub_ik_abi_version() != 3:
                 raise RuntimeError('Incompatible native IK library')
             library.sub_ik_create.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
             library.sub_ik_create.restype = ctypes.c_void_p
@@ -35,6 +35,11 @@ class Solver:
             library.sub_ik_solve_many.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
                                               ctypes.POINTER(ctypes.c_float), ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(ctypes.c_uint8)]
             library.sub_ik_solve_many.restype = ctypes.c_bool
+            library.sub_ik_search.argtypes = [
+                ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
+                ctypes.POINTER(ctypes.c_double), ctypes.c_double, ctypes.c_size_t,
+                ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_float), ctypes.c_size_t]
+            library.sub_ik_search.restype = ctypes.c_int
             _dll = library
         rows = lambda matrix: [list(row) for row in matrix]
         case = dict(parent=rows(bones[0].parent.matrix) if bones[0].parent else rows(Matrix.Identity(4)),
@@ -63,6 +68,27 @@ class Solver:
             return None
         return [Matrix([self.buffer[offset+r*4:offset+r*4+4] for r in range(4)])
                 for offset in range(0,len(self.buffer),16)]
+
+    def search(self, reference_columns, seeds, tolerance, refine_steps):
+        """Run the whole pole search natively. None means fall back to Blender.
+
+        reference_columns is one tuple of four columns per solved bone, in the
+        same order the per-candidate path scores them.
+        """
+        flat = [value for columns in reference_columns
+                for column in columns for value in column]
+        reference = (ctypes.c_float * len(flat))(*flat)
+        seed_buffer = (ctypes.c_double * 3)(*seeds)
+        angle = ctypes.c_double()
+        status = _dll.sub_ik_search(self.handle, reference, len(flat), seed_buffer,
+                                    tolerance, refine_steps, ctypes.byref(angle),
+                                    self.buffer, len(self.buffer))
+        if status != 1:
+            self.fallback = True
+            return None
+        matrices = [Matrix([self.buffer[offset+r*4:offset+r*4+4] for r in range(4)])
+                    for offset in range(0, len(self.buffer), 16)]
+        return angle.value, matrices
 
     def close(self):
         if self.handle:
