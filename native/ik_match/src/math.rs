@@ -204,6 +204,29 @@ mod tests {
         assert_eq!(Backend::default(), Backend::Approximate);
     }
     #[test]
+    fn eigen_reconstructs_the_input() {
+        let a = vec![
+            [0.3, -1.2, 0.7],
+            [2.0, 0.1, -0.4],
+            [-0.6, 0.9, 1.5],
+            [0.05, 0.02, -0.01],
+        ];
+        let (u, w, v) = svd(Backend::Eigen, &a);
+        // A^T == U * diag(w) * V^T, so every input row is recoverable.
+        for (row, vrow) in a.iter().zip(v.iter()) {
+            for i in 0..3 {
+                let rebuilt: f64 = (0..3).map(|k| u[i][k] * w[k] * vrow[k]).sum();
+                assert!((rebuilt - row[i]).abs() < 1e-12, "{} vs {}", rebuilt, row[i]);
+            }
+        }
+    }
+    #[test]
+    fn eigen_orders_singular_values_descending() {
+        let a = vec![[0.3, -1.2, 0.7], [2.0, 0.1, -0.4], [-0.6, 0.9, 1.5]];
+        let (_, w, _) = svd(Backend::Eigen, &a);
+        assert!(w[0] >= w[1] && w[1] >= w[2], "{:?}", w);
+    }
+    #[test]
     fn rotation_preserves_length() {
         let r = rodrigues([0.3, -0.4, 0.1]);
         assert!((norm(mv(r, [1., 2., 3.])) - 14f64.sqrt()).abs() < 1e-14);

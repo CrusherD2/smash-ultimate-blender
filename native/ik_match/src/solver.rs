@@ -88,7 +88,33 @@ fn pole_matrix(segments: &[Segment], goal: V, pole: V, angle: f64) -> M {
     mm(transpose(polemat), mat)
 }
 
-fn sdls(backend: Backend, j: &[V], beta: V) -> Vec<f64> {
+/// Appends every real (J, beta) the solver sees to SUB_IK_SVD_CAPTURE.
+/// Opened once: the solver calls this hundreds of thousands of times.
+fn capture(j: &[V], beta: V) {
+    use std::io::Write;
+    use std::sync::{Mutex, OnceLock};
+    static FILE: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
+    let file = FILE.get_or_init(|| {
+        let path = std::env::var("SUB_IK_SVD_CAPTURE").ok()?;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .ok()
+            .map(Mutex::new)
+    });
+    if let Some(file) = file {
+        if let Ok(mut file) = file.lock() {
+            let _ = writeln!(file, "{}", serde_json::json!({"j": j, "beta": beta}));
+        }
+    }
+}
+
+/// Public so the differential harness can compare the quantity that actually
+/// feeds the solve, rather than U and V, which are only defined up to a
+/// simultaneous sign flip of paired columns.
+pub fn sdls(backend: Backend, j: &[V], beta: V) -> Vec<f64> {
+    capture(j, beta);
     let (u, w, v) = svd(backend, j);
     let norms: Vec<_> = j.iter().map(|&r| norm(r)).collect();
     let mut theta = vec![0.; j.len()];
