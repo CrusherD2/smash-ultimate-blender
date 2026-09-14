@@ -88,11 +88,23 @@ assert timed['counts']['search'] > 0, timed
 assert timed['stages']['search'] > 0.0, timed
 assert timed['stages']['sample'] >= 0.0, timed
 
-# Off by default: no stage is recorded at all, but reasons still are.
+# Off by default: only *timings* are gated on enabled(). Counts and reasons
+# are always recorded, because they are cheap and diagnostically valuable --
+# the always-on 'candidates' counter is what let the native task derive the
+# fallback rate after the fact (see
+# docs/benchmarks/native-default-2026-09-13.md). Do not restore a "records
+# nothing when off" assertion here; that was the old invariant and it no
+# longer holds. `add()` writes into `stages` even for a count-only entry
+# (always with seconds=0.0, since there is no separate counts-only table),
+# so "no timing leaked" means no *timed* stage name appears there and no
+# `stages` value is non-zero -- not that `stages` is empty. Assert that,
+# plus the sharper positive: `candidates` really is unconditional.
 obj = reload()
 ik.match(bpy.context, obj, _batch=True)
 untimed = diag.record()
-assert untimed['stages'] == {} and untimed['counts'] == {}, untimed
+assert not set(untimed['stages']) & {'sample', 'isolate', 'place', 'search', 'write'}, untimed
+assert all(seconds == 0.0 for seconds in untimed['stages'].values()), untimed
+assert untimed['counts'].get('candidates', 0) > 0, untimed
 assert untimed['reasons'].get('sample') == 'ok', untimed
 
 print('IK_DIAG_REASONS_OK')
