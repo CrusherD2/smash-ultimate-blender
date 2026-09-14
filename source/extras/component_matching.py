@@ -12,10 +12,21 @@ import numpy as np
 from mathutils import Matrix, Vector, Euler
 
 
+FINGER_MATCH_ID = 'f'*32
+
+
+def _prefix(uid):
+    if uid == FINGER_MATCH_ID:
+        from .finger_sliders import FINGER_CON_PREFIX
+        return FINGER_CON_PREFIX
+    return 'SUB Component '+uid
+
+
 def _owned_controls(obj, components):
     ids = {c.uid for c in components}
     hidden_orbits = {c.uid for c in components if c.kind == 'EYES' and not c.show_orbit}
-    return [p.name for p in obj.pose.bones
+    explicit = [name for c in components for name in getattr(c,'controls',[])]
+    return explicit + [p.name for p in obj.pose.bones
             if p.bone.get('sub_component_control')
             and (p.bone.get('sub_face_owner') in ids or p.bone.get('sub_component_id') in ids)
             and not p.bone.get('sub_face_helper')
@@ -59,7 +70,7 @@ def _helpers(context, obj, owners):
             hidden.assign(pb.bone)
         pb = obj.pose.bones[name]
         for label, target in zip(('Input', 'Match', 'Match2'), names):
-            con_name = 'SUB Component ' + owners[name] + ' ' + label
+            con_name = _prefix(owners[name]) + ' ' + label
             con = pb.constraints.get(con_name) or pb.constraints.new('COPY_TRANSFORMS')
             con.name = con_name
             con.target, con.subtarget = obj, target
@@ -161,13 +172,24 @@ def _fit(context, obj, control_names, targets):
     evaluate(values)
 
 
-def match_animation(context, obj, start, end):
+def match_animation(context, obj, start, end, include_fingers=False, match_ik=True):
     from .component_workflow import definitions
     from . import ik_channels, anim_layers_compat
-    from .create_animation_rig import _activate_armature, _disable_autokey, defer_pose_tool_updates
+    from .create_animation_rig import _activate_armature, _disable_autokey, defer_pose_tool_updates, ProgressCursor
     from ..anim.fcurve_bulk import PoseKeyWriter
     from ..anim.fcurve_compat import get_all_action_fcurves
     components = definitions(obj)
+    if include_fingers:
+        from . import finger_sliders as fingers
+        from types import SimpleNamespace
+        pairs=list(fingers._iter_finger_slider_constraints(obj))
+        names={pb.name for pb,con in pairs}
+        control_names={con.subtarget for pb,con in pairs
+                       if con.type == 'TRANSFORM' and con.target == obj}
+        if names and control_names:
+            components.append(SimpleNamespace(uid=FINGER_MATCH_ID, kind='FINGERS',
+                bones=[SimpleNamespace(bone=n) for n in sorted(names)],
+                controls=sorted(control_names)))
     if not components:
         raise ValueError('Build custom components first')
     if anim_layers_compat.viewport_driving_action(obj)[0] is None:
@@ -182,7 +204,7 @@ def match_animation(context, obj, start, end):
     scene, frame = context.scene, context.scene.frame_current
     _activate_armature(context,obj)
     muted = [(con,con.mute) for pb in obj.pose.bones for con in pb.constraints
-             if any(con.name.startswith('SUB Component '+c.uid) for c in non_ik)]
+             if any(con.name.startswith(_prefix(c.uid)) for c in non_ik)]
     residual_frames=0
     bone_names=set(obj.data.bones.keys())
     constraints={p.name:{con.as_pointer() for con in p.constraints} for p in obj.pose.bones}
@@ -192,7 +214,7 @@ def match_animation(context, obj, start, end):
     backup=source_action.copy()
     success=False
     try:
-        with _disable_autokey(context), defer_pose_tool_updates(), anim_layers_compat.anim_layers_paused(), anim_layers_compat.bind_driving_action_for_bake(obj,context):
+        with ProgressCursor(context) as progress, _disable_autokey(context), defer_pose_tool_updates(), anim_layers_compat.anim_layers_paused(), anim_layers_compat.bind_driving_action_for_bake(obj,context):
             samples={}
             for con,_ in muted:
                 con.mute=True
@@ -201,11 +223,12 @@ def match_animation(context, obj, start, end):
                     scene.frame_set(f)
                     ev=_update(context,obj)
                     samples[f]={n:ev.pose.bones[n].matrix.copy() for n in owners}
+                    progress.update(.15*(f-start+1)/max(1,end-start+1))
             finally:
                 for con,state in muted:
                     con.mute=state
             targets={r['target'] for r in json.loads(obj.get('sub_custom_ik_chains','[]')) if r.get('component_id') in {c.uid for c in components if c.kind=='IK'}}
-            if targets:
+            if targets and match_ik:
                 old_range=(scene.frame_start,scene.frame_end)
                 try:
                     scene.frame_start,scene.frame_end=start,end
@@ -235,6 +258,7 @@ def match_animation(context, obj, start, end):
                 if error>2e-4:
                     raise ValueError(f'Matching cannot preserve the pose at frame {f} (error {error:.5g})')
                 residual_frames += int(extra)
+                progress.update(.2+.75*(f-start+1)/max(1,end-start+1))
                 for name in controls+[n for pair in helpers.values() for n in pair]:
                     writer.stash_pose_bone(obj.pose.bones[name],f)
             # Existing control modifiers must not be applied again to sampled keys.
@@ -245,6 +269,7 @@ def match_animation(context, obj, start, end):
                     for mod in list(fc.modifiers):
                         fc.modifiers.remove(mod)
             writer.flush()
+            progress.update(1)
             success=True
     except Exception:
         # A failed fit must not leave an unkeyed input override on the skeleton.

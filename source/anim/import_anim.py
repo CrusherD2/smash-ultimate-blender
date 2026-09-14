@@ -1435,7 +1435,17 @@ def _basis_constants(animated) -> dict | None:
     return constants
 
 
-def import_model_anim(context: bpy.types.Context, filepath: str,
+def import_model_anim(context, filepath, include_transform_track, include_material_track,
+                      include_visibility_track, first_blender_frame, armature_object=None):
+    from ..extras.rig_import_match import import_with_matching
+    return import_with_matching(
+        _import_model_anim, context, filepath, include_transform_track,
+        include_material_track, include_visibility_track, first_blender_frame,
+        armature_object,
+    )
+
+
+def _import_model_anim(context: bpy.types.Context, filepath: str,
                       include_transform_track, include_material_track,
                       include_visibility_track, first_blender_frame,
                       armature_object: bpy.types.Object | None = None):

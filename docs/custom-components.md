@@ -159,3 +159,29 @@ editor and choose **Controls ? Build & Continue**. This recalibrates the old
 output helpers while keeping the controller keys. The eye rotation-controller
 checkbox hides or shows the handle immediately; it is temporarily visible when
 authoring an orbit limit.
+
+
+## Hide and match controlled bones
+
+In a component's **Controls** step, enable **Hide Controlled Bones** to hide the
+originals while leaving the handles visible. This setting is saved in presets.
+Turning it off or removing the component restores the previous visibility;
+facial pose authoring temporarily reveals the bones it needs.
+
+**Rig Extras > Custom Components > Match Animation** transfers the current
+action over the chosen frame range. It keys custom controls, including custom
+IK, while keeping the original bone keys. Hidden matching offsets preserve
+motion that a slider or captured expression cannot represent. These offsets
+are included automatically in animation export and Bake & Remove.
+
+Importing a transform animation onto an existing **Animation Rig** automatically
+matches its IK, enabled finger sliders, and custom components. This uses the
+same import path for single and batch imports. Standalone IK Tools and
+material-only imports do not trigger this automatic matching. Long animations
+with many facial controls can take longer while fitting the controls; progress
+is shown in Blender's status bar.
+
+Tests: `test_component_matching_blender.py`,
+`test_component_face_matching_blender.py`, and
+`test_rig_import_matching_blender.py` cover source-track independence, rematching,
+visibility, recovery after a failed fit, automatic import, export and baking.

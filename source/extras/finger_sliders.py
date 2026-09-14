@@ -1125,6 +1125,13 @@ def remove_finger_sliders(context, armature_obj):
     """Remove slider bones and the finger rotation drivers they feed."""
     if armature_obj is None or armature_obj.type != "ARMATURE":
         return 0
+    from .component_matching import FINGER_MATCH_ID
+    helpers = {p.name for p in armature_obj.pose.bones
+               if p.bone.get('sub_face_owner') == FINGER_MATCH_ID}
+    if helpers:
+        from .face_components import remove_generated
+        _clear_finger_slider_constraints(armature_obj)
+        remove_generated(context, armature_obj, helpers)
     removed_drivers = 0
     for suffix in list(_suffix_groups(armature_obj).keys()):
         removed_drivers += _clear_finger_drivers(armature_obj, suffix)
