@@ -3,7 +3,17 @@
 One row per (source, scenario, limbs): both candidate counts, the full gate
 verdict, and both wall times. Not a pass/fail driver -- whether the adaptive
 rule is safe is the question being measured, so a failing row is recorded, not
-raised. Task 4 acts on the table.
+raised. Task 4 acted on the table this script produced.
+
+RETAINED AS HISTORICAL EVIDENCE ONLY. Task 4 removed the adaptive stopping
+rule from ik_channels.py after this script's corpus run rejected it (see
+docs/benchmarks/adaptive-search-2026-09-13.md). This script is kept to show
+how docs/benchmarks/adaptive-search-2026-09-13.json was produced, not to be
+re-run: with the rule gone, both variants below are the same code path, so a
+fresh run would silently overwrite that JSON with vacuous all-zero data
+(engaged=False and candidates_baseline == candidates_adaptive on every row)
+instead of reproducing the historical measurement. The guard below fails
+fast rather than let that happen quietly.
 """
 from pathlib import Path
 import importlib, json, sys, time
@@ -14,6 +24,20 @@ sys.path.insert(0, str(Path(__file__).parent))
 gate = importlib.import_module('ik_match_gate')
 gate.bind(MODULE)
 corpus = importlib.import_module('ik_match_corpus')
+
+ik = importlib.import_module(MODULE + '.source.extras.ik_channels')
+if not hasattr(ik, '_adaptive_enabled'):
+    raise SystemExit(
+        "Refusing to run: the adaptive stopping rule this script measures was "
+        "removed from source/extras/ik_channels.py (Task 4, corpus rejected "
+        "it -- see docs/benchmarks/adaptive-search-2026-09-13.md). This "
+        "script is retained only to document how the existing "
+        "docs/benchmarks/adaptive-search-2026-09-13.json was produced. "
+        "Running it now would not reproduce that measurement -- with the "
+        "rule gone, the 'adaptive' variant is identical to the 'blender' "
+        "variant, so every row would show zero early stops and identical "
+        "candidate counts -- and it would silently overwrite the recorded "
+        "evidence with that vacuous result.")
 
 sources = corpus.available()
 assert sources, 'corpus is empty; no fixtures resolved locally'

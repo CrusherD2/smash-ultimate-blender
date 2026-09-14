@@ -182,9 +182,10 @@ building and re-measuring against a ceiling this low.
 both point at the native backend as the place a stopping rule could work, because
 native solves are stateless (no warm-start, so a different search path should not
 imply a different converged answer). But this is not a re-run of the existing
-change under a flag: under `SUB_NATIVE_IK=experimental`, `native.search(...)`
-(`source/extras/ik_channels.py`, around line 1266) bypasses the Python refinement
-loop — the `for _ in range(_POLE_REFINE_STEPS)` block this task modified — entirely.
+change under a flag: under `SUB_NATIVE_IK=experimental`, the `native.search(...)`
+call in `_match_chain_steps` (`source/extras/ik_channels.py`) bypasses the Python
+refinement loop — the `for _ in range(_POLE_REFINE_STEPS)` block this task
+modified — entirely.
 The equivalent stopping rule for the native path would have to be implemented in
 Rust, inside `native/ik_match/src/`, with its own correctness work and its own
 benchmark. It is a real candidate for a future task, but it is new work with its
