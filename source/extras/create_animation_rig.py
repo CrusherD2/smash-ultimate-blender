@@ -3088,9 +3088,6 @@ class SUB_OP_create_animation_rig(Operator):
             if self.setup_custom_components:
                 from .component_workflow import build_preset
                 build_preset(context, armature_obj, self.custom_component_preset)
-            if slider_count:
-                from .anim_rig_extras import match_existing_finger_animation
-                match_existing_finger_animation(context, armature_obj)
             cleaned = 0
             if ssp is not None and ssp.clean_keyframes_after_rig:
                 from .finger_sliders import is_finger_match_fcurve_path
@@ -3102,6 +3099,9 @@ class SUB_OP_create_animation_rig(Operator):
                 cleaned += clean_redundant_keys_on_id(armature_obj.data)
             progress.update(1.0)
 
+        if slider_count:
+            from .anim_rig_extras import match_existing_finger_animation
+            match_existing_finger_animation(context, armature_obj)
         extra = " IK controls added." if ik_created else ""
         if slider_count:
             extra += f" {slider_count} finger sliders on the hand boxes."

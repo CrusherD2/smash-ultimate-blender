@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 fixture=Path(__file__).with_name('test_rig_import_matching_blender.py')
 exec(compile(fixture.read_text(encoding='utf-8-sig').split('with tempfile.TemporaryDirectory()')[0],str(fixture),'exec'))
 expected=snapshot()
@@ -26,5 +26,5 @@ for f in range(1,4):
 assert bpy.ops.sub.anim_rig_add_fingers()=={'FINISHED'}
 check()
 assert bpy.ops.sub.anim_rig_match_fingers.poll()
-print('RIG CREATION AND ADD FINGERS AUTOMATIC MATCH PASSED')
+print('RIG CREATION AND EXPLICIT FINGER MATCH PASSED')
 

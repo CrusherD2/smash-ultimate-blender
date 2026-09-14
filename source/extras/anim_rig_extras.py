@@ -437,7 +437,7 @@ class SUB_OP_anim_rig_add_fingers(Operator):
         count = finger_sliders.build_finger_sliders(context, arm)
         if count:
             match_existing_finger_animation(context, arm)
-        self.report({"INFO"}, f"Added {count} finger controls.")
+        self.report({"INFO"}, f"Added {count} finger controls. Animation matched.")
         return {"FINISHED"}
 
 
