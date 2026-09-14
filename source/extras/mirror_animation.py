@@ -311,7 +311,7 @@ def mirror_action_smash_y(
 ):
     """
     Y-axis Smash Ultimate mirror: same Studio SB flip + importer as Idle Pose
-    Library Mirrored. Prefers the Smash TRS cache written on nuanmb import.
+    Library Mirrored. Samples the current evaluated animation, including edits.
     """
     if not context or not context.active_object or context.active_object.type != 'ARMATURE':
         print("Smash Y mirror requires an active armature")
@@ -340,7 +340,6 @@ def mirror_action_smash_y(
         excluded_bones -= source_bones
 
     scene = context.scene
-    smash_cache = load_smash_pose_cache(act)
     bone_filter = source_bones
     if bone_filter is None:
         animated_bones = _action_bone_names(act)
@@ -369,17 +368,7 @@ def mirror_action_smash_y(
             scene.frame_set(frame)
             context.view_layer.update()
             live = smash_pose_data_from_armature(armature, bone_filter=bone_filter)
-            if in_place:
-                pose_data = live
-            else:
-                cached = smash_pose_data_from_cache(smash_cache, frame) if smash_cache else None
-                if cached is None:
-                    cached = _idle_library_pose_data(context, act)
-                # Imported caches contain only original nuanmb tracks. Keep live
-                # custom tracks added afterwards instead of silently dropping them.
-                pose_data = dict(live)
-                pose_data.update({name: data for name, data in (cached or {}).items()
-                                  if bone_filter is None or name in bone_filter})
+            pose_data = live
             custom_pose = snapshot_custom_pose(armature, custom_names, custom_map, in_place)
             custom_pose = {name: matrix for name, matrix in custom_pose.items()
                            if name not in excluded_bones}

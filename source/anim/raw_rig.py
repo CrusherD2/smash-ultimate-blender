@@ -44,7 +44,9 @@ def scalar_rna(owner):
 
 
 def set_rna(owner, values):
+    if "rotation_mode" in values: owner.rotation_mode=values["rotation_mode"]
     for key,value in values.items():
+        if key=="rotation_mode": continue
         prop=owner.bl_rna.properties.get(key)
         if prop is None or prop.is_readonly or prop.type not in {'BOOLEAN','INT','FLOAT','STRING','ENUM'}:
             continue

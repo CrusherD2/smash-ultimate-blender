@@ -367,7 +367,7 @@ def export_raw_animation(
         return False
 
     # Prefer the channelbag actually driving this armature (Blender 5 slots).
-    source_fcurves = get_fcurves_for_assigned_slot(arma)
+    source_fcurves = get_fcurves_for_assigned_slot(arma) if arma.animation_data and arma.animation_data.action == action else []
     if not source_fcurves:
         source_fcurves = get_all_action_fcurves(action, id_type="OBJECT")
 
@@ -589,7 +589,7 @@ def import_raw_animation(
     if snapshot: raw_rig.validate(snapshot)
     fcurve_entries = data.get("fcurves", [])
     visibility_tracks = data.get("visibility_tracks", [])
-    if not fcurve_entries and not visibility_tracks:
+    if not fcurve_entries and not visibility_tracks and not data_entries:
         if operator is not None:
             operator.report({"ERROR"}, "Raw animation file contains no keyframe data.")
         return False

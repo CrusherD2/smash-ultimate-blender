@@ -172,13 +172,13 @@ def _fit(context, obj, control_names, targets):
     evaluate(values)
 
 
-def match_animation(context, obj, start, end, include_fingers=False, match_ik=True):
+def match_animation(context, obj, start, end, include_fingers=False, match_ik=True, fingers_only=False):
     from .component_workflow import definitions
     from . import ik_channels, anim_layers_compat
     from .create_animation_rig import _activate_armature, _disable_autokey, defer_pose_tool_updates, ProgressCursor
     from ..anim.fcurve_bulk import PoseKeyWriter
     from ..anim.fcurve_compat import get_all_action_fcurves
-    components = definitions(obj)
+    components = [] if fingers_only else definitions(obj)
     if include_fingers:
         from . import finger_sliders as fingers
         from types import SimpleNamespace
@@ -198,7 +198,8 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
     all_owners = {b.bone:c.uid for c in non_ik for b in c.bones}
     isolated_ids={c.uid for c in non_ik if c.kind=='ISOLATED'}
     isolated={n:uid for n,uid in all_owners.items() if uid in isolated_ids}
-    owners={n:uid for n,uid in all_owners.items() if uid not in isolated_ids}
+    finger_names={n for n,uid in all_owners.items() if uid==FINGER_MATCH_ID}
+    owners={n:uid for n,uid in all_owners.items() if uid not in isolated_ids and uid!=FINGER_MATCH_ID}
     controls = _owned_controls(obj,non_ik)
     if owners and not controls:
         raise ValueError('Rebuild the custom components before matching')
@@ -247,6 +248,11 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
                         con.mute=True
                         obsolete.add(con.as_pointer())
             fit_controls=[n for n in controls if obj.data.bones[n].get('sub_face_owner') not in isolated_ids]
+            for n in finger_names:
+                for con in obj.pose.bones[n].constraints:
+                    if con.name in {_prefix(FINGER_MATCH_ID)+' '+label for label in ('Input','Match','Match2')}:
+                        con.mute=True
+                        obsolete.add(con.as_pointer())
             helpers=_helpers(context,obj,owners)
             writer=PoseKeyWriter(obj)
             # Parent-first offsets: child targets must see the corrected parent.
@@ -256,7 +262,26 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
                 for pair in helpers.values():
                     for name in pair:
                         obj.pose.bones[name].matrix_basis=Matrix.Identity(4)
-                _fit(context,obj,fit_controls,{n:poses[n] for n in owners})
+                for n in finger_names:
+                    obj.pose.bones[n].matrix_basis=Matrix.Identity(4)
+                _fit(context,obj,fit_controls,{n:poses[n] for n in set(owners)|finger_names})
+                # Sliders supply the shared curl; editable circles retain each
+                # joint's remaining motion, including translation and scale.
+                for n in sorted(finger_names,key=lambda n:len(obj.pose.bones[n].parent_recursive)):
+                    pb=obj.pose.bones[n]
+                    locks=(tuple(pb.lock_location),tuple(pb.lock_rotation),tuple(pb.lock_scale))
+                    try:
+                        pb.lock_location=pb.lock_rotation=pb.lock_scale=(False,False,False)
+                        pb.matrix_basis=Matrix.Identity(4)
+                        ev=_update(context,obj)
+                        parent=ev.pose.bones[pb.parent.name].matrix if pb.parent else Matrix.Identity(4)
+                        rest_parent=pb.parent.bone.matrix_local if pb.parent else Matrix.Identity(4)
+                        def local(m):
+                            return pb.bone.convert_local_to_pose(m,pb.bone.matrix_local,parent_matrix=parent,parent_matrix_local=rest_parent,invert=True)
+                        pb.matrix_basis=local(poses[n]) @ local(ev.pose.bones[n].matrix).inverted_safe()
+                        _fit(context,obj,[n],{n:poses[n]})
+                    finally:
+                        pb.lock_location,pb.lock_rotation,pb.lock_scale=locks
                 for n,uid in isolated.items():
                     con=obj.pose.bones[n].constraints.get(_prefix(uid))
                     if not con or con.type!='COPY_TRANSFORMS':
@@ -285,13 +310,13 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
                 ev=_update(context,obj)
                 error=max((abs(ev.pose.bones[n].matrix[i][j]-poses[n][i][j]) for n in all_owners for i in range(4) for j in range(4)),default=0)
                 if error>2e-4:
-                    raise ValueError(f'Matching cannot preserve the pose at frame {f} (error {error:.5g})')
+                    raise ValueError(f'Matching cannot preserve the pose at frame {f} (error {error:.5g}, bone {max(all_owners,key=lambda n:max(abs(ev.pose.bones[n].matrix[i][j]-poses[n][i][j]) for i in range(4) for j in range(4)))})')
                 residual_frames += int(extra)
                 progress.update(.2+.75*(f-start+1)/max(1,end-start+1))
-                for name in controls+[n for pair in helpers.values() for n in pair]:
+                for name in controls+sorted(finger_names)+[n for pair in helpers.values() for n in pair]:
                     writer.stash_pose_bone(obj.pose.bones[name],f)
             # Existing control modifiers must not be applied again to sampled keys.
-            paths={obj.pose.bones[n].path_from_id()+'.' for n in controls+[n for pair in helpers.values() for n in pair]}
+            paths={obj.pose.bones[n].path_from_id()+'.' for n in controls+sorted(finger_names)+[n for pair in helpers.values() for n in pair]}
             action=obj.animation_data.action
             for fc in get_all_action_fcurves(action,id_type='OBJECT'):
                 if any(fc.data_path.startswith(path) for path in paths):
@@ -357,7 +382,7 @@ class SUB_OP_components_match(bpy.types.Operator):
             self.report({'ERROR'},'Select a rig and a valid frame range')
             return {'CANCELLED'}
         try:
-            count,extra=match_animation(context,obj,self.start,self.end)
+            count,extra=match_animation(context,obj,self.start,self.end,include_fingers=True)
         except (ValueError,RuntimeError) as exc:
             self.report({'ERROR'},str(exc))
             return {'CANCELLED'}

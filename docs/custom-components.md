@@ -185,3 +185,19 @@ Tests: `test_component_matching_blender.py`,
 `test_component_face_matching_blender.py`, and
 `test_rig_import_matching_blender.py` cover source-track independence, rematching,
 visibility, recovery after a failed fit, automatic import, export and baking.
+
+
+Isolated controls match the original bone transform directly. Rebuild existing
+isolated components to add the optional Heel and Toe rotation handles, then
+match the source action again. Their pivots follow the isolated controller.
+
+Animation import matches finger sliders for shared motion and finger circles for
+individual joint motion. Both remain active regardless of which controls are
+shown. Match Custom Components to Animation also includes finger controls.
+
+Enable **Also Export Raw Animation** in Animation Exporter to write an unbaked
+`.rawanim` with single or batch regular exports. Fighter motion folders use the
+existing sibling `rawanims` folder convention. New raw files include controller
+bones, widgets, constraints, drivers, rig settings, both finger control modes,
+and keyframe handle types. Import restores that setup without FK-to-IK matching.
+Older raw files cannot recover rig settings that were never stored in them.

@@ -1,5 +1,6 @@
 import bpy
 import json
+import re
 from pathlib import Path
 from bpy.types import Operator
 from bpy.props import StringProperty
@@ -86,6 +87,8 @@ def apply_pose_with_options(context, pose_data_str, include_trans=True, mirrored
         bone_to_node_data = {}
         for bone in armature.pose.bones:
             if bone.name in pose_data:
+                if getattr(context.scene.sub_scene_properties, "idle_pose_exclude_fixed_bones", True) and re.fullmatch(r"(?:LegC|ClavicleC)[LR]?(?:\.\d+)?", bone.name, re.IGNORECASE):
+                    continue
                 # Skip Trans bone if include_trans is False
                 if not include_trans and bone.name == "Trans":
                     continue

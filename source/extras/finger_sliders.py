@@ -772,7 +772,9 @@ def _drive_fingers(armature_obj, side, suffix, half_travel, digits=""):
                     pose_bone["sub_finger_curl_cascade_weight"] = weight
                     idx = cascade_index[digit]
                     rev = cascade_count - 1 - idx
-                    rmin, rmax = _cascade_rot_range(weight)
+                    # Zero travel is neutral on both signed axes, regardless
+                    # of the hand's local bend-axis sign.
+                    rmin, rmax = 0.0, weight
                     pos_min, pos_max = _cascade_window(idx, cascade_count, half, True)
                     neg_min, neg_max = _cascade_window(rev, cascade_count, half, False)
                     _ensure_finger_constraint(
@@ -800,8 +802,8 @@ def _drive_fingers(armature_obj, side, suffix, half_travel, digits=""):
                         from_axis=0,
                         from_min=neg_min,
                         from_max=neg_max,
-                        rot_min=rmin,
-                        rot_max=rmax,
+                        rot_min=weight,
+                        rot_max=0.0,
                     )
                 if offset_name in armature_obj.pose.bones:
                     _ensure_finger_constraint(
@@ -1226,7 +1228,8 @@ def _constraint_amount(slider, constraint, half):
     # Cascade: one-sided window mapped 0→1
     if "Cascade" in (constraint.name or ""):
         t = (loc - from_min) / span
-        return max(0.0, min(1.0, t))
+        t = max(0.0, min(1.0, t))
+        return 1.0-t if "Cascade-" in constraint.name else t
     # Symmetric controls centered on travel half
     if half > 1e-8 and abs(from_min + half) < 1e-5 and abs(from_max - half) < 1e-5:
         return max(-1.0, min(1.0, loc / half))

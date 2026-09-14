@@ -38,7 +38,7 @@ def match_imported_animation(context,obj):
     if not any(fc.data_path.startswith('pose.bones[') for fc in get_all_action_fcurves(action,id_type='OBJECT')):
         return
     has_components=component_workflow.has_components(obj)
-    has_fingers=finger_sliders.has_finger_sliders(obj) and finger_sliders.finger_sliders_are_enabled(obj)
+    has_fingers=finger_sliders.has_finger_sliders(obj)
     mode=obj.mode
     try:
         rig._activate_armature(context,obj)

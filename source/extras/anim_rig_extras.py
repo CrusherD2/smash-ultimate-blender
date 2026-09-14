@@ -167,6 +167,9 @@ def draw_anim_rig_extras(layout, context, arm):
     row.label(text="Fingers")
     if has_fingers:
         row.label(text="Added", icon="CHECKMARK")
+        row = box.row(align=True)
+        row.operator("sub.anim_rig_match_fingers", text="Match Animation", icon="CON_ACTION")
+        row = box.row(align=True)
         row.operator("sub.anim_rig_remove_fingers", text="Bake & Remove", icon="ACTION").bake = True
         row.operator("sub.anim_rig_remove_fingers", text="", icon="X").bake = False
     else:
@@ -384,6 +387,37 @@ class SUB_OP_anim_rig_remove_eyes(Operator):
         return {"FINISHED"}
 
 
+def match_existing_finger_animation(context, arm):
+    from . import anim_layers_compat, component_matching
+    if anim_layers_compat.viewport_driving_action(arm)[0] is None:
+        return False
+    component_matching.match_animation(context, arm, context.scene.frame_start,
+        context.scene.frame_end, include_fingers=True, match_ik=False, fingers_only=True)
+    return True
+
+
+class SUB_OP_anim_rig_match_fingers(Operator):
+    bl_idname = "sub.anim_rig_match_fingers"
+    bl_label = "Match Finger Controls to Animation"
+    bl_description = "Match the scene frame range using sliders for shared curl and circles for individual joint motion"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        arm = find_target_armature(context)
+        return arm is not None and has_finger_controls(arm) and arm.animation_data is not None and arm.animation_data.action is not None
+
+    def execute(self, context):
+        arm = find_target_armature(context)
+        try:
+            match_existing_finger_animation(context, arm)
+        except (ValueError, RuntimeError) as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        self.report({'INFO'}, 'Matched animation to finger sliders and circles.')
+        return {'FINISHED'}
+
+
 class SUB_OP_anim_rig_add_fingers(Operator):
     bl_idname = "sub.anim_rig_add_fingers"
     bl_label = "Add Finger Sliders"
@@ -401,6 +435,8 @@ class SUB_OP_anim_rig_add_fingers(Operator):
             return {"CANCELLED"}
         _activate_armature(context, arm)
         count = finger_sliders.build_finger_sliders(context, arm)
+        if count:
+            match_existing_finger_animation(context, arm)
         self.report({"INFO"}, f"Added {count} finger controls.")
         return {"FINISHED"}
 
