@@ -29,3 +29,15 @@ for pb,con in fingers._iter_finger_slider_constraints(obj):
     assert abs(fingers._constraint_amount(slider,con,half)-1)<1e-6
     slider.location.x=0
 print('FINGER REST POSE AND BOTH CASCADE DIRECTIONS PASSED')
+
+fingers.set_finger_slider_mode(obj,True,bpy.context,show_both=True)
+assert obj.data.collections[fingers.SLIDER_COLLECTION].is_visible
+assert obj.data.collections[fingers.CIRCLE_COLLECTION].is_visible
+for b in obj.data.bones:
+    if fingers.is_finger_control_bone(b.name) or fingers.is_finger_circle_bone(b.name):
+        assert not b.hide,b.name
+        if not fingers.is_finger_pad_bone(b.name): assert not b.hide_select,b.name
+fingers.set_finger_slider_mode(obj,False,bpy.context)
+assert not obj.data.collections[fingers.SLIDER_COLLECTION].is_visible
+assert obj.data.collections[fingers.CIRCLE_COLLECTION].is_visible
+print('BOTH FINGER DISPLAY MODE PASSED')

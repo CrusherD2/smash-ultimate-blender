@@ -130,7 +130,7 @@ def _parameters(obj, control_names):
     return np.array(values), dofs, np.array(bounds).reshape((-1,2)), bases
 
 
-def _fit(context, obj, control_names, targets):
+def _fit(context, obj, control_names, targets, iterations=16):
     values, dofs, bounds, bases = _parameters(obj, control_names)
     names = sorted(targets)
     goal = np.array([v for n in names for row in targets[n] for v in row])
@@ -143,8 +143,10 @@ def _fit(context, obj, control_names, targets):
         ev = _update(context,obj)
         return np.array([v for n in names for row in ev.pose.bones[n].matrix for v in row])
     values = np.clip(values,bounds[:,0],bounds[:,1])
+    if not names or not len(values):
+        return
     current = evaluate(values)
-    for _ in range(16):
+    for _ in range(iterations):
         residual = goal-current
         if not len(values) or np.max(np.abs(residual)) < 2e-6:
             break
@@ -168,8 +170,8 @@ def _fit(context, obj, control_names, targets):
                 improved=True
                 break
         if not improved:
+            evaluate(values)
             break
-    evaluate(values)
 
 
 def match_animation(context, obj, start, end, include_fingers=False, match_ik=True, fingers_only=False):
@@ -257,6 +259,9 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
             writer=PoseKeyWriter(obj)
             # Parent-first offsets: child targets must see the corrected parent.
             ordered=sorted(owners,key=lambda n:len(obj.pose.bones[n].parent_recursive))
+            levels={}
+            for n in ordered:
+                levels.setdefault(len(obj.pose.bones[n].parent_recursive),[]).append(n)
             for f,poses in samples.items():
                 scene.frame_set(f)
                 for pair in helpers.values():
@@ -264,7 +269,7 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
                         obj.pose.bones[name].matrix_basis=Matrix.Identity(4)
                 for n in finger_names:
                     obj.pose.bones[n].matrix_basis=Matrix.Identity(4)
-                _fit(context,obj,fit_controls,{n:poses[n] for n in set(owners)|finger_names})
+                _fit(context,obj,fit_controls,{n:poses[n] for n in set(owners)|finger_names}, iterations=4)
                 # Sliders supply the shared curl; editable circles retain each
                 # joint's remaining motion, including translation and scale.
                 for n in sorted(finger_names,key=lambda n:len(obj.pose.bones[n].parent_recursive)):
@@ -279,7 +284,9 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
                         def local(m):
                             return pb.bone.convert_local_to_pose(m,pb.bone.matrix_local,parent_matrix=parent,parent_matrix_local=rest_parent,invert=True)
                         pb.matrix_basis=local(poses[n]) @ local(ev.pose.bones[n].matrix).inverted_safe()
-                        _fit(context,obj,[n],{n:poses[n]})
+                        ev=_update(context,obj)
+                        if max(abs(ev.pose.bones[n].matrix[i][j]-poses[n][i][j]) for i in range(4) for j in range(4))>2e-6:
+                            _fit(context,obj,[n],{n:poses[n]})
                     finally:
                         pb.lock_location,pb.lock_rotation,pb.lock_scale=locks
                 for n,uid in isolated.items():
@@ -300,13 +307,16 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
                     root.matrix=poses[n] @ offset.inverted_safe()
                     _update(context,obj)
                 extra=False
-                for name in ordered:
+                # Independent siblings can receive residual corrections in one
+                # dependency-graph update. Parent levels remain sequential.
+                for level in levels.values():
                     ev=_update(context,obj)
-                    delta=ev.pose.bones[name].matrix.inverted_safe() @ poses[name]
-                    first,second=_split_affine(delta)
-                    obj.pose.bones[helpers[name][1]].matrix_basis=first
-                    obj.pose.bones[helpers[name][2]].matrix_basis=second
-                    extra |= max(abs(delta[i][j]-(1 if i==j else 0)) for i in range(4) for j in range(4))>1e-4
+                    deltas=[ev.pose.bones[n].matrix.inverted_safe() @ poses[n] for n in level]
+                    for name,delta in zip(level,deltas):
+                        first,second=_split_affine(delta)
+                        obj.pose.bones[helpers[name][1]].matrix_basis=first
+                        obj.pose.bones[helpers[name][2]].matrix_basis=second
+                        extra |= max(abs(delta[i][j]-(1 if i==j else 0)) for i in range(4) for j in range(4))>1e-4
                 ev=_update(context,obj)
                 error=max((abs(ev.pose.bones[n].matrix[i][j]-poses[n][i][j]) for n in all_owners for i in range(4) for j in range(4)),default=0)
                 if error>2e-4:

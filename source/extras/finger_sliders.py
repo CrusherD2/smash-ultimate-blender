@@ -1087,7 +1087,7 @@ def _restore_finger_circles_to_standard(armature_obj):
     _set_collection_visible(armature_obj.data, CIRCLE_COLLECTION, True)
 
 
-def set_finger_slider_mode(armature_obj, use_sliders, context=None):
+def set_finger_slider_mode(armature_obj, use_sliders, context=None, show_both=False):
     """Show sliders or finger circles. Both stay live; this is visibility only."""
     if armature_obj is None or armature_obj.type != "ARMATURE":
         return False
@@ -1095,6 +1095,9 @@ def set_finger_slider_mode(armature_obj, use_sliders, context=None):
         return False
     use_sliders = bool(use_sliders)
     armature_obj.data[FINGER_SLIDER_USE_KEY] = use_sliders
+    armature_obj.data["sub_finger_show_both"] = bool(show_both)
+    show_sliders = use_sliders or show_both
+    show_circles = not use_sliders or show_both
     _heal_finger_circle_disable(armature_obj)
 
     # Pose Mode in Blender 5 ignores Bone.hide; a bone stays visible if it is
@@ -1104,16 +1107,16 @@ def set_finger_slider_mode(armature_obj, use_sliders, context=None):
 
     for bone in armature_obj.data.bones:
         if is_finger_control_bone(bone.name):
-            bone.hide = not use_sliders
-            if not use_sliders:
+            bone.hide = not show_sliders
+            if not show_sliders:
                 set_pose_bone_select(armature_obj.pose.bones.get(bone.name), False)
         elif is_finger_circle_bone(bone.name):
-            bone.hide = use_sliders
-            if use_sliders:
+            bone.hide = not show_circles
+            if not show_circles:
                 set_pose_bone_select(armature_obj.pose.bones.get(bone.name), False)
 
-    _set_collection_visible(armature_obj.data, SLIDER_COLLECTION, use_sliders)
-    _set_collection_visible(armature_obj.data, CIRCLE_COLLECTION, not use_sliders)
+    _set_collection_visible(armature_obj.data, SLIDER_COLLECTION, show_sliders)
+    _set_collection_visible(armature_obj.data, CIRCLE_COLLECTION, show_circles)
     armature_obj.update_tag()
     if context is not None:
         try:
@@ -1501,6 +1504,7 @@ class SUB_OP_toggle_finger_sliders(Operator):
     bl_description = "Show finger sliders on the hands, or the Smash finger circle bones"
     bl_options = {"REGISTER", "UNDO"}
 
+    show_both: bpy.props.BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
     set_enabled: bpy.props.BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
     enable_sliders: bpy.props.BoolProperty(default=True, options={"HIDDEN", "SKIP_SAVE"})
 
@@ -1520,9 +1524,9 @@ class SUB_OP_toggle_finger_sliders(Operator):
             use_sliders = bool(self.enable_sliders)
         else:
             use_sliders = not finger_sliders_are_enabled(armature_obj)
-        set_finger_slider_mode(armature_obj, use_sliders, context)
+        set_finger_slider_mode(armature_obj, use_sliders, context, show_both=self.show_both)
         if context.view_layer is not None:
             context.view_layer.update()
-        mode = "sliders" if use_sliders else "finger circles"
+        mode = "circles and sliders" if self.show_both else ("sliders" if use_sliders else "finger circles")
         self.report({"INFO"}, f"Switched fingers to {mode}.")
         return {"FINISHED"}

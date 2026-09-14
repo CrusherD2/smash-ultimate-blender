@@ -41,7 +41,7 @@ original_curves=[(fc.data_path,fc.array_index,[(tuple(k.co)) for k in fc.keyfram
 # Failure rolls back temporary input overrides and helper bones.
 names_before=set(obj.pose.bones.keys())
 original_fit=matching._fit
-def fail(*args):
+def fail(*args, **kwargs):
     raise RuntimeError('Injected fitting failure')
 matching._fit=fail
 try:

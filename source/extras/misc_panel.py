@@ -62,14 +62,15 @@ class SUB_PT_animation_tools(Panel):
         if arm is not None and has_finger_sliders(arm):
             row = layout.row(align=True)
             row.label(text="Fingers")
-            if finger_sliders_are_enabled(arm):
-                op = row.operator("sub.toggle_finger_sliders", text="Switch to Circles", icon="MESH_CIRCLE")
+            both = bool(arm.data.get("sub_finger_show_both", False))
+            sliders = finger_sliders_are_enabled(arm)
+            row = layout.row(align=True)
+            for label, enabled, show_both in (("Circles", False, False), ("Sliders", True, False), ("Both", True, True)):
+                active = both if show_both else (not both and sliders == enabled)
+                op = row.operator("sub.toggle_finger_sliders", text=label, depress=active)
                 op.set_enabled = True
-                op.enable_sliders = False
-            else:
-                op = row.operator("sub.toggle_finger_sliders", text="Switch to Sliders", icon="DRIVER")
-                op.set_enabled = True
-                op.enable_sliders = True
+                op.enable_sliders = enabled
+                op.show_both = show_both
 
         if arm is not None and armature_has_animation_rig(arm):
             layout.operator("sub.bake_and_remove_rig", text="Bake and Remove Rig", icon="ACTION")
