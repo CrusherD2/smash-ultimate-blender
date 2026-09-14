@@ -169,10 +169,10 @@ _pending = set()
 def _changed():
     # RNA notifications come from user edits, not dependency graph evaluation.
     scene = bpy.context.scene
-    if scene and any(
+    if scene and (scene.sub_component_editor.is_open or any(
         w.screen.get('sub_components_window')
         for w in bpy.context.window_manager.windows
-    ):
+    )):
         _pending.add(scene.name)
         if not bpy.app.timers.is_registered(_flush):
             bpy.app.timers.register(_flush, first_interval=0.4)

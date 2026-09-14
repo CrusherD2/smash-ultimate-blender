@@ -60,6 +60,7 @@ EXTRA_DEFAULTS = {
     'control_rotation': [0.0, 0.0, 0.0],
     'look_plane': 'XY',
     'show_orbit': True,
+    'hide_controlled': False,
     'shape': 'circle',
     'shape_scale': 1.0,
     'face_data': '{}',
@@ -74,6 +75,20 @@ def preset_dir():
             'SCRIPTS', path='presets/smash_custom_components', create=True
         )
     )
+
+
+def _update_orbit_visibility(component, context):
+    obj = getattr(context.scene.sub_component_editor, 'armature', None)
+    if obj is not None:
+        from .face_components import set_orbit_visibility
+        set_orbit_visibility(obj, component)
+
+
+def _update_controlled_visibility(component, context):
+    obj = context.scene.sub_component_editor.armature
+    if obj:
+        from .component_visibility import update
+        update(obj, component)
 
 
 class SUB_PG_component_bone(bpy.types.PropertyGroup):
@@ -91,6 +106,11 @@ class SUB_PG_component_bone(bpy.types.PropertyGroup):
 
 
 class SUB_PG_rig_component(bpy.types.PropertyGroup):
+    hide_controlled: bpy.props.BoolProperty(
+        name='Hide Bones Controlled by Component', default=False,
+        update=_update_controlled_visibility,
+        description='Hide the original bones while keeping their custom controls visible',
+    )
     control_offset: bpy.props.FloatVectorProperty(
         name='Control Position Offset', subtype='TRANSLATION', size=3
     )
@@ -106,7 +126,7 @@ class SUB_PG_rig_component(bpy.types.PropertyGroup):
         ],
         default='XZ',
     )
-    show_orbit: bpy.props.BoolProperty(name='Show Rotation Controller', default=False)
+    show_orbit: bpy.props.BoolProperty(name='Show Rotation Controller', default=False, update=_update_orbit_visibility)
     shape: bpy.props.EnumProperty(name='Control Shape', items=SHAPES, default='circle')
     shape_scale: bpy.props.FloatProperty(
         name='Shape Size', default=1.0, min=0.01, max=100
@@ -159,6 +179,7 @@ class SUB_PG_rig_component(bpy.types.PropertyGroup):
 
 
 class SUB_PG_component_editor(bpy.types.PropertyGroup):
+    is_open: bpy.props.BoolProperty(name="Custom Components", default=False)
     show_placement: bpy.props.BoolProperty(
         name='Advanced Placement & Behavior', default=False
     )
@@ -294,6 +315,8 @@ def validate_preset(payload):
                 )
             ):
                 raise ValueError('Invalid control placement')
+        if not isinstance(item['hide_controlled'], bool):
+            raise ValueError('Invalid controlled-bone visibility')
         if item['look_plane'] not in {'XY', 'XZ', 'YZ'} or not isinstance(
             item['show_orbit'], bool
         ):
@@ -511,6 +534,13 @@ def control_name(obj, c):
 
 
 def build_component(context, obj, c):
+    result = _build_component(context, obj, c)
+    from .component_visibility import update
+    update(obj, c)
+    return result
+
+
+def _build_component(context, obj, c):
     names = validate_component(obj, c)
     if not c.uid:
         c.uid = uuid.uuid4().hex
@@ -663,6 +693,8 @@ def build_component(context, obj, c):
 
 def remove_component(context, obj, c):
     """Remove only this component's generated rig, preserving skeleton keys."""
+    from .component_visibility import remove
+    remove(obj, c.uid)
     _activate_armature(context, obj)
     if c.kind == 'IK':
         records = json.loads(obj.get('sub_custom_ik_chains', '[]'))
@@ -998,10 +1030,10 @@ def draw_editor(layout, context):
     obj = editor_armature(context)
     layout.use_property_split = False
     row = layout.row(align=True)
-    row.prop(editor, 'preset_name', text='Preset')
+    layout.prop(editor, 'preset_name', text='Preset')
     row.menu('SUB_MT_component_presets', text='Load', icon='FILE_FOLDER')
     row.operator(
-        'sub.component_preset', text='Save Preset', icon='FILE_TICK'
+        'sub.component_preset', text='Save', icon='FILE_TICK'
     ).action = 'SAVE'
     row = layout.row()
     row.template_list(
@@ -1027,7 +1059,7 @@ def draw_editor(layout, context):
             layout.label(text='Choose the armature to continue.', icon='INFO')
             return
         if c.kind == 'IK':
-            layout.label(text='Select the start and end bones in the viewport.')
+            layout.label(text='Select start and end bones.')
             layout.operator(
                 'sub.component_edit', text='Use Selected Chain', icon='EYEDROPPER'
             ).action = 'CHAIN'
@@ -1038,13 +1070,13 @@ def draw_editor(layout, context):
                     'sub.component_edit', text='', icon='EYEDROPPER'
                 ).action = ('PICK_' + field.upper())
         else:
-            layout.label(text='Select the bones this component should control.')
+            layout.label(text='Choose bones to control:')
             row = layout.row(align=True)
             row.operator(
-                'sub.component_edit', text='Use Selected Bones', icon='EYEDROPPER'
+                'sub.component_edit', text='Use Selected', icon='EYEDROPPER'
             ).action = 'SELECTED'
             row.operator(
-                'sub.component_edit', text='Add by Name', icon='ADD'
+                'sub.component_edit', text='Add Bone', icon='ADD'
             ).action = 'BONE_ADD'
             row = layout.row()
             row.template_list(
@@ -1070,9 +1102,9 @@ def draw_editor(layout, context):
         return
     if editor.page == 'CONTROLS':
         layout.label(text=c.name, icon='BONE_DATA')
-        row = layout.row(align=True)
-        row.prop(c, 'shape', text='Default Shape')
-        row.prop(c, 'shape_scale', text='Size')
+        layout.prop(c, 'shape', text='Shape')
+        layout.prop(c, 'shape_scale', text='Size')
+        layout.prop(c, 'hide_controlled', text='Hide Controlled Bones')
         if c.kind in {'EYES', 'LOOK_TARGET'}:
             layout.prop(c, 'look_plane')
             layout.prop(c, 'aim_axis')
@@ -1085,7 +1117,7 @@ def draw_editor(layout, context):
             row.prop(c, 'axis')
             row.prop(c, 'angle')
         body = disclosure(
-            layout, editor, 'show_placement', 'Advanced Placement & Behavior'
+            layout, editor, 'show_placement', 'Placement & Behavior'
         )
         if body is not None:
             if c.kind not in {'ISOLATED', 'IK'}:
@@ -1112,7 +1144,7 @@ def draw_editor(layout, context):
                 ).action = 'WEIGHTS'
             body.prop(editor, 'save_on_build')
         op = layout.operator(
-            'sub.component_build', text='Build Controls & Continue', icon='MOD_BUILD'
+            'sub.component_build', text='Build & Continue', icon='MOD_BUILD'
         )
         op.active_only, op.advance = True, True
         layout.operator(
@@ -1142,9 +1174,9 @@ def draw_editor(layout, context):
         draw_face(layout, context, obj, c)
     else:
         text = (
-            'Move each handle independently, then insert transform keyframes.'
+            'Move handles, then insert keyframes.'
             if c.kind == 'ISOLATED'
-            else 'Pose the control in the viewport, then insert transform keyframes.'
+            else 'Pose controls, then insert keyframes.'
         )
         layout.label(text=text, icon='INFO')
     layout.operator('sub.component_step', text='Adjust Controls', icon='BACK').page = (
@@ -1158,7 +1190,13 @@ class SUB_OP_custom_components(bpy.types.Operator):
     bl_description = 'Create reusable bone eye, face, IK, tail and wing components'
 
     def invoke(self, context, event):
+        return self.execute(context)
+
+    def execute(self, context):
         editor = context.scene.sub_component_editor
+        if editor.is_open:
+            editor.is_open = False
+            return {'FINISHED'}
         obj = find_target_armature(context)
         if obj:
             editor.armature = obj
@@ -1179,30 +1217,9 @@ class SUB_OP_custom_components(bpy.types.Operator):
             c = editor.components.add()
             c.uid = uuid.uuid4().hex
             c.name = 'Eye Look'
-        if bpy.app.background:
-            return {'FINISHED'}
-        before = set(context.window_manager.windows)
-        bpy.ops.wm.window_new()
-        window = next(
-            (w for w in context.window_manager.windows if w not in before), None
-        )
-        if window is None:
-            self.report({'ERROR'}, 'Blender could not create the components window')
-            return {'CANCELLED'}
-        window.scene = context.scene
-        window.screen['sub_components_window'] = True
-        area = max(window.screen.areas, key=lambda a: a.width * a.height)
-        area.type = 'PROPERTIES'
-        area.spaces.active.context = 'DATA'
-        if obj:
-            area.spaces.active.pin_id = obj
-        area.spaces.active.search_filter = 'Custom Rig Components'
-        return {'FINISHED'}
-
-    def draw(self, context):
-        draw_editor(self.layout, context)
-
-    def execute(self, context):
+        editor.is_open = True
+        if context.area:
+            context.area.tag_redraw()
         return {'FINISHED'}
 
 

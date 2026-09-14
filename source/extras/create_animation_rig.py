@@ -868,6 +868,24 @@ def _apply_shapes(context, armature_obj):
     return shaped
 
 
+def repair_foot_control_shapes(context, armature_obj):
+    """Restore missing FK foot widgets on existing animation rigs."""
+    if not armature_has_animation_rig(armature_obj):
+        return 0
+    missing = [pb for pb in armature_obj.pose.bones
+               if re.fullmatch(r'Foot[LR]\d*', canonical_bone_name(pb.name))
+               and pb.custom_shape is None
+               and not pb.bone.get('sub_shape_override')]
+    if not missing:
+        return 0
+    scale = _estimate_character_scale(armature_obj)
+    for pb in missing:
+        widget_id, color, multiplier, center = _classify_bone(canonical_bone_name(pb.name))
+        _assign_shape(pb, _widget_object(context, widget_id), scale * multiplier,
+                      color, center, armature_obj)
+    return len(missing)
+
+
 def apply_eye_look_shape(context, armature_obj):
     """Give BL_EyeLook the same wireframe box style as the rest of the rig."""
     pose_bone = armature_obj.pose.bones.get('BL_EyeLook')
@@ -1439,7 +1457,7 @@ def _set_ik_bone_visibility(armature_obj, visible, limbs='BOTH'):
             factor = _effective_limb_ik_factor(armature_obj, kind)
             for name in ik_channels.limb_path(armature_obj, names):
                 bone = armature_obj.data.bones[name]
-                hidden = factor >= 1.0 - _FK_ON_EPSILON
+                hidden = factor >= 1.0 - _FK_ON_EPSILON or bool(bone.get("sub_component_hidden"))
                 if bone.hide != hidden:
                     bone.hide = hidden
             controls = [target, pole]
@@ -1463,7 +1481,8 @@ def _set_ik_bone_visibility(armature_obj, visible, limbs='BOTH'):
             continue
         fully_ik = _effective_limb_ik_factor(armature_obj, kind) >= 1.0 - _FK_ON_EPSILON
         for name in collect_fk_bone_names(armature_obj, limbs=kind):
-            armature_obj.data.bones[name].hide = fully_ik
+            bone = armature_obj.data.bones[name]
+            bone.hide = fully_ik or bool(bone.get("sub_component_hidden"))
     selected = [
         pose_bone.name
         for pose_bone in armature_obj.pose.bones
@@ -3619,6 +3638,7 @@ def _ensure_ik_drivers_on_loaded_rigs():
             if canonical_bone_name(bone.name) in {'LegC', 'ClavicleC'}:
                 bone.hide = True
                 bone.hide_select = True
+        repair_foot_control_shapes(bpy.context, obj)
         if armature_has_ik(obj):
             if obj.data.get(ARMATURE_FLAG):
                 from .control_appearance import style_ik_controls

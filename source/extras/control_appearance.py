@@ -219,13 +219,13 @@ def draw_appearance(layout, context, obj):
         layout.prop(pb, 'custom_shape_translation', text='Widget Offset')
         layout.prop(pb, 'custom_shape_rotation_euler', text='Widget Rotation')
         layout.operator(
-            'sub.control_shape', text='Apply Offset / Rotation to Actual Control'
+            'sub.control_shape', text='Apply Placement to Control'
         ).action = 'FUNCTIONAL'
         layout.operator('sub.control_shape', text='Save Control Appearance').action = (
             'SAVE'
         )
         layout.operator(
-            'sub.control_shape', text='Make Widget Mesh Editable'
+            'sub.control_shape', text='Edit Widget Mesh'
         ).action = 'EDIT'
 
 

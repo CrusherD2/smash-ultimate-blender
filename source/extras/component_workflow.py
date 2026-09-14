@@ -48,6 +48,26 @@ def build_isolated(context, obj, c):
     context.view_layer.update()
     visuals = {n: obj.pose.bones[n].matrix.copy() for n in names}
     main = control_name(obj, c)
+    # Rebuilding legacy controls repairs their zero-length edit-bone roll.
+    # Read the original pose without this component's output constraint, then
+    # compensate its helper for the control's current animated transform.
+    legacy = any(p.bone.get('sub_face_owner') == c.uid
+                 and p.bone.get('sub_component_control')
+                 and not p.bone.get('sub_isolated_version') for p in obj.pose.bones)
+    legacy_controls = {}
+    if legacy:
+        muted = [(con, con.mute) for pb in obj.pose.bones for con in pb.constraints
+                 if con.name.startswith('SUB Component ' + c.uid)]
+        for con, _ in muted:
+            con.mute = True
+        context.view_layer.update()
+        visuals = {n: obj.pose.bones[n].matrix.copy() for n in names}
+        legacy_controls = {p.name: p.matrix.copy() for p in obj.pose.bones
+                           if p.bone.get('sub_face_owner') == c.uid
+                           and p.bone.get('sub_component_control')}
+        for con, was_muted in muted:
+            con.mute = was_muted
+        context.view_layer.update()
     controls = {}
     fresh = set()
     bpy.ops.object.mode_set(mode='EDIT')
@@ -62,8 +82,8 @@ def build_isolated(context, obj, c):
         b = obj.data.edit_bones.get(name)
         if b is None:
             b = obj.data.edit_bones.new(name)
-            b.matrix = visuals[n]
             b.length = obj.data.edit_bones[n].length
+            b.matrix = visuals[n]
             fresh.add(name)
         b.parent = None
         b.use_deform = False
@@ -71,6 +91,7 @@ def build_isolated(context, obj, c):
         b['sub_component_control'] = True
         b['sub_component_tool'] = 'builtin.transform'
         b['sub_component_kind'] = c.kind
+        b['sub_isolated_version'] = 2
         if i == 0:
             b['sub_component_id'] = c.uid
         controls[n] = name
@@ -109,9 +130,12 @@ def build_isolated(context, obj, c):
         b = obj.data.edit_bones.get(helper)
         if b is None:
             b = obj.data.edit_bones.new(helper)
-            b.matrix = visuals[n]
             b.length = obj.data.edit_bones[n].length
+            b.matrix = visuals[n]
             b.parent = obj.data.edit_bones[name]
+        if legacy and name in legacy_controls:
+            b.matrix = (obj.data.edit_bones[name].matrix
+                        @ legacy_controls[name].inverted_safe() @ visuals[n])
         b.use_deform = False
         b['sub_face_owner'] = c.uid
         b['sub_face_helper'] = True
@@ -333,8 +357,12 @@ class SUB_OP_components_bake_remove(bpy.types.Operator):
 
 
 def register():
+    from . import component_matching
+    component_matching.register()
     bpy.utils.register_class(SUB_OP_components_bake_remove)
 
 
 def unregister():
+    from . import component_matching
+    component_matching.unregister()
     bpy.utils.unregister_class(SUB_OP_components_bake_remove)

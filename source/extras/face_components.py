@@ -61,6 +61,42 @@ def owned(obj, c):
     return [p for p in obj.pose.bones if p.bone.get('sub_face_owner') == c.uid]
 
 
+def set_orbit_visibility(obj, c, force_show=False):
+    if c.kind != 'EYES':
+        return
+    from .custom_components import control_name, COLLECTION
+    from ..blender_compat import set_pose_bone_select
+    pb = obj.pose.bones.get(control_name(obj, c))
+    if pb is None:
+        return
+    hidden = not (c.show_orbit or force_show)
+    pb.bone.hide = pb.bone.hide_select = hidden
+    # Blender versions with per-pose visibility must hide the pose as well.
+    if hasattr(pb, 'hide'):
+        pb.hide = hidden
+    mechanism = obj.data.collections.get('Custom Component Mechanism')
+    if mechanism is None:
+        mechanism = obj.data.collections.new('Custom Component Mechanism')
+    mechanism.is_visible = False
+    visible = obj.data.collections.get(COLLECTION) or obj.data.collections.new(COLLECTION)
+    if hidden:
+        if 'sub_orbit_collections' not in pb.bone:
+            pb.bone['sub_orbit_collections'] = [col.name for col in pb.bone.collections]
+        for col in list(pb.bone.collections):
+            col.unassign(pb.bone)
+        mechanism.assign(pb.bone)
+        set_pose_bone_select(pb, False)
+    else:
+        mechanism.unassign(pb.bone)
+        for name in pb.bone.get('sub_orbit_collections', [COLLECTION]):
+            col = obj.data.collections.get(name)
+            if col and col != mechanism:
+                col.assign(pb.bone)
+        visible.assign(pb.bone)
+        if 'sub_orbit_collections' in pb.bone:
+            del pb.bone['sub_orbit_collections']
+
+
 def set_edit(obj, c, enabled):
     for pb in obj.pose.bones:
         for con in pb.constraints:
@@ -75,6 +111,8 @@ def set_edit(obj, c, enabled):
             elif 'sub_face_was_hidden' in bone:
                 bone.hide = bool(bone['sub_face_was_hidden'])
                 del bone['sub_face_was_hidden']
+    from .component_visibility import edit
+    edit(obj, c, enabled)
     obj['sub_face_edit_' + c.uid] = enabled
     obj.update_tag()
 
@@ -350,8 +388,7 @@ def build_face(context, obj, c):
     )
     place_controls(context, obj, c, handles, plane=c.kind == 'EYES')
     if c.kind == 'EYES':
-        obj.data.bones[main].hide = not c.show_orbit
-        obj.data.bones[main].hide_select = not c.show_orbit
+        set_orbit_visibility(obj, c)
     set_edit(obj, c, False)
     context.view_layer.update()
     return main
@@ -458,7 +495,7 @@ class SUB_OP_face_pose(bpy.types.Operator):
                     _activate_armature(context, obj)
                     bpy.ops.object.mode_set(mode='POSE')
                     if self.action == 'ORBIT' and main:
-                        main.bone.hide = main.bone.hide_select = False
+                        set_orbit_visibility(obj, c, force_show=True)
                     selected_names = (
                         {main.name} if self.action == 'ORBIT' and main else set(names)
                     )

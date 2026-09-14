@@ -31,7 +31,7 @@ class SUB_PT_animation_tools(Panel):
     @classmethod
     def poll(cls, context):
         modes = ['POSE', 'OBJECT', 'EDIT_ARMATURE']  # Allow panel in all these modes
-        return context.mode in modes
+        return context.mode in modes or bool(context.scene.sub_shape_edit_object)
 
     def draw(self, context):
         self.layout.use_property_decorate = False
@@ -44,7 +44,14 @@ class SUB_PT_animation_tools(Panel):
         row.scale_y = 1.0
         row.operator("sub.create_animation_rig", text="Create Animation Rig", icon="OUTLINER_OB_ARMATURE")
         row.operator("sub.remove_animation_rig", text="", icon="X")
-        layout.operator("sub.custom_components", text="Make Custom Components", icon="PREFERENCES")
+        editor = context.scene.sub_component_editor
+        layout.operator("sub.custom_components", text="Custom Components" if editor.is_open else "Make Custom Components",
+                        icon="TRIA_DOWN" if editor.is_open else "TRIA_RIGHT")
+        if editor.is_open:
+            from .custom_components import draw_editor
+            draw_editor(layout.box(), context)
+            layout.operator("sub.custom_components", text="Back to Animation Tools", icon="BACK")
+            return
         layout.prop(ssp, "clean_keyframes_after_rig", text="Clean keyframes after creation")
 
         arm = find_anim_rig_armature(context)

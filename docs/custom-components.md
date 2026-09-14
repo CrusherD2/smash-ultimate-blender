@@ -1,19 +1,19 @@
 ﻿# Custom animation rig components
 
 Open **Ultimate → Animation Tools → Make Custom Components**, directly below
-**Create Animation Rig**. This opens a separate Blender window that stays open
-when you work in the main viewport. Resize it like any Blender window. Its
-Properties search focuses the Custom Rig Components panel.
+**Create Animation Rig**. The compact editor expands inside Animation Tools;
+it does not open a separate window. Use the section header or **Back to Animation
+Tools** to close it without losing your work.
 
 The editor follows three steps. Use **+** to add a component, or select an existing
-entry in the list. **Load** and **Save Preset** stay at the top.
+entry in the list. **Load** and **Save** stay at the top.
 
 1. **Bones:** choose the type and name, then use selected bones or search by name.
    Once the assignments are valid, choose **Next: Create Controls**.
 2. **Controls:** choose the default shape and essential movement settings.
-   **Advanced Placement & Behavior** contains offsets, orientation, parenting,
+   **Placement & Behavior** contains offsets, orientation, parenting,
    ranges and bone weights. **Selected Control Appearance** edits individual
-   handles. Both sections start closed. **Build Controls & Continue** builds only
+   handles. Both sections start closed. **Build & Continue** builds only
    this component, so unfinished entries do not block it.
 3. **Animate:** select the control in the viewport or create facial poses. Pose
    capture buttons appear while editing a pose; management/reset options stay
@@ -101,10 +101,11 @@ pickers. The Animation Rig recognizes the extra foot-roll, toe and custom IK
 controls for styling, selection tools and switching. LegC and ClavicleC are hidden
 and unselectable when building or restoring the Animation Rig.
 
-With viewport gizmos enabled, selecting an IK controller shows a **Switch to FK**
-icon beside it. When that chain has floor contact set up, **Plant** and **Release**
-icons appear too. Hover for their labels. These use the same keyed operators as
-the IK panel. **IK Buttons in Viewport** in the components window disables them.
+With viewport gizmos enabled, selecting an Animation Rig IK controller shows a
+labeled **Switch FK** button beneath its widget. **Plant** and **Release** appear
+when floor contact is configured. The row follows the visible widget bounds and
+uses the same keyed operators as the IK panel. Standalone IK Tools do not show
+these buttons.
 
 Presets are JSON data, stored through Blender's user scripts directory:
 
@@ -144,10 +145,17 @@ reference rig for the reference export test and playback profiler. No reference
 blend is saved by those checks.
 
 `tests/test_components_window_blender.py` runs without `--background` in an
-isolated factory Blender session to check the real window and gizmo drawing.
+isolated factory Blender session to check the real sidebar and gizmo drawing.
 
 `tests/test_components_lifecycle_blender.py` checks functional placement, isolated
 feet, live export, component baking, and rig creation from a component preset.
 
 `tests/test_component_appearance_presets_blender.py` verifies appearance autosave,
 portable edited meshes, functional offsets, and the progressive editor pages.
+
+Isolated components preserve the original bone orientation when created in a
+posed rig. To repair an older component with flipped bones, select it in the
+editor and choose **Controls ? Build & Continue**. This recalibrates the old
+output helpers while keeping the controller keys. The eye rotation-controller
+checkbox hides or shows the handle immediately; it is temporarily visible when
+authoring an orbit limit.

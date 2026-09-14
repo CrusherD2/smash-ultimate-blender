@@ -177,6 +177,8 @@ def draw_anim_rig_extras(layout, context, arm):
     row = box.row(align=True)
     row.label(text='Custom Components')
     if has_components(arm):
+        row = box.row(align=True)
+        row.operator('sub.components_match', text='Match Animation', icon='CON_ACTION')
         row.operator('sub.components_bake_remove', text='Bake & Remove', icon='ACTION').bake = True
         row.operator('sub.components_bake_remove', text='', icon='X').bake = False
     else:
