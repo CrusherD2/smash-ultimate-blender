@@ -2,11 +2,14 @@
 
 The default was flipped on the corpus evidence in
 docs/benchmarks/native-default-2026-09-13.md: 28 runs over three fixtures and
-two Blender versions, every one bit-identical to Blender's backend, with the
-guards declining nothing. What this test pins is the resolution rule around
-that decision, not the numerics -- that an unset SUB_NATIVE_IK engages the
-backend where it is supported and only where it is supported, and that an
-explicit '0' overrides it on every platform.
+two Blender versions all landed on the same solved pose as Blender's backend
+-- the guards declined the hard near-straight chain-frames and Blender's own
+search finished those, so this is proof of the shipped path's outcome, not of
+the Rust solver reproducing Blender's arithmetic. See that doc for the full
+account. What this test pins is the resolution rule around that decision, not
+the numerics -- that an unset SUB_NATIVE_IK engages the backend where it is
+supported and only where it is supported, and that an explicit '0' overrides
+it on every platform.
 """
 from pathlib import Path
 import importlib, os, sys

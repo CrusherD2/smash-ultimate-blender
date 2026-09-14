@@ -160,6 +160,12 @@ def _format_diag_report(rec):
     if not stages and not reasons:
         return None
 
+    # Pure counters carry no timing (they are always added with seconds=0.0);
+    # rendering them as "name 0.000s (N updates)" is meaningless -- the 0.000s
+    # is noise and "updates" is the wrong word for a count like how many
+    # chain-frames the native guards declined. Render those as plain counts.
+    counter_only = ('candidates', 'native_solves', 'native_declined')
+
     order = ('sample', 'isolate', 'place', 'search', 'write')
     stage_parts = []
     for name in order:
@@ -174,7 +180,12 @@ def _format_diag_report(rec):
         if name in order:
             continue
         count = counts.get(name)
-        stage_parts.append(f"{name} {seconds:.3f}s ({count} updates)" if count else f"{name} {seconds:.3f}s")
+        if name in counter_only:
+            stage_parts.append(f"{name}: {count or 0}")
+        elif count:
+            stage_parts.append(f"{name} {seconds:.3f}s ({count} updates)")
+        else:
+            stage_parts.append(f"{name} {seconds:.3f}s")
 
     reason_str = ' '.join(f"{guard}={code}" for guard, code in reasons.items())
 

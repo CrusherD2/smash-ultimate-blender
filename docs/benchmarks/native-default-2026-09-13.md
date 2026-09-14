@@ -44,6 +44,11 @@ supported here.
   production rig, static pose, five frames, one configuration). Two distinct
   animations; `shyguy_static` contributes rig shape, not motion.
 - Full data: `docs/benchmarks/native-default-2026-09-13.json`.
+- Scope decline: the spec (`docs/superpowers/specs/2026-09-13-adaptive-ik-search-design.md`,
+  R1.3) also asked for the six varied clips already used in the pole-step
+  sweep. They were not added to this corpus. The corpus therefore covers two
+  distinct animations across two rigs, and the 28/28 result generalises only
+  that far.
 
 ## Blender 5.2.1 LTS
 
