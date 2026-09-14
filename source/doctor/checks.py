@@ -1010,6 +1010,10 @@ def check_export_paths(scene):
     )
 
     for prop_name, kind, label, blocking in watched:
+        # Skeleton/PRC inputs belong only to model export, even when its
+        # armature picker still contains a remembered object.
+        if blocking and SCOPE_MODEL not in scene.scopes:
+            continue
         raw = getattr(ssp, prop_name, '')
         if not raw:
             continue
