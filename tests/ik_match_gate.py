@@ -37,7 +37,12 @@ def apply_env(variant):
     for key in _MANAGED:
         os.environ.pop(key, None)
     os.environ.update(VARIANTS[variant]['env'])
-    pass  # DIAG_DISABLED_FOR_TEST
+    # Deliberately left off (the brief sets SUB_IK_DIAG=1 here): run_variant
+    # reports 'seconds', and SUB_IK_DIAG times every graph update inside the
+    # search loop, which would inflate that measurement. diag.add records
+    # counts unconditionally regardless of SUB_IK_DIAG, so require_engaged's
+    # native_solves/adaptive_early checks are unaffected by leaving it off.
+    os.environ.pop('SUB_IK_DIAG', None)
 
 
 def require_engaged(variant, run):

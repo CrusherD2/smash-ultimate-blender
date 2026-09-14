@@ -46,6 +46,13 @@ if not BASELINE.exists():
     print(f'SKIP native residual matrix, no baseline at {BASELINE}')
     raise SystemExit(0)
 
+# Honour SUB_NATIVE_RESIDUAL_MODE (e.g. '1' for verification mode) the way the
+# original single-file harness did. gate.VARIANTS['native'] hardcodes
+# 'experimental'; overwrite it once, before any run, so run('native', ...)
+# below actually uses NATIVE_MODE and the native_mode field in the published
+# report matches what ran.
+gate.VARIANTS['native']['env']['SUB_NATIVE_IK'] = NATIVE_MODE
+
 solvers = {'count': 0}
 _factory_call = gate.ik_native.Factory.__call__
 
