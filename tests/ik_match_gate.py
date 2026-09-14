@@ -20,7 +20,7 @@ def bind(module_name):
     diag = importlib.import_module(MODULE + '.source.extras.ik_match_diag')
 
 
-TOLERANCE = {'relative': 1e-5, 'pose': 1e-4}
+TOLERANCE = {'relative': 1e-5, 'pose': 1e-4, 'absolute': 1e-9}
 
 # 'env' is applied before the run; every key absent from a variant's env is
 # removed, so variants cannot leak into one another. 'engage' names the
@@ -157,6 +157,7 @@ def compare(baseline, candidate, names, tolerance):
                           'a comparison against zero frames cannot pass or fail')
     worse = better = identical = 0
     worst_rel, worst_frame = 0.0, None
+    violation = False
     deltas = []
     for frame, a in base_r.items():
         b = cand_r[frame]
@@ -165,10 +166,26 @@ def compare(baseline, candidate, names, tolerance):
         if delta > 0:
             worse += 1
             # Relative to this frame's own baseline, so a large-residual frame
-            # is not held to the same absolute bar as a near-perfect one.
+            # is not held to the same absolute bar as a near-perfect one. Kept
+            # exactly as before for reporting/diagnostics (worst_relative_delta
+            # and its frame) even though the pass/fail rule below no longer
+            # uses this ratio directly on its own.
             rel = delta / a if a > 0 else float('inf')
             if rel > worst_rel:
                 worst_rel, worst_frame = rel, frame
+            # A frame only counts as a real regression once it clears an
+            # absolute floor as well as the relative one: on a baseline whose
+            # own residual is near-zero (e.g. a static-pose fixture, ~1e-9),
+            # a pure float-noise delta (~1e-12) produces rel far above the
+            # relative tolerance while being physically meaningless. a == 0
+            # is left alone -- that is a genuinely perfect baseline frame, and
+            # any positive delta away from it is a real regression regardless
+            # of scale.
+            if a > 0:
+                if delta > max(tolerance['relative'] * a, tolerance['absolute']):
+                    violation = True
+            else:
+                violation = True
         elif delta < 0:
             better += 1
         else:
@@ -187,9 +204,15 @@ def compare(baseline, candidate, names, tolerance):
 
     median_delta = statistics.median(deltas) if deltas else 0.0
     total_delta = sum(cand_r.values()) - sum(base_r.values())
-    passed = (worst_rel <= tolerance['relative']
-              and median_delta <= 0.0
-              and total_delta <= 0.0
+    # median_delta/total_delta are exact-zero comparisons in the old code, but
+    # on a near-zero-residual baseline (e.g. a static-pose fixture) float
+    # noise in the last bits lands on either side of zero essentially at
+    # random. Apply the same absolute floor used above, rather than a bare
+    # <= 0.0 -- on normal-scale baselines (residuals of order 1e-1 or more)
+    # this floor (1e-9) is negligible and changes nothing.
+    passed = (not violation
+              and median_delta <= tolerance['absolute']
+              and total_delta <= tolerance['absolute']
               and pose_delta <= tolerance['pose'])
     return dict(frames_worse=worse, frames_better=better, frames_identical=identical,
                 worst_relative_delta=worst_rel, worst_relative_frame=worst_frame,

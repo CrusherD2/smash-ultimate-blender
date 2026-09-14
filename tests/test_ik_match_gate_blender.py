@@ -53,4 +53,44 @@ except ValueError:
 else:
     raise AssertionError('compare() passed vacuously on an empty residual set')
 
+# The absolute floor (Task 2 fix round 2): a near-zero-residual baseline (like
+# the shyguy_static fixture, ~1e-9 per frame) must not spuriously fail on pure
+# float-scale noise, but must still catch a real regression, and the floor
+# must not neuter the relative check on a normal-scale baseline.
+frame = next(iter(a['residuals']))
+names = a['names']
+poses_a, poses_b = a['poses'], b['poses']  # unchanged poses -> pose_delta stays 0
+
+def synthetic(residual_value):
+    run = dict(a)
+    run['residuals'] = {frame: residual_value}
+    run['poses'] = {frame: poses_a[frame]}
+    return run
+
+near_zero_base = synthetic(1e-9)
+
+# (1) Pure float-scale noise on a near-zero baseline must PASS.
+near_zero_noise = synthetic(1e-9 + 1e-12)
+verdict_noise = gate.compare(near_zero_base, near_zero_noise, names, gate.TOLERANCE)
+assert verdict_noise['passed'], verdict_noise
+
+# (2) A physically real perturbation on the same near-zero baseline must still FAIL.
+near_zero_real = synthetic(1e-9 + 1e-6)
+verdict_real = gate.compare(near_zero_base, near_zero_real, names, gate.TOLERANCE)
+assert not verdict_real['passed'], verdict_real
+
+# (3) The floor must not switch off the relative check on a normal-scale baseline:
+# a delta just over the relative tolerance (but nowhere near the 1e-9 floor in
+# absolute terms is irrelevant here -- it's far larger) must still FAIL. This is
+# the case the floor could accidentally neuter if set carelessly.
+normal_base_value = 0.16  # representative per-frame residual on the real rig
+normal_base = synthetic(normal_base_value)
+over_relative = normal_base_value * (gate.TOLERANCE['relative'] * 2)  # 2x the bar
+normal_candidate = synthetic(normal_base_value + over_relative)
+verdict_normal = gate.compare(normal_base, normal_candidate, names, gate.TOLERANCE)
+assert not verdict_normal['passed'], verdict_normal
+# Sanity: that delta is far above the absolute floor, so this genuinely
+# exercises the relative bar, not the floor accidentally doing the work.
+assert over_relative > gate.TOLERANCE['absolute'] * 100, over_relative
+
 print('IK_MATCH_GATE_OK')
