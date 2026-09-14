@@ -22,7 +22,7 @@ Blender version, so running this under 4.5 and 5.2 accumulates both into one
 file instead of each overwriting the other.
 """
 from pathlib import Path
-import importlib, json, sys, time
+import importlib, json, os, sys, time
 
 fixture = Path(__file__).with_name('test_addon_registration_blender.py')
 exec(compile(fixture.read_text().split('addon_utils.disable(MODULE')[0], str(fixture), 'exec'))
@@ -55,6 +55,16 @@ for source in sources:
             frame_count=len(base['residuals']),
             bone_count=len(base['names']),
             native_solves=nat['counts'].get('native_solves', 0),
+            # Chain-frames the native collinearity guard refused outright, from
+            # the dedicated counter rather than inferred from
+            # candidates_native / 17. The derivation still agrees and is kept in
+            # the results document as corroboration, but this is the figure to
+            # cite -- and the one to ask for when someone reports that the
+            # native default did not speed their rig up.
+            native_declined=nat['counts'].get('native_declined', 0),
+            decline_rate=(nat['counts'].get('native_declined', 0)
+                          / nat['counts']['native_solves']
+                          if nat['counts'].get('native_solves') else 0.0),
             engaged=engaged,
             guards_declined=not engaged,
             declined_reason=declined,
@@ -68,7 +78,9 @@ for source in sources:
         )
         runs.append(row)
         print(f"NATIVE_ROW {version} {row['source']}/{scenario}/{limbs} "
-              f"native_solves={row['native_solves']} engaged={engaged} "
+              f"native_solves={row['native_solves']} "
+              f"declined={row['native_declined']} "
+              f"({100.0 * row['decline_rate']:.1f}%) engaged={engaged} "
               f"passed={verdict['passed']} worse={verdict['frames_worse']} "
               f"identical={verdict['frames_identical']} "
               f"total_delta={verdict['total_delta']:.6g} "
@@ -87,6 +99,8 @@ result = dict(
     guards_declined=[f"{r['source']}/{r['scenario']}/{r['limbs']}" for r in declined],
     failing_rows=[f"{r['source']}/{r['scenario']}/{r['limbs']}" for r in failing],
     max_pose_difference=max((r['verdict']['max_pose_difference'] for r in runs), default=0.0),
+    native_solves=sum(r['native_solves'] for r in runs),
+    native_declined=sum(r['native_declined'] for r in runs),
     total_seconds_blender=seconds_blender,
     total_seconds_native=seconds_native,
     speedup=(seconds_blender / seconds_native) if seconds_native else 0.0,
@@ -94,11 +108,26 @@ result = dict(
     runs=runs,
 )
 
-out = ROOT / 'docs' / 'benchmarks' / 'native-default-2026-09-13.json'
+# native-default-2026-09-13.json is the evidence the default flip rests on: a
+# full 14-row corpus per Blender version. A narrowed run (SUB_IK_CORPUS=...)
+# measures something else and must never land there -- merging by version key
+# would replace a complete version entry with a partial one and silently destroy
+# the record. Narrowed runs get their own file, named for the selection.
+selection = os.environ.get('SUB_IK_CORPUS')
+if selection:
+    leaf = 'native-default-2026-09-13-' + selection.replace(',', '-') + '.json'
+else:
+    leaf = 'native-default-2026-09-13.json'
+out = ROOT / 'docs' / 'benchmarks' / leaf
 out.parent.mkdir(parents=True, exist_ok=True)
 # Merge rather than overwrite: this script is run once per Blender version and
 # the decision rests on both.
 table = json.loads(out.read_text()) if out.is_file() else {}
+if selection:
+    table['corpus_selection'] = selection
+    table['partial'] = ('Narrowed run: SUB_IK_CORPUS was set, so this is not the '
+                        'corpus the default flip rests on. See '
+                        'native-default-2026-09-13.json for that.')
 table.update(generated='2026-09-13', tolerance=gate.TOLERANCE,
              baseline_variant='blender', candidate_variant='native',
              sources=[s['name'] for s in sources])

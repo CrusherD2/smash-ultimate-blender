@@ -1260,6 +1260,19 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
     if (native is not None and os.environ.get('SUB_NATIVE_SEARCH', '1') == '1'
             and ik_native.enabled() and not ik_native.verifying()):
         found = native.search(reference_columns, seeds, _POLE_TOLERANCE, _POLE_REFINE_STEPS)
+        if found is None:
+            # The native collinearity guard refused this chain-frame and the
+            # Python search below will do the whole thing instead. Counted per
+            # chain-frame so it is directly comparable to native_solves: the
+            # ratio is the fallback rate, and the fallback rate is the whole
+            # difference between the accelerator helping and doing nothing.
+            #
+            # This is the only user-visible handle on why the default might not
+            # speed a particular rig up. Everything else about a decline is
+            # silent by design -- the output stays correct, it just costs what
+            # it always cost. Measured 0% on 24 of the 28 corpus rows and 21.3%
+            # on the worst; see docs/benchmarks/native-default-2026-09-13.md.
+            diag.add('native_declined', 0.0, 1)
     if found is not None:
         angle = found[0]
     else:

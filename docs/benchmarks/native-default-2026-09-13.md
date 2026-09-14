@@ -113,12 +113,41 @@ per-frame fallback is part of why that identity is reachable, and it stays.
 
 ## What the near-straight rows actually show
 
+**The fallback rate is now measured directly.** `native_declined` is a dedicated
+`diag` counter, incremented per chain-frame at the point `native.search(...)`
+returns `None` and the Python search takes over (`ik_channels.py`). It sits
+beside `native_solves`, so their ratio is the fallback rate — the single number
+that explains why the accelerator would help one rig and not another, and the
+figure to ask for when someone reports that the default did not speed theirs up.
+
+| row | chain-frames | declined | rate |
+|---|---:|---:|---:|
+| baseline / parent_scale | 628 | **34** | 5.4% |
+| near_straight / normal | 160 | **19** | 11.9% |
+| near_straight / parent_scale | 160 | **34** | 21.3% |
+| near_straight / stretch | 160 | **19** | 11.9% |
+| every other row (24 of 28) | — | **0** | 0% |
+
+The three `near_straight` figures are direct counter readings from
+`docs/benchmarks/native-default-2026-09-13-near_straight.json`, a narrowed
+re-run on Blender 5.2 (`SUB_IK_CORPUS=near_straight`). The `baseline` figure is
+derived, below; the counter post-dates the 28-row corpus run and that run was
+deliberately not repeated.
+
+### Corroboration: the same numbers, derived independently
+
+The direct counter agrees exactly with an inference available from the original
+committed data, which is how the fallback picture was first worked out.
+
 The "Py candidates" column is `diag`'s `candidates` counter, incremented in
 `error()` inside `_match_chain_steps`. On the native path that whole block is
 inside the `else:` of `if found is not None` (`ik_channels.py:1263`), so it is
-reached **only** when `native.search(...)` returned `None` — i.e. when the
-native collinearity guard declined that chain-frame and Blender's golden-section
-search took over. **It is a fallback counter, not a work counter.**
+reached **only** on a declined chain-frame. **It is a fallback counter, not a
+work counter** — which is why it does not scale with frame count (578 on both a
+157-frame and a 40-frame run, 323 on two 40-frame runs): declines depend on how
+much degenerate geometry a clip contains, not how long it is.
+`candidates_blender` scales exactly with frames because there every chain-frame
+runs the Python search; `candidates_native` cannot.
 
 Each declined chain-frame costs exactly 17 evaluations: 3 seeds through
 `best(seeds)`, then `error(angle)` free from the memo, `error(a)` and `error(b)`,
@@ -126,17 +155,18 @@ Each declined chain-frame costs exactly 17 evaluations: 3 seeds through
 The Blender-variant rows confirm the constant independently — `candidates_blender
 / native_solves` is exactly 17.0 on every row of both versions (10676/628,
 5338/314, 2720/160, 170/10), across 1,712 chain-frames, which also shows the
-`_POLE_TOLERANCE` early exit never fires on this content.
+`_POLE_TOLERANCE` early exit never fires on this content, so the decomposition is
+unique rather than merely consistent.
 
-Dividing through:
+| row | Py candidates | ÷ 17 | counter says |
+|---|---:|---:|---:|
+| near_straight / normal | 323 | 19 | **19** |
+| near_straight / parent_scale | 578 | 34 | **34** |
+| near_straight / stretch | 323 | 19 | **19** |
+| baseline / parent_scale | 578 | 34 | *not re-run* |
 
-| row | chain-frames | Py candidates | declined | share |
-|---|---:|---:|---:|---:|
-| baseline / parent_scale | 628 | 578 | **34** | 5.4% |
-| near_straight / normal | 160 | 323 | **19** | 11.9% |
-| near_straight / parent_scale | 160 | 578 | **34** | 21.3% |
-| near_straight / stretch | 160 | 323 | **19** | 11.9% |
-| every other row (24 of 28) | — | 0 | **0** | 0% |
+Three for three. That validates the arithmetic on the fourth row, where the
+committed `candidates_native` of 578 gives 34 declines of 628 chain-frames.
 
 ### What `max_pose_difference == 0.0` does and does not prove
 
@@ -159,25 +189,64 @@ it declines at 2–4x the rate of the one real-motion configuration that does. T
 solver did not handle near-collinear geometry; it refused it, and Blender picked
 it up. The 0.0 pose difference is a property of the composed path.
 
-**Why the column does not scale with frame count** (578 on both a 157-frame and a
-40-frame run; 323 on two 40-frame runs) is the same fact stated differently:
-declines depend on how much *degenerate geometry* a clip contains, not on how
-long it is. `candidates_blender` scales exactly with frames because there every
-chain-frame runs the Python search; `candidates_native` cannot, because it counts
-only the declined ones.
+## What this evidence licenses, and what it does not
 
-The 19/19 pair is fully accounted for: `normal` and `stretch` drive the same pole
-search on this rig, so they decline on the same chain-frames. **The 34/34 pair
-across two different fixtures is not yet verified.** The plausible mechanism is
-that `near_straight.blend` *is* `baseline.blend` — `tests/build_near_straight_fixture_blender.py`
-opens the baseline, trims the range to 40 frames and overwrites only the bend
-bone's `rotation_euler.x`, leaving every other channel intact — so the two
-`parent_scale` runs share the same rig, the same parent-scale configuration and
-the same first 40 frames of every other channel. If `parent_scale`'s declines are
-driven by that scaled parent rather than by the bend, and fall inside frames
-1–40, both rows would decline on the same 34 chain-frames by construction rather
-than by coincidence. That is a falsifiable hypothesis, not a measurement: it
-needs a per-frame decline trace to confirm, which has not been run.
+**The 28/28 result is evidence about the composed path — native search plus
+guards plus per-frame fallback plus Blender — and not about the Rust solver on
+its own.** The guards declining is part of *why* the result is clean, not an
+asterisk on it. Three consequences, stated plainly because the number is
+otherwise easy to over-read:
+
+1. **It is not licence to loosen or remove the collinearity guard.** The rows
+   where the guard fired hardest are exactly the near-collinear rows the Rust
+   README says the solver gets wrong. Removing the guard removes the thing that
+   produced the 0.0, and this data says nothing whatever about what the solver
+   would return in its place. A change there needs its own corpus run, measured
+   the same way, and cannot cite this one.
+2. **It is not a claim that the Rust arithmetic matches Eigen's.** See the
+   section above: the gate compares the selected pole angle, which is the only
+   thing that reaches a user's file.
+3. **It does not bound the fallback rate on unseen rigs.** 0% on 24 rows and
+   21.3% on the worst comes from two animations and two rigs. A rig that declines
+   far more would still be *correct* — Blender finishes those chain-frames — but
+   would get little of the speedup. `native_declined` exists so that case is
+   diagnosable in one number instead of guessed at.
+
+### The repeated counts are a shared cause, not a coincidence
+
+Two pairs repeat across rows — 19/19 and 34/34 — and both now have an account.
+
+**19/19 is direct:** `near_straight/normal` and `near_straight/stretch` drive the
+same pole search on the same rig, so they decline on the same chain-frames.
+
+**34/34 is supported by the counts themselves.** `near_straight.blend` *is*
+`baseline.blend`: `tests/build_near_straight_fixture_blender.py` opens the
+baseline, trims the range to 40 frames and overwrites **only** the bend bone's
+`rotation_euler.x`, leaving every other channel — including the parent bone that
+`parent_scale` scales — exactly as the baseline has it. Three measurements then
+fit together and rule out the alternatives:
+
+- `baseline/normal` declines **0**. On the baseline clip the bend geometry alone
+  causes no declines at all, so every one of `baseline/parent_scale`'s 34 is
+  caused by the scaled parent.
+- `near_straight/normal` declines **19**, caused by the straightened bend.
+- `near_straight/parent_scale` declines **34** — not 53. If the two mechanisms
+  were independent and additive, the bend's 19 and the parent's 34 would give
+  roughly 53. They do not add; the parent-scale declines subsume the bend ones.
+- And 34 is *the same* count on a 157-frame clip and a 40-frame one. A
+  frame-proportional cause would have given the 40-frame run about a quarter as
+  many, ~9, not 34.
+
+The reading consistent with all four: under `parent_scale` the scaled parent
+determines which chain-frames decline, that set is the same in both fixtures
+because the fixtures share those channels, and it already covers whatever the
+bend would have caused on its own.
+
+**What is still not measured:** that these are literally the same chain-frames.
+Confirming that needs a per-frame decline trace on `baseline`, which would mean
+re-running the full baseline source, and the 28-row corpus was deliberately not
+re-run in this round. The mechanism is supported by four independent counts, not
+proven by frame-level identity.
 
 ## Independent confirmation on a production rig
 
@@ -275,6 +344,16 @@ The driver merges each version's rows into
 `docs/benchmarks/native-default-2026-09-13.json` under `versions`, so the two
 runs accumulate rather than overwrite each other. The resolution rule itself is
 pinned by `tests/test_native_default_blender.py`.
+
+Setting `SUB_IK_CORPUS` narrows the corpus and redirects the output to
+`native-default-2026-09-13-<selection>.json`, flagged `partial`, so a narrowed
+run cannot replace a complete version entry in the file the default flip rests
+on. The decline figures above came from:
+
+```powershell
+$env:SUB_IK_CORPUS='near_straight'
+python tests/run_blender_test.py --blender '...\Blender 5.2\blender.exe' tests/benchmark_native_corpus_blender.py
+```
 
 The production-rig fingerprints and timings come from
 `tests/benchmark_shyguy_match_blender.py`, run twice — once with `SUB_NATIVE_IK`
