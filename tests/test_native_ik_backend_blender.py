@@ -37,8 +37,13 @@ for job in jobs:
 with patch.dict(os.environ,{'SUB_NATIVE_IK':'0'}):
     assert native.get_factory() is None
 with patch.dict(os.environ):
+    # An unset variable used to mean off. It now means on where the backend is
+    # supported -- see docs/benchmarks/native-default-2026-09-13.md. This file
+    # runs only on supported builds, so the factory must exist.
     os.environ.pop('SUB_NATIVE_IK',None)
-    assert native.get_factory() is None
+    factory=native.get_factory()
+    assert factory is not None
+    factory.close()
 os.environ['SUB_NATIVE_IK']='1'
 assert native.get_factory() is not None
 with patch.object(native.Path,'is_file',return_value=False):

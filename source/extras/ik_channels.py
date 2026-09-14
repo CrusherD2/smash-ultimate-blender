@@ -1247,10 +1247,13 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
     seeds = [delta, -delta, entry['angle'] or 0.0]
     # One native call per chain and frame instead of one crossing per
     # candidate. Verification mode keeps the per-candidate path, because its
-    # whole purpose is comparing each candidate against Blender.
+    # whole purpose is comparing each candidate against Blender. The mode is
+    # resolved by ik_native rather than read from the environment here, so this
+    # gate and get_factory's cannot disagree about what an unset variable means.
+    from . import ik_native
     found = None
     if (native is not None and os.environ.get('SUB_NATIVE_SEARCH', '1') == '1'
-            and os.environ.get('SUB_NATIVE_IK') == 'experimental'):
+            and not ik_native.verifying()):
         found = native.search(reference_columns, seeds, _POLE_TOLERANCE, _POLE_REFINE_STEPS)
     if found is not None:
         angle = found[0]

@@ -1,8 +1,11 @@
 """Optional Rust accelerator for independent, two-bone IK matching.
 
-Disabled by default: the native SVD is not bit-compatible on every input.
-SUB_NATIVE_IK=1 verifies every candidate against Blender. The explicitly unsafe
-SUB_NATIVE_IK=experimental mode exists only for performance experiments.
+On by default where it is supported (Windows x64, Blender 4.5/5.2, bundled DLL),
+adopted on the corpus evidence in docs/benchmarks/native-default-2026-09-13.md.
+SUB_NATIVE_IK=0 forces it off everywhere, SUB_NATIVE_IK=1 verifies every
+candidate against Blender, SUB_NATIVE_IK=experimental is the explicit spelling
+of the default. The native SVD is not proven bit-compatible on every input, so
+the per-frame guards and fallbacks here remain the reason that is survivable.
 """
 import ctypes
 import json
@@ -14,6 +17,28 @@ from mathutils import Matrix
 from . import ik_match_diag as diag
 
 _dll = None
+
+# Unset means the native backend is on where it is supported. '0' forces it off
+# everywhere; '1' is verification mode; 'experimental' is the same acceleration
+# as the default, named explicitly. Adopted on the evidence in
+# docs/benchmarks/native-default-2026-09-13.md: 28 corpus runs across three
+# fixtures and both supported Blender versions, every solved pose bit-identical
+# to Blender's backend, no run declined by the guards.
+_DEFAULT_MODE = 'experimental'
+# Anything outside this set -- including an explicit '0' -- leaves Blender's
+# path in place. Read through mode() and never directly, so get_factory,
+# evaluate_steps and ik_channels' native pole search cannot drift apart.
+_ENABLED_MODES = {'1', 'experimental'}
+
+
+def mode():
+    """The resolved SUB_NATIVE_IK mode, with the default already applied."""
+    return os.environ.get('SUB_NATIVE_IK', _DEFAULT_MODE)
+
+
+def verifying():
+    """True when every native candidate must be re-checked against Blender."""
+    return mode() == '1'
 
 
 class Solver:
@@ -151,7 +176,7 @@ def get_factory():
     import platform
     # Bundled binary and numerical comparisons currently cover these Windows
     # builds. Other platforms/versions retain Blender's existing implementation.
-    if (os.environ.get('SUB_NATIVE_IK') not in {'1', 'experimental'} or sys.platform != 'win32'
+    if (mode() not in _ENABLED_MODES or sys.platform != 'win32'
             or platform.machine().lower() not in {'amd64','x86_64'}
             or bpy.app.version[:2] not in {(4,5),(5,2)}
             or not (Path(__file__).resolve().parents[2] / 'native/bin/sub_ik_match_native.dll').is_file()):
@@ -216,7 +241,7 @@ def evaluate_steps(context, steps, batch):
                         request.matrices = [Matrix([output[i+r*4:i+r*4+4] for r in range(4)])
                                             for i in range(offset,offset+size,16)]
                     offset += size
-            verify = os.environ.get('SUB_NATIVE_IK') != 'experimental'
+            verify = verifying()
             if verify or any(r.solver.fallback for r in requests):
                 if diag.enabled():
                     start = time.perf_counter()

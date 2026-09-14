@@ -7,8 +7,10 @@ the original search order, scoring and key writer. No Rust worker accesses
 Blender data. The standalone CLI is also retained for numerical diagnostics.
 
 The Windows x64 library is bundled at `native/bin/sub_ik_match_native.dll`.
-It is disabled by default. Opt-in selection covers Blender 4.5 and 5.2, independent generated
-two-bone chains with spherical joints, one position goal and a pole target.
+It is enabled by default where it is supported, on the corpus evidence in
+`docs/benchmarks/native-default-2026-09-13.md`. Selection covers Blender 4.5 and 5.2,
+independent generated two-bone chains with spherical joints, one position goal and a
+pole target.
 Existing dependency checks must pass before selecting it. Custom solver
 constraints, IK limits/locks/stiffness, rotational goals, native IK stretch,
 other platforms/versions and missing binaries retain the Blender path.
@@ -27,8 +29,10 @@ restores the frame and constraint state if the operation raises.
 Blender too, compared component by component, and Blender's matrices are used.
 This preserves exactness but adds overhead; it is for development, not acceleration.
 `SUB_NATIVE_IK=experimental` skips that verification and can change results.
-Do not enable it when exact matching is required. With no environment override,
-ordinary matching and import retain the previously optimized Blender path.
+Do not rely on either when bit-exact matching is required rather than measured.
+With no environment override, ordinary matching and import now take the native path
+where the guards above admit it, and the previously optimized Blender path everywhere
+else.
 
 The acceptance heuristics do not establish a numerical compatibility boundary.
 The diagnostic kernel's unrestricted iterations produced divergent results on
@@ -83,7 +87,7 @@ Sceptile fixtures under `.tests/benchmarks/ik_apply/out/`; the benchmark accepts
 available, otherwise the current source with the accelerator disabled. They
 record whole-rig pose and key fingerprints, compiler-input/DLL hashes and timing.
 
-`SUB_NATIVE_IK=0` explicitly disables the experimental backend. `SUB_NATIVE_THREADS`
+`SUB_NATIVE_IK=0` explicitly disables the native backend everywhere. `SUB_NATIVE_THREADS`
 selects one or four native threads. Frames and previous-angle candidates remain
 ordered; only independent limbs are eligible for native batch execution.
 One thread is the default: measured whole-operation times were faster than with

@@ -108,11 +108,24 @@ animation export.
   any of them run, one bought no measurable speed, and another was twice as
   slow because it forced a full fallback. None were adopted; see
   `docs/benchmarks/isolated-dependencies-2026-09-13.md` for the measurements
-- An experimental Rust accelerator for generated two-bone chains remains bundled but
-  **disabled by default**: it cannot reproduce Eigen's SVD arithmetic exactly on
-  near-straight chains. `SUB_NATIVE_IK=1` verifies every native candidate against
-  Blender (exact, but slower than the default); `SUB_NATIVE_IK=experimental` opts
-  into unverified native results and must not be used when exact matching is required
+- A bundled Rust accelerator for generated two-bone chains is now **on by default**
+  on Windows x64 under Blender 4.5 and 5.2, roughly halving import and match times
+  again on top of the fast paths above. It was previously off because its bar was
+  bit-identity with Blender's solver, which it could not claim on near-straight
+  chains; it was adopted against an outcome-based gate instead, after 28 corpus
+  runs across two rigs, two animations and both supported Blender versions came
+  back bit-identical to Blender's backend with no run declined — including a clip
+  generated specifically to be near-straight. Unsupported platforms, Blender
+  versions, rig features and constraint setups keep Blender's path exactly as
+  before, as does every existing per-frame fallback; see
+  `docs/benchmarks/native-default-2026-09-13.md`
+- `SUB_NATIVE_IK=0` turns the accelerator off everywhere, and `SUB_NATIVE_IK=1`
+  still verifies every native candidate against Blender (exact, but slower than
+  either default). Because a corpus is evidence and not a proof, **results are no
+  longer guaranteed bit-identical to Blender's backend on degenerate geometry** —
+  synthetic near-collinear poses exist where the two differ, in matrix elements
+  whose exact value is zero. Use `SUB_NATIVE_IK=1` or `=0` where exactness must be
+  guaranteed rather than measured
 
 ## Bug fixes
 
