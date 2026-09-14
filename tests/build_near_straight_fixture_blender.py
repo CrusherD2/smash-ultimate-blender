@@ -23,7 +23,6 @@ scene.frame_end = scene.frame_start + 39
 # the loop below silently iterates zero chains and no keyframes are written.
 ik.create_controls(bpy.context, obj, 'BOTH')
 for _kind, chain, _t, _p in ik.chains(obj, 'BOTH'):
-    path = ik.limb_path(obj, chain)
     middle = obj.pose.bones[ik.bend_name(obj, chain)]
     middle.rotation_mode = 'XYZ'
     for index, frame in enumerate(range(scene.frame_start, scene.frame_end + 1)):
