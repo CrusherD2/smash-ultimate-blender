@@ -1055,20 +1055,6 @@ _POLE_TOLERANCE = 1e-9
 # at 4 -- so 12 is where the search has genuinely converged rather than where
 # the trade merely still looks acceptable.
 _POLE_REFINE_STEPS = 12
-# Relative bracket width at which the adaptive search stops. Matches the
-# acceptance gate's per-frame relative tolerance in
-# docs/superpowers/specs/2026-09-13-adaptive-ik-search-design.md, so the search
-# cannot stop at a point the gate would reject.
-_ADAPTIVE_RELATIVE = 1e-5
-
-
-def _adaptive_enabled():
-    """True when SUB_IK_ADAPTIVE=1 asked for the convergence-based stop.
-
-    Off by default: unset, the refinement loop runs its fixed
-    _POLE_REFINE_STEPS iterations exactly as before.
-    """
-    return os.environ.get('SUB_IK_ADAPTIVE') == '1'
 
 
 def _chain_cache(obj, jobs):
@@ -1299,7 +1285,6 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
             a, b = hi-ratio*(hi-lo), lo+ratio*(hi-lo)
             fa = yield from error(a)
             fb = yield from error(b)
-            adaptive = _adaptive_enabled()
             for _ in range(_POLE_REFINE_STEPS):
                 if fa < fb:
                     hi, b, fb = b, a, fa
@@ -1309,17 +1294,6 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
                     lo, a, fa = a, b, fb
                     b = lo+ratio*(hi-lo)
                     fb = yield from error(b)
-                # Stop once the bracket can no longer move the score by more
-                # than the acceptance tolerance allows. Relative to the current
-                # best score, so a large-residual frame is not held to the same
-                # absolute bar as a near-perfect one. The loop is still capped
-                # at _POLE_REFINE_STEPS, so the worst case is exactly the fixed
-                # search's cost and never more.
-                if adaptive:
-                    converged = fa if fa < fb else fb
-                    if abs(fa - fb) <= _ADAPTIVE_RELATIVE * max(converged, 1e-12):
-                        diag.add('adaptive_early', 0.0, 1)
-                        break
             angle = yield from best((angle, a, b))
     if native is not None:
         native.close()
