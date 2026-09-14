@@ -2,7 +2,8 @@
   "generated": "2026-09-13",
   "tolerance": {
     "relative": 1e-05,
-    "pose": 0.0001
+    "pose": 0.0001,
+    "absolute": 1e-09
   },
   "variant": "blender",
   "sources": [
@@ -11,7 +12,7 @@
     "shyguy_static"
   ],
   "run_count": 14,
-  "total_seconds": 27.272737800027244,
+  "total_seconds": 36.23418309999397,
   "runs": [
     {
       "source": "baseline",
@@ -22,7 +23,7 @@
       "bone_count": 12,
       "total_residual": 109943.63674022951,
       "candidates": null,
-      "seconds": 1.4289886999758892
+      "seconds": 2.954775999998674
     },
     {
       "source": "baseline",
@@ -33,7 +34,7 @@
       "bone_count": 6,
       "total_residual": 66477.9660783052,
       "candidates": null,
-      "seconds": 1.0747655000304803
+      "seconds": 1.708461600006558
     },
     {
       "source": "baseline",
@@ -44,7 +45,7 @@
       "bone_count": 6,
       "total_residual": 43465.67066192433,
       "candidates": null,
-      "seconds": 1.242381700023543
+      "seconds": 1.2593436999595724
     },
     {
       "source": "baseline",
@@ -55,7 +56,7 @@
       "bone_count": 12,
       "total_residual": 110517.32287536132,
       "candidates": null,
-      "seconds": 1.6210304000414908
+      "seconds": 1.5871277000405826
     },
     {
       "source": "baseline",
@@ -66,7 +67,7 @@
       "bone_count": 12,
       "total_residual": 125208.89223091018,
       "candidates": null,
-      "seconds": 1.5638532000011764
+      "seconds": 1.579991600010544
     },
     {
       "source": "baseline",
@@ -77,7 +78,7 @@
       "bone_count": 12,
       "total_residual": 109943.64222178739,
       "candidates": null,
-      "seconds": 1.9501241999678314
+      "seconds": 1.7885653000557795
     },
     {
       "source": "baseline",
@@ -88,7 +89,7 @@
       "bone_count": 12,
       "total_residual": 247122.18631863504,
       "candidates": null,
-      "seconds": 1.471242900006473
+      "seconds": 1.6567042999668047
     },
     {
       "source": "baseline",
@@ -99,7 +100,7 @@
       "bone_count": 12,
       "total_residual": 333419.3269500051,
       "candidates": null,
-      "seconds": 1.480583900003694
+      "seconds": 1.5930423999670893
     },
     {
       "source": "baseline",
@@ -110,7 +111,7 @@
       "bone_count": 12,
       "total_residual": 213796.5157480005,
       "candidates": null,
-      "seconds": 1.4487411000300199
+      "seconds": 1.6230849999701604
     },
     {
       "source": "baseline",
@@ -121,7 +122,7 @@
       "bone_count": 12,
       "total_residual": 109943.63674022951,
       "candidates": null,
-      "seconds": 1.4767330000177026
+      "seconds": 1.626913300016895
     },
     {
       "source": "near_straight",
@@ -132,7 +133,7 @@
       "bone_count": 12,
       "total_residual": 25999.26316217476,
       "candidates": null,
-      "seconds": 0.4481868000002578
+      "seconds": 0.4411705000093207
     },
     {
       "source": "near_straight",
@@ -143,7 +144,7 @@
       "bone_count": 12,
       "total_residual": 26638.57646152317,
       "candidates": null,
-      "seconds": 0.4908764999709092
+      "seconds": 0.5261498999898322
     },
     {
       "source": "near_straight",
@@ -154,7 +155,7 @@
       "bone_count": 12,
       "total_residual": 142629.4029759935,
       "candidates": null,
-      "seconds": 0.4751486000022851
+      "seconds": 0.469964699994307
     },
     {
       "source": "shyguy_static",
@@ -165,7 +166,7 @@
       "bone_count": 6,
       "total_residual": 9.409473881584107e-10,
       "candidates": null,
-      "seconds": 0.13535830000182614
+      "seconds": 0.17531700001563877
     }
   ]
 }
