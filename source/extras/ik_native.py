@@ -22,8 +22,9 @@ _dll = None
 # everywhere; '1' is verification mode; 'experimental' is the same acceleration
 # as the default, named explicitly. Adopted on the evidence in
 # docs/benchmarks/native-default-2026-09-13.md: 28 corpus runs across three
-# fixtures and both supported Blender versions, every solved pose bit-identical
-# to Blender's backend, no run declined by the guards.
+# fixtures and both supported Blender versions, every solved pose identical to
+# Blender's backend, with the guards declining no run outright and Blender
+# finishing the chain-frames they did decline.
 _DEFAULT_MODE = 'experimental'
 # Anything outside this set -- including an explicit '0' -- leaves Blender's
 # path in place. Read through mode() and never directly, so get_factory,
@@ -36,8 +37,18 @@ def mode():
     return os.environ.get('SUB_NATIVE_IK', _DEFAULT_MODE)
 
 
+def enabled():
+    """True when the resolved mode asks for the native backend at all."""
+    return mode() in _ENABLED_MODES
+
+
 def verifying():
-    """True when every native candidate must be re-checked against Blender."""
+    """True when every native candidate must be re-checked against Blender.
+
+    False under SUB_NATIVE_IK=0 as well as under the accelerating modes, so this
+    answers "verify or not" and never "native or not". Pair it with enabled()
+    wherever both questions are being asked.
+    """
     return mode() == '1'
 
 
@@ -176,7 +187,7 @@ def get_factory():
     import platform
     # Bundled binary and numerical comparisons currently cover these Windows
     # builds. Other platforms/versions retain Blender's existing implementation.
-    if (mode() not in _ENABLED_MODES or sys.platform != 'win32'
+    if (not enabled() or sys.platform != 'win32'
             or platform.machine().lower() not in {'amd64','x86_64'}
             or bpy.app.version[:2] not in {(4,5),(5,2)}
             or not (Path(__file__).resolve().parents[2] / 'native/bin/sub_ik_match_native.dll').is_file()):

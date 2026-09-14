@@ -3,7 +3,12 @@ from pathlib import Path
 import os, importlib, json, time, hashlib, cProfile, pstats, io
 fixture=Path(__file__).with_name('test_addon_registration_blender.py')
 exec(compile(fixture.read_text().split('addon_utils.disable(MODULE')[0],str(fixture),'exec'))
-os.environ['SUB_NATIVE_IK']='0'
+# Defaults to Blender's backend so the historical figures in
+# docs/benchmarks/shyguy-fresh-foot-ik-2026-09-13.md stay reproducible, but an
+# explicit SUB_NATIVE_IK wins: pass 'experimental' to measure and fingerprint the
+# shipped default instead. Both rows of the comparison in
+# docs/benchmarks/native-default-2026-09-13.md are produced this way.
+os.environ.setdefault('SUB_NATIVE_IK','0')
 ik=importlib.import_module(MODULE+'.source.extras.ik_channels')
 anim=importlib.import_module(MODULE+'.source.anim.import_anim')
 curves=importlib.import_module(MODULE+'.source.anim.fcurve_compat')

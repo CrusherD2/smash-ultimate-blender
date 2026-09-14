@@ -1,9 +1,15 @@
 # Smash Viewport native plugin
 
-The independent [experimental Rust IK accelerator](ik_match/README.md) explores
-faster Position IK Controls and animation import. It is disabled by default
-because some inputs differ from Blender. Its build and validation are separate from the
-viewport renderer described below.
+The independent [Rust IK accelerator](ik_match/README.md) speeds up Position IK
+Controls and animation import. It is **enabled by default** on Windows x64 under
+Blender 4.5 and 5.2; every other platform, Blender version, and unsupported rig
+or constraint setup keeps Blender's own solver, as does every per-frame fallback.
+`SUB_NATIVE_IK=0` turns it off everywhere and `SUB_NATIVE_IK=1` verifies each
+native candidate against Blender — results are not guaranteed bit-identical to
+Blender's backend on degenerate geometry, so use one of those where exactness
+must be guaranteed rather than measured. See
+[the adoption evidence](../docs/benchmarks/native-default-2026-09-13.md). Its
+build and validation are separate from the viewport renderer described below.
 
 Blender's Python GPU overlay cannot match SSBH Editor. This crate wraps
 `ssbh_wgpu` (the same renderer SSBH Editor uses), renders offscreen, and the

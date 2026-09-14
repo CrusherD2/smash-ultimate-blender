@@ -10,14 +10,26 @@ flipping the default."* This is that widening, and the decision it supports.
 ## Verdict: adopt. The native backend is on by default where it is supported
 
 **28 runs — three fixtures, fourteen configurations, both supported Blender
-versions — every one bit-identical to Blender's backend. `max_pose_difference`
-is exactly 0.0 on all 28. No run was declined by the guards.**
+versions — every one produced the same solved pose as Blender's backend.
+`max_pose_difference` is exactly 0.0 on all 28, `total_delta` 0, no frame fits
+worse. No run was declined outright by the guards.**
 
-That includes the fixture this was expected to fail on. `native/ik_match/README.md`
-states plainly that *"near-straight test cases still differ"*, and the corpus
-carries a generated straightening clip whose minimum bend is 0.0098 rad for
-exactly that reason. It did not differ. All three of its configurations engaged
-the native solver (160 solves each) and returned Blender's matrices bit for bit.
+That includes the fixture this was expected to fail on — but read what happened
+there carefully, because it is not what it first looks like.
+`native/ik_match/README.md` states plainly that *"near-straight test cases still
+differ"*, and the corpus carries a generated straightening clip whose minimum
+bend is 0.0098 rad for exactly that reason. The composed path matched Blender
+anyway. **It matched because the guards declined the hard chain-frames and
+Blender's own search finished them — not because the Rust solver reproduced
+Eigen's arithmetic on near-collinear geometry.** The README's prediction was
+routed around, not falsified. "What the near-straight rows actually show", below,
+puts a number on it.
+
+That distinction does not weaken the decision: "the composed path returns
+Blender's answer" is precisely what the criterion asks, and the fallback is part
+of the shipped product, not a caveat on it. It matters for what the next person
+concludes about the Rust solver itself, which is a different claim and is not
+supported here.
 
 ## Environment
 
@@ -35,44 +47,44 @@ the native solver (160 solves each) and returned Blender's matrices bit for bit.
 
 ## Blender 5.2.1 LTS
 
-| source | scenario | limbs | frames | native solves | gate | frames worse | identical | total_delta | max pose diff | s Blender | s native |
-|---|---|---|---:|---:|---|---:|---:|---:|---:|---:|---:|
-| baseline | normal | BOTH | 157 | 628 | PASS | 0 | 157 | 0 | **0.0** | 1.280 | 0.649 |
-| baseline | normal | ARMS | 157 | 314 | PASS | 0 | 157 | 0 | **0.0** | 0.968 | 0.396 |
-| baseline | normal | LEGS | 157 | 314 | PASS | 0 | 157 | 0 | **0.0** | 1.029 | 0.459 |
-| baseline | object_scale | BOTH | 157 | 628 | PASS | 0 | 157 | 0 | **0.0** | 1.422 | 0.750 |
-| baseline | parent_scale | BOTH | 157 | 628 | PASS | 0 | 157 | 0 | **0.0** | 1.355 | 0.925 |
-| baseline | inheritance | BOTH | 157 | 628 | PASS | 0 | 157 | 0 | **0.0** | 1.481 | 0.892 |
-| baseline | stretch | BOTH | 157 | 628 | PASS | 0 | 157 | 0 | **0.0** | 1.291 | 0.678 |
-| baseline | arm_pull | BOTH | 157 | 628 | PASS | 0 | 157 | 0 | **0.0** | 1.360 | 0.679 |
-| baseline | animated_stretch | BOTH | 157 | 628 | PASS | 0 | 157 | 0 | **0.0** | 1.308 | 0.655 |
-| baseline | foot_controls | BOTH | 157 | 628 | PASS | 0 | 157 | 0 | **0.0** | 1.315 | 0.672 |
-| near_straight | normal | BOTH | 40 | 160 | PASS | 0 | 40 | 0 | **0.0** | 0.379 | 0.280 |
-| near_straight | parent_scale | BOTH | 40 | 160 | PASS | 0 | 40 | 0 | **0.0** | 0.437 | 0.405 |
-| near_straight | stretch | BOTH | 40 | 160 | PASS | 0 | 40 | 0 | **0.0** | 0.373 | 0.277 |
-| shyguy_static | normal | LEGS | 5 | 10 | PASS | 0 | 5 | 0 | **0.0** | 0.121 | 0.065 |
+| source | scenario | limbs | frames | native solves | Py candidates | gate | frames worse | identical | total_delta | max pose diff | s Blender | s native |
+|---|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|
+| baseline | normal | BOTH | 157 | 628 | 0 | PASS | 0 | 157 | 0 | **0.0** | 1.280 | 0.649 |
+| baseline | normal | ARMS | 157 | 314 | 0 | PASS | 0 | 157 | 0 | **0.0** | 0.968 | 0.396 |
+| baseline | normal | LEGS | 157 | 314 | 0 | PASS | 0 | 157 | 0 | **0.0** | 1.029 | 0.459 |
+| baseline | object_scale | BOTH | 157 | 628 | 0 | PASS | 0 | 157 | 0 | **0.0** | 1.422 | 0.750 |
+| baseline | parent_scale | BOTH | 157 | 628 | 578 | PASS | 0 | 157 | 0 | **0.0** | 1.355 | 0.925 |
+| baseline | inheritance | BOTH | 157 | 628 | 0 | PASS | 0 | 157 | 0 | **0.0** | 1.481 | 0.892 |
+| baseline | stretch | BOTH | 157 | 628 | 0 | PASS | 0 | 157 | 0 | **0.0** | 1.291 | 0.678 |
+| baseline | arm_pull | BOTH | 157 | 628 | 0 | PASS | 0 | 157 | 0 | **0.0** | 1.360 | 0.679 |
+| baseline | animated_stretch | BOTH | 157 | 628 | 0 | PASS | 0 | 157 | 0 | **0.0** | 1.308 | 0.655 |
+| baseline | foot_controls | BOTH | 157 | 628 | 0 | PASS | 0 | 157 | 0 | **0.0** | 1.315 | 0.672 |
+| near_straight | normal | BOTH | 40 | 160 | 323 | PASS | 0 | 40 | 0 | **0.0** | 0.379 | 0.280 |
+| near_straight | parent_scale | BOTH | 40 | 160 | 578 | PASS | 0 | 40 | 0 | **0.0** | 0.437 | 0.405 |
+| near_straight | stretch | BOTH | 40 | 160 | 323 | PASS | 0 | 40 | 0 | **0.0** | 0.373 | 0.277 |
+| shyguy_static | normal | LEGS | 5 | 10 | 0 | PASS | 0 | 5 | 0 | **0.0** | 0.121 | 0.065 |
 
 `run_count: 14`, `native_engaged: 14`, `guards_declined: []`, `failing_rows: []`,
 corpus wall time 14.120 s → 7.782 s (**1.81x**).
 
 ## Blender 4.5.7 LTS
 
-| source | scenario | limbs | frames | native solves | gate | frames worse | identical | total_delta | max pose diff | s Blender | s native |
-|---|---|---|---:|---:|---|---:|---:|---:|---:|---:|---:|
-| baseline | normal | BOTH | 157 | 628 | PASS | 0 | 157 | 0 | **0.0** | 1.085 | 0.658 |
-| baseline | normal | ARMS | 157 | 314 | PASS | 0 | 157 | 0 | **0.0** | 0.760 | 0.397 |
-| baseline | normal | LEGS | 157 | 314 | PASS | 0 | 157 | 0 | **0.0** | 0.831 | 0.442 |
-| baseline | object_scale | BOTH | 157 | 628 | PASS | 0 | 157 | 0 | **0.0** | 1.281 | 0.864 |
-| baseline | parent_scale | BOTH | 157 | 628 | PASS | 0 | 157 | 0 | **0.0** | 1.229 | 0.919 |
-| baseline | inheritance | BOTH | 157 | 628 | PASS | 0 | 157 | 0 | **0.0** | 1.379 | 0.948 |
-| baseline | stretch | BOTH | 157 | 628 | PASS | 0 | 157 | 0 | **0.0** | 1.124 | 0.680 |
-| baseline | arm_pull | BOTH | 157 | 628 | PASS | 0 | 157 | 0 | **0.0** | 1.126 | 0.663 |
-| baseline | animated_stretch | BOTH | 157 | 628 | PASS | 0 | 157 | 0 | **0.0** | 1.111 | 0.667 |
-| baseline | foot_controls | BOTH | 157 | 628 | PASS | 0 | 157 | 0 | **0.0** | 1.112 | 0.671 |
-| near_straight | normal | BOTH | 40 | 160 | PASS | 0 | 40 | 0 | **0.0** | 0.368 | 0.273 |
-| near_straight | parent_scale | BOTH | 40 | 160 | PASS | 0 | 40 | 0 | **0.0** | 0.467 | 0.425 |
-| near_straight | stretch | BOTH | 40 | 160 | PASS | 0 | 40 | 0 | **0.0** | 0.358 | 0.274 |
-| shyguy_static | normal | LEGS | 5 | 10 | PASS | 0 | 5 | 0 | **0.0** | 0.128 | 0.069 |
+| source | scenario | limbs | frames | native solves | Py candidates | gate | frames worse | identical | total_delta | max pose diff | s Blender | s native |
+|---|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|
+| baseline | normal | BOTH | 157 | 628 | 0 | PASS | 0 | 157 | 0 | **0.0** | 1.085 | 0.658 |
+| baseline | normal | ARMS | 157 | 314 | 0 | PASS | 0 | 157 | 0 | **0.0** | 0.760 | 0.397 |
+| baseline | normal | LEGS | 157 | 314 | 0 | PASS | 0 | 157 | 0 | **0.0** | 0.831 | 0.442 |
+| baseline | object_scale | BOTH | 157 | 628 | 0 | PASS | 0 | 157 | 0 | **0.0** | 1.281 | 0.864 |
+| baseline | parent_scale | BOTH | 157 | 628 | 578 | PASS | 0 | 157 | 0 | **0.0** | 1.229 | 0.919 |
+| baseline | inheritance | BOTH | 157 | 628 | 0 | PASS | 0 | 157 | 0 | **0.0** | 1.379 | 0.948 |
+| baseline | stretch | BOTH | 157 | 628 | 0 | PASS | 0 | 157 | 0 | **0.0** | 1.124 | 0.680 |
+| baseline | arm_pull | BOTH | 157 | 628 | 0 | PASS | 0 | 157 | 0 | **0.0** | 1.126 | 0.663 |
+| baseline | animated_stretch | BOTH | 157 | 628 | 0 | PASS | 0 | 157 | 0 | **0.0** | 1.111 | 0.667 |
+| baseline | foot_controls | BOTH | 157 | 628 | 0 | PASS | 0 | 157 | 0 | **0.0** | 1.112 | 0.671 |
+| near_straight | normal | BOTH | 40 | 160 | 323 | PASS | 0 | 40 | 0 | **0.0** | 0.368 | 0.273 |
+| near_straight | parent_scale | BOTH | 40 | 160 | 578 | PASS | 0 | 40 | 0 | **0.0** | 0.467 | 0.425 |
+| near_straight | stretch | BOTH | 40 | 160 | 323 | PASS | 0 | 40 | 0 | **0.0** | 0.358 | 0.274 |
+| shyguy_static | normal | LEGS | 5 | 10 | 0 | PASS | 0 | 5 | 0 | **0.0** | 0.128 | 0.069 |
 
 `run_count: 14`, `native_engaged: 14`, `guards_declined: []`, `failing_rows: []`,
 corpus wall time 12.358 s → 7.951 s (**1.55x**).
@@ -91,13 +103,81 @@ proving nothing. Three things rule that out.
 3. The native runs are measurably faster than the Blender runs on every row. A
    run that fell back everywhere would be slower than Blender, not faster.
 
-The honest caveat on that third point: `native_solves` counts solvers *created*,
-one per chain per frame, not candidates *answered natively*. A solver that hits
-the collinearity guard mid-frame sets `fallback` and Blender finishes that
-chain's search silently. So these 28 rows show that the native path produces
-Blender's answer end to end — which is what the criterion asks — rather than
-that no individual candidate ever fell back. The per-frame fallback is part of
-why bit-identity is reachable at all, and it stays.
+The honest caveat: `native_solves` counts solvers *created*, one per chain per
+frame, not chain-frames *answered natively*. A chain-frame whose geometry the
+native search declines is finished by Blender's own Python search, and the "Py
+candidates" column above is exactly how much of that happened. So these 28 rows
+show that the native path produces Blender's answer end to end — which is what
+the criterion asks — not that the Rust solver answered every chain-frame. The
+per-frame fallback is part of why that identity is reachable, and it stays.
+
+## What the near-straight rows actually show
+
+The "Py candidates" column is `diag`'s `candidates` counter, incremented in
+`error()` inside `_match_chain_steps`. On the native path that whole block is
+inside the `else:` of `if found is not None` (`ik_channels.py:1263`), so it is
+reached **only** when `native.search(...)` returned `None` — i.e. when the
+native collinearity guard declined that chain-frame and Blender's golden-section
+search took over. **It is a fallback counter, not a work counter.**
+
+Each declined chain-frame costs exactly 17 evaluations: 3 seeds through
+`best(seeds)`, then `error(angle)` free from the memo, `error(a)` and `error(b)`,
+12 `_POLE_REFINE_STEPS`, and a final `best((angle, a, b))` entirely memoised.
+The Blender-variant rows confirm the constant independently — `candidates_blender
+/ native_solves` is exactly 17.0 on every row of both versions (10676/628,
+5338/314, 2720/160, 170/10), across 1,712 chain-frames, which also shows the
+`_POLE_TOLERANCE` early exit never fires on this content.
+
+Dividing through:
+
+| row | chain-frames | Py candidates | declined | share |
+|---|---:|---:|---:|---:|
+| baseline / parent_scale | 628 | 578 | **34** | 5.4% |
+| near_straight / normal | 160 | 323 | **19** | 11.9% |
+| near_straight / parent_scale | 160 | 578 | **34** | 21.3% |
+| near_straight / stretch | 160 | 323 | **19** | 11.9% |
+| every other row (24 of 28) | — | 0 | **0** | 0% |
+
+### What `max_pose_difference == 0.0` does and does not prove
+
+It does not say the Rust solver reproduced Eigen's matrices. The native search's
+only durable output is the **selected pole angle** (`ik_channels.py:1263-1264`,
+then `entry['angle'] = angle` and `con.pole_angle = …`); every matrix keyed
+downstream is produced by Blender evaluating the rig at that angle. So the gate
+compares *which angle each backend chose*, and a 0.0 pose difference means the
+two backends agreed on the angle — not that the intermediate matrices the native
+search scored internally were bit-compatible with Eigen's.
+
+That is the right thing to gate on, because the angle is the only thing that
+reaches the user's file. It is a weaker statement about the Rust arithmetic than
+"bit-identical" suggests, and the earlier criterion document's wording should be
+read with the same care.
+
+So the near-straight fixture is the hard case the README predicted: it is the
+only source where the plain `normal` configuration provokes declines at all, and
+it declines at 2–4x the rate of the one real-motion configuration that does. The
+solver did not handle near-collinear geometry; it refused it, and Blender picked
+it up. The 0.0 pose difference is a property of the composed path.
+
+**Why the column does not scale with frame count** (578 on both a 157-frame and a
+40-frame run; 323 on two 40-frame runs) is the same fact stated differently:
+declines depend on how much *degenerate geometry* a clip contains, not on how
+long it is. `candidates_blender` scales exactly with frames because there every
+chain-frame runs the Python search; `candidates_native` cannot, because it counts
+only the declined ones.
+
+The 19/19 pair is fully accounted for: `normal` and `stretch` drive the same pole
+search on this rig, so they decline on the same chain-frames. **The 34/34 pair
+across two different fixtures is not yet verified.** The plausible mechanism is
+that `near_straight.blend` *is* `baseline.blend` — `tests/build_near_straight_fixture_blender.py`
+opens the baseline, trims the range to 40 frames and overwrites only the bend
+bone's `rotation_euler.x`, leaving every other channel intact — so the two
+`parent_scale` runs share the same rig, the same parent-scale configuration and
+the same first 40 frames of every other channel. If `parent_scale`'s declines are
+driven by that scaled parent rather than by the bend, and fall inside frames
+1–40, both rows would decline on the same 34 chain-frames by construction rather
+than by coincidence. That is a falsifiable hypothesis, not a measurement: it
+needs a per-frame decline trace to confirm, which has not been run.
 
 ## Independent confirmation on a production rig
 
@@ -109,11 +189,30 @@ and again under the new default, on Blender 5.2:
 | | keys | poses |
 |---|---|---|
 | `SUB_NATIVE_IK=0` | `47fd45c9…` | `a2a2f03b…` |
-| default (native on) | `47fd45c9…` | `a2a2f03b…` |
+| `SUB_NATIVE_IK=experimental` (the shipped default) | `47fd45c9…` | `a2a2f03b…` |
 
 Identical. This is a different rig and a different code path from the corpus
 (operator-driven import and transfer rather than `gate.run_variant`), and it
 agrees.
+
+Both rows are reproducible from the tree: the benchmark now honours a pre-set
+`SUB_NATIVE_IK` and falls back to `'0'` only when the variable is unset, so the
+historical Blender-backend figures it was written for are unchanged while the
+default can be measured with the same script.
+
+```powershell
+$env:PYTHONIOENCODING='utf-8'
+Remove-Item Env:SUB_NATIVE_IK -ErrorAction Ignore   # Blender backend row
+python tests/run_blender_test.py --blender '...\Blender 5.2\blender.exe' tests/benchmark_shyguy_match_blender.py
+$env:SUB_NATIVE_IK='experimental'                   # shipped-default row
+python tests/run_blender_test.py --blender '...\Blender 5.2\blender.exe' tests/benchmark_shyguy_match_blender.py
+```
+
+Each run prints six `SHYGUY_PAIR` lines carrying `keys`, `poses` and `seconds`,
+and rewrites `.tests/benchmarks/shyguy_ik_repro/paired.json`; compare the
+fingerprints across the two invocations. The figures recorded here predate that
+one-line change and were produced by an equivalent scratch copy, so re-running
+is the way to confirm them rather than to have produced them.
 
 ## What it costs and what it buys
 
@@ -155,7 +254,9 @@ constructs synthetic poses — exactly straight rest bones, right-angle geometry
 bend angles from 0 to 0.1 rad — where the two backends do differ, in matrix
 elements whose exact value is zero and whose largest divergence is 4.37e-08.
 This corpus establishes that real content, including a clip built specifically
-to be near-straight, does not land there. It does not prove no rig ever will.
+to be near-straight, does not land there *in the shipped composed path* — partly
+because the guards steer away from it, as the fallback counts above show. It
+does not prove no rig ever will.
 `SUB_NATIVE_IK=1` and `SUB_NATIVE_IK=0` exist for anyone who needs certainty
 rather than evidence.
 
@@ -174,3 +275,10 @@ The driver merges each version's rows into
 `docs/benchmarks/native-default-2026-09-13.json` under `versions`, so the two
 runs accumulate rather than overwrite each other. The resolution rule itself is
 pinned by `tests/test_native_default_blender.py`.
+
+The production-rig fingerprints and timings come from
+`tests/benchmark_shyguy_match_blender.py`, run twice — once with `SUB_NATIVE_IK`
+unset (it defaults to `'0'`) and once with `SUB_NATIVE_IK=experimental`. See
+"Independent confirmation on a production rig" above for the exact invocations.
+That fixture needs the local `.tests/benchmarks/shyguy_ik_repro/` blends and the
+Shy Guy moveset `a00wait1.nuanmb`, neither of which is distributed.

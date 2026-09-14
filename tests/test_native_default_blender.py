@@ -49,5 +49,18 @@ for value in (None, 'experimental'):
         os.environ['SUB_NATIVE_IK'] = value
     assert not ik_native.verifying(), f'SUB_NATIVE_IK={value!r} unexpectedly verifies'
 
+# enabled() answers "native at all", verifying() answers "verify or not", and the
+# two disagree in exactly one mode. ik_channels' pole-search gate pairs them, so
+# pin the whole truth table rather than the diagonal -- in particular that
+# verifying() is False under '0', which is safe there only because it is paired.
+for value, want_enabled, want_verifying in (
+        (None, True, False), ('experimental', True, False),
+        ('1', True, True), ('0', False, False), ('', False, False)):
+    os.environ.pop('SUB_NATIVE_IK', None)
+    if value is not None:
+        os.environ['SUB_NATIVE_IK'] = value
+    assert ik_native.enabled() is want_enabled, f'enabled() wrong for {value!r}'
+    assert ik_native.verifying() is want_verifying, f'verifying() wrong for {value!r}'
+
 os.environ.pop('SUB_NATIVE_IK', None)
 print('NATIVE_DEFAULT_OK')

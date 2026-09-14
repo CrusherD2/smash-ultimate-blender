@@ -1250,10 +1250,15 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
     # whole purpose is comparing each candidate against Blender. The mode is
     # resolved by ik_native rather than read from the environment here, so this
     # gate and get_factory's cannot disagree about what an unset variable means.
+    #
+    # `not verifying()` alone is also true under SUB_NATIVE_IK=0. That is safe
+    # only because `native is not None` implies get_factory admitted the mode,
+    # which is true but only at a distance, so the enabled-mode test is spelled
+    # out here rather than left to be re-derived by the next reader.
     from . import ik_native
     found = None
     if (native is not None and os.environ.get('SUB_NATIVE_SEARCH', '1') == '1'
-            and not ik_native.verifying()):
+            and ik_native.enabled() and not ik_native.verifying()):
         found = native.search(reference_columns, seeds, _POLE_TOLERANCE, _POLE_REFINE_STEPS)
     if found is not None:
         angle = found[0]
