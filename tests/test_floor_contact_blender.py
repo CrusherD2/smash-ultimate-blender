@@ -69,6 +69,14 @@ for side, x in [('L', 1), ('R', -1)]:
         original = data.edit_bones.new(name + side)
         original.head, original.tail, original.parent = head, tail, original_parent
         original_parent = original
+    toe = data.edit_bones.new(('Toe' if side == 'L' else 'toe') + side)
+    toe.head, toe.tail, toe.parent = (x, 1, 1), (x, 1.6, 1), original_parent
+    base_toe = data.edit_bones.new('BaseToe' + side)
+    base_toe.head, base_toe.tail, base_toe.parent = toe.tail, (x, 1.9, 1), toe
+    base_toe.use_connect = True
+    extra_toe = data.edit_bones.new('littleTOE_' + side)
+    extra_toe.head, extra_toe.tail, extra_toe.parent = base_toe.tail, (x, 2.2, 1), base_toe
+    extra_toe.use_connect = True
     target = data.edit_bones.new('FootIK' + side)
     target.head, target.tail = (x, 0, 1), (x, 1, 1)
     pole = data.edit_bones.new('KneeIK' + side)
@@ -87,10 +95,39 @@ for side in 'LR':
     con.target, con.subtarget = arm, 'FootIK' + side
 arm.data['sub_independent_ik'] = 2
 update()
+channels.ensure(arm, bpy.context)
+assert all(name in arm.pose.bones for name in ('FootRollIKL', 'ToeIKL', channels.PREFIX + 'FootTargetL'))
+assert arm.data.bones['FootRollIKL'].color.palette == 'THEME09'
+assert arm.data.bones['ToeIKL'].color.palette == 'THEME01'
+rig = importlib.import_module('floor_test.source.extras.create_animation_rig')
+assert {'BaseToeL', 'BaseToeR', 'littleTOE_L', 'littleTOE_R'} <= set(
+    rig._ik_driven_fk_bone_names(arm, 'LEGS'))
+assert channels.foot_controls(('LegL', 'KneeL', 'FootL'), arm)[3] == 'littleTOE_L'
+assert (arm.data.bones['FootRollIKL'].head_local
+        - arm.data.bones['littleTOE_L'].head_local).length < 1e-6
+default_points = floor._point_defaults(arm, 'FootIKL', 0.0, 'BaseToeL')
+default_toe = arm.matrix_world @ arm.pose.bones['FootIKL'].matrix @ Vector(default_points[1])
+base_toe_head = arm.matrix_world @ arm.pose.bones['BaseToeL'].matrix.translation
+close(default_toe.x, base_toe_head.x, 'default BaseToe pivot x')
+close(default_toe.y, base_toe_head.y, 'default BaseToe pivot y')
 left = floor.setup_limb(bpy.context, arm, 'FootIKL', 'LEGS', [(0, -.2, -.1), (0, .7, -.1)])
 right = floor.setup_limb(bpy.context, arm, 'FootIKR', 'LEGS', [(0, -.2, -.1), (0, .7, -.1)])
+contact_collection = bpy.data.collections[floor.COLLECTION]
+assert not arm.sub_floor_contact.show_markers
+assert all(obj.hide_get() for obj in contact_collection.objects)
 channels.wire(arm)
 control = arm.pose.bones['FootIKL']
+# Legacy controls can be discoverable before their independent hidden solver
+# chain has been generated. Floor-contact repair must simply skip that limb.
+real_chains, real_path = channels.chains, channels.limb_path
+left.control = 'HandIKL'
+channels.chains = lambda *_args, **_kwargs: iter((
+    ('ARMS', ('ShoulderL', 'ArmL', 'HandL'), 'HandIKL', 'ArmIKL'),
+))
+channels.limb_path = lambda *_args: ('ShoulderL', 'ArmL', 'HandL')
+floor.rewire(arm)
+channels.chains, channels.limb_path = real_chains, real_path
+left.control = 'FootIKL'
 control.location.z = -2
 left.softness = 0
 close(matrix(left.solved).translation.z, .1, 'floor clamp')
@@ -110,7 +147,31 @@ bpy.context.scene.sub_floor_height = 0
 left.softness = .2
 control.location.z = -.8
 close(matrix(left.solved).translation.z, .175, 'soft approach')
+# The reverse-foot roll control pivots the ankle output around the toe while
+# the separate IK toe stays stable.
+left.softness = 0
+control.location.z = -2
+# Mirror the production rig's IK output blend for the articulated toe check.
+foot_output = arm.pose.bones['FootL'].constraints.new('COPY_TRANSFORMS')
+foot_output.name = channels.OUTPUT
+foot_output.target, foot_output.subtarget = arm, channels.PREFIX + 'FootL'
+foot_output.owner_space = foot_output.target_space = 'POSE'
 control.rotation_mode = 'XYZ'
+left.pin_toe = True
+toe_anchor = matrix(left.anchor_toe).translation
+roll_control = arm.pose.bones['FootRollIKL']
+roll_control.rotation_euler.z = .5
+rolled = matrix(left.solved)
+toe_contact = rolled @ left.toe.location
+close(toe_contact.x, toe_anchor.x, 'pinned toe pivot x')
+close(toe_contact.y, toe_anchor.y, 'pinned toe pivot y')
+close(toe_contact.z, 0, 'pinned toe pivot floor')
+toe_world = (arm.evaluated_get(update()).matrix_world
+             @ arm.evaluated_get(update()).pose.bones['littleTOE_L'].matrix)
+close(toe_world.to_euler().z, 0, 'separate IK toe stays stable', tol=2e-3)
+roll_control.rotation_euler.z = 0
+left.pin_toe = False
+arm.pose.bones['FootL'].constraints.remove(foot_output)
 control.rotation_euler.x = .5
 control.location.z = -2
 solved = matrix(left.solved)

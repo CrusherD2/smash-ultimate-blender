@@ -9,6 +9,7 @@ import uuid
 import re
 import os
 import sys
+import time
 from contextlib import contextmanager, nullcontext
 import bpy
 from mathutils import Matrix, Vector
@@ -822,15 +823,27 @@ def clean_animation(obj, limbs='BOTH', tolerance=1e-4):
     return removed
 
 
-def _can_batch_match(obj, jobs):
-    """Only combine evaluations when each limb reads independent pose inputs.
+def _dependency_audit(obj, jobs, separate):
+    """Owner map for the rig's dependency islands, or None if it is not closed.
 
-    External constraints, pose-dependent drivers and cross-limb dependencies
-    retain the sequential path. Generated stretch/pull property drivers are
-    safe. Output constraints have already been muted by match().
+    ``separate=True`` gives each selected chain its own island, which is what
+    scheduling two limbs into one graph update requires. ``separate=False``
+    puts every chain in one island, which is what isolating the rig into a
+    temporary scene -- and hiding downstream meshes -- requires. Cross-limb
+    sharing fails the first and is fine for the second; an external parent, an
+    outside constraint target or a pose-reading driver fails both.
+
+    `jobs` is intentionally unused: the audit always walks
+    `chains(obj, 'BOTH')`, the whole rig, regardless of which chains were
+    selected. Unselected limbs' solvers evaluate too, so narrowing this to
+    the selected chains would weaken the guard, not simplify it.
     """
-    if len(jobs) < 2 or obj.parent or obj.constraints:
-        return False
+    from . import ik_match_diag as diag
+    guard = 'batch' if separate else 'selfcontained'
+    if obj.parent:
+        return diag.reject(guard, 'object_parent')
+    if obj.constraints:
+        return diag.reject(guard, 'object_constraints')
     all_jobs = list(chains(obj, 'BOTH'))
     owners = {}
     muted_outputs = {con.as_pointer() for _, con, _ in
@@ -838,13 +851,14 @@ def _can_batch_match(obj, jobs):
     # Include unselected limbs: their solvers also evaluate, but do not make
     # otherwise independent selected chains unsafe to schedule together.
     for index, (_, names, target, pole) in enumerate(all_jobs):
+        island = index if separate else 0
         path = limb_path(obj, names)
         # A mixed/legacy rig may have controls on an unselected limb without
         # the independent solver generation. Do not upgrade it just to batch.
         if any(PREFIX + name not in obj.pose.bones for name in path):
-            return False
+            return diag.reject(guard, 'legacy_controls')
         if solve_bone(obj, names).constraints.get('SUB IK Solve') is None:
-            return False
+            return diag.reject(guard, 'missing_solver')
         controls = foot_controls(names, obj)
         articulation = toe_articulation(obj, names)
         owned = [*path, *(PREFIX + n for n in path),
@@ -854,9 +868,9 @@ def _can_batch_match(obj, jobs):
         if articulation:
             owned.extend(articulation)
         for name in dict.fromkeys(owned):
-            if name in owners:
-                return False
-            owners[name] = index
+            if name in owners and owners[name] != island:
+                return diag.reject(guard, 'shared_bone')
+            owners[name] = island
     # Descendants (fingers and toe tips, for example) belong to the same
     # dependency island. A separately owned descendant is checked below.
     for bone in obj.pose.bones:
@@ -873,7 +887,7 @@ def _can_batch_match(obj, jobs):
     props.update(obj.data.bones[pole].path_from_id() + '.' + ARM_PULL_PROPERTY
                  for kind, _, _, pole in chains(obj, 'ARMS'))
     if obj.data.animation_data and obj.data.animation_data.drivers:
-        return False
+        return diag.reject(guard, 'armature_data_driver')
     if obj.animation_data and obj.animation_data.action:
         from ..anim.fcurve_compat import get_all_action_fcurves
         pole_paths = {solve_bone(obj, names).constraints['SUB IK Solve'].path_from_id() + '.pole_angle'
@@ -883,26 +897,26 @@ def _can_batch_match(obj, jobs):
             # initial check. Our own pole-angle keys only affect their own limb.
             if '.constraints[' in curve.data_path:
                 if curve.data_path not in pole_paths:
-                    return False
+                    return diag.reject(guard, 'animated_constraint')
     for curve in obj.animation_data.drivers if obj.animation_data else ():
         driver = curve.driver
         if not curve.data_path.endswith('.influence') or not driver.variables:
-            return False
+            return diag.reject(guard, 'pose_driver')
         # Only pure expressions emitted by our wiring helpers. All inputs are
         # armature properties, so none can read another chain's evaluated pose.
         expressions = {driver.variables[0].name, 'stretch * chain',
                        'stretch * (1-chain)', 'pull * stretch * chain', '0'}
         if driver.type != 'SCRIPTED' or driver.expression not in expressions:
-            return False
+            return diag.reject(guard, 'foreign_driver_expression')
         for var in driver.variables:
             if (var.type != 'SINGLE_PROP' or var.targets[0].id != obj.data
                     or var.targets[0].data_path not in props):
-                return False
+                return diag.reject(guard, 'foreign_driver_input')
     for bone in obj.pose.bones:
         owner = owners.get(bone.name)
         if bone.parent and bone.parent.name in owners:
             if owner != owners[bone.parent.name]:
-                return False
+                return diag.reject(guard, 'cross_island_parent')
         for con in bone.constraints:
             # Only the output blends stay muted throughout matching. Check all
             # other constraints, including ones animated from muted to active.
@@ -910,16 +924,16 @@ def _can_batch_match(obj, jobs):
                 continue
             if con.type not in {'COPY_TRANSFORMS', 'COPY_LOCATION', 'COPY_ROTATION',
                                 'COPY_SCALE', 'DAMPED_TRACK', 'IK', 'TRANSFORM'}:
-                return False
+                return diag.reject(guard, 'unsupported_constraint')
             if getattr(con, 'use_bbone_shape', False):
-                return False
+                return diag.reject(guard, 'bbone_shape_constraint')
             if con.type == 'IK' and (owner is None or con.chain_count < 1):
-                return False
+                return diag.reject(guard, 'unowned_ik')
             if con.type == 'IK':
                 ancestor = bone
                 for _ in range(con.chain_count):
                     if ancestor is None or owners.get(ancestor.name) != owner:
-                        return False
+                        return diag.reject(guard, 'ik_chain_crosses_island')
                     ancestor = ancestor.parent
             targets = [(con.target, con.subtarget)]
             if getattr(con, 'space_object', None) is not None:
@@ -930,17 +944,41 @@ def _can_batch_match(obj, jobs):
                 if target is None:
                     continue
                 if target != obj or not name:
-                    return False
+                    return diag.reject(guard, 'external_constraint_target')
                 if name in owners and owners[name] != owner:
-                    return False
-    return True
+                    return diag.reject(guard, 'cross_island_constraint_target')
+    diag.accept(guard)
+    return owners
+
+
+def _can_batch_match(obj, jobs):
+    """Only combine evaluations when each limb reads independent pose inputs."""
+    from . import ik_match_diag as diag
+    if len(jobs) < 2:
+        return bool(diag.reject('batch', 'single_chain'))
+    return _dependency_audit(obj, jobs, separate=True) is not None
+
+
+def _is_self_contained(obj, jobs):
+    """True when the rig is one closed dependency island.
+
+    Isolating the rig into a temporary scene, and hiding downstream meshes,
+    both need this, and neither needs the limbs to be independent of each other.
+    """
+    return _dependency_audit(obj, jobs, separate=False) is not None
 
 
 def _evaluate_match_steps(context, steps, batch):
+    from . import ik_match_diag as diag
     if not batch:
         for step in steps:
             for _ in step:
-                context.view_layer.update()
+                if diag.enabled():
+                    start = time.perf_counter()
+                    context.view_layer.update()
+                    diag.add('search', time.perf_counter() - start, 1)
+                else:
+                    context.view_layer.update()
         return
     from .ik_native import evaluate_steps
     evaluate_steps(context, steps, batch)
@@ -1276,6 +1314,8 @@ def match(context, obj, limbs='BOTH', entire=True, key=True, clean=False, _batch
     from ..anim.fcurve_compat import get_all_action_fcurves
     from ..anim import fcurve_bulk
     ensure(obj, context, limbs)
+    from . import ik_match_diag as diag
+    diag.reset()
     jobs = list(chains(obj, limbs))
     if not jobs:
         raise RuntimeError('No complete IK chains for the requested limbs')
@@ -1297,47 +1337,55 @@ def match(context, obj, limbs='BOTH', entire=True, key=True, clean=False, _batch
         with rig.defer_pose_tool_updates(), rig._disable_autokey(context), anim_layers_compat.bind_driving_action_for_bake(obj, context), ik_match_fast.suspend_viewport_handlers():
             for con, _ in states:
                 con.mute = True
-            batch = _batch and _can_batch_match(obj, jobs)
+            self_contained = _is_self_contained(obj, jobs)
+            batch = _batch and self_contained and _can_batch_match(obj, jobs)
             if batch:
                 from . import ik_native
                 native_factory = ik_native.get_factory()
             # Capture the entire source before writing any destination channels.
-            with _defer_match_meshes(context, obj, batch and len(frames) > 1):
-                fast = (_fast and batch and key and entire and len(frames) >= 16
+            with _defer_match_meshes(context, obj, self_contained and len(frames) > 1):
+                # Isolation and direct sampling need the rig to be one closed
+                # dependency island. They do not need two limbs to be
+                # independent of each other -- that is only what scheduling
+                # them into a shared graph update requires.
+                fast = (_fast and self_contained and key and entire and len(frames) >= 16
                         and bpy.app.version[:2] in {(4, 5), (5, 2)})
-                if fast:
-                    from . import ik_match_fast
-                    samples = ik_match_fast.sample_fk(obj, frames, sampled,
-                        get_all_action_fcurves(obj.animation_data.action, id_type='OBJECT')
-                        if obj.animation_data and obj.animation_data.action else ())
-                if not samples:
-                    samples = {}
-                    for frame in frames:
-                        scene.frame_set(frame)
-                        context.view_layer.update()
-                        samples[frame] = {name: obj.pose.bones[name].matrix.copy() for name in sampled}
+                with diag.stage('sample'):
+                    if fast:
+                        from . import ik_match_fast
+                        samples = ik_match_fast.sample_fk(obj, frames, sampled,
+                            get_all_action_fcurves(obj.animation_data.action, id_type='OBJECT')
+                            if obj.animation_data and obj.animation_data.action else ())
+                    if not samples:
+                        samples = {}
+                        for frame in frames:
+                            scene.frame_set(frame)
+                            context.view_layer.update()
+                            samples[frame] = {name: obj.pose.bones[name].matrix.copy() for name in sampled}
                 solve_context = (ik_match_fast.isolated(context, obj, jobs, sys.modules[__name__])
                                  if fast and ik_match_fast.can_isolate(obj, jobs, sys.modules[__name__])
                                  else nullcontext((context, obj, scene)))
                 with solve_context as (work_context, work_obj, work_scene):
                     for frame, matrices in samples.items():
                         work_scene.frame_set(frame)
-                        steps = [
-                            _match_chain_steps(work_obj, job, matrices, frame, key, writer,
-                                               cache[job[2]], previous_pole, native_factory)
-                            for job in jobs
-                        ]
+                        with diag.stage('place'):
+                            steps = [
+                                _match_chain_steps(work_obj, job, matrices, frame, key, writer,
+                                                   cache[job[2]], previous_pole, native_factory)
+                                for job in jobs
+                            ]
                         _evaluate_match_steps(work_context, steps, batch)
-            if writer is not None:
-                writer.flush()
-            if key and obj.animation_data and obj.animation_data.action:
-                owned = {PREFIX+n for _, _, target, _ in jobs for n in cache[target]['path']} | {n for _, _, target, pole in jobs for n in (target, pole)}
-                owned.update(name for entry in cache.values() if entry['foot'] for name in entry['foot'][:3])
-                owned.update(name for entry in cache.values() if entry['articulation'] for name in entry['articulation'][:2])
-                paths = tuple(obj.pose.bones[n].path_from_id() + '.' for n in owned if n in obj.pose.bones)
-                for fc in get_all_action_fcurves(obj.animation_data.action, id_type='OBJECT'):
-                    if fc.data_path.startswith(paths):
-                        fcurve_bulk.set_interpolation(fc, 'LINEAR')
+            with diag.stage('write'):
+                if writer is not None:
+                    writer.flush()
+                if key and obj.animation_data and obj.animation_data.action:
+                    owned = {PREFIX+n for _, _, target, _ in jobs for n in cache[target]['path']} | {n for _, _, target, pole in jobs for n in (target, pole)}
+                    owned.update(name for entry in cache.values() if entry['foot'] for name in entry['foot'][:3])
+                    owned.update(name for entry in cache.values() if entry['articulation'] for name in entry['articulation'][:2])
+                    paths = tuple(obj.pose.bones[n].path_from_id() + '.' for n in owned if n in obj.pose.bones)
+                    for fc in get_all_action_fcurves(obj.animation_data.action, id_type='OBJECT'):
+                        if fc.data_path.startswith(paths):
+                            fcurve_bulk.set_interpolation(fc, 'LINEAR')
             if entire and key and clean:
                 clean_animation(obj, limbs)
             if entire and key:

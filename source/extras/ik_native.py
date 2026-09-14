@@ -7,8 +7,11 @@ SUB_NATIVE_IK=experimental mode exists only for performance experiments.
 import ctypes
 import json
 import os
+import time
 from pathlib import Path
 from mathutils import Matrix
+
+from . import ik_match_diag as diag
 
 _dll = None
 
@@ -181,7 +184,12 @@ def evaluate_steps(context, steps, batch):
             else:
                 evaluate_scene = True
         if evaluate_scene:
-            context.view_layer.update()
+            if diag.enabled():
+                start = time.perf_counter()
+                context.view_layer.update()
+                diag.add('search', time.perf_counter() - start, 1)
+            else:
+                context.view_layer.update()
         if requests:
             native_requests = [r for r in requests if not r.solver.fallback]
             if native_requests:
@@ -209,7 +217,12 @@ def evaluate_steps(context, steps, batch):
                     offset += size
             verify = os.environ.get('SUB_NATIVE_IK') != 'experimental'
             if verify or any(r.solver.fallback for r in requests):
-                context.view_layer.update()
+                if diag.enabled():
+                    start = time.perf_counter()
+                    context.view_layer.update()
+                    diag.add('search', time.perf_counter() - start, 1)
+                else:
+                    context.view_layer.update()
                 for request in requests:
                     if verify or request.solver.fallback:
                         actual = [b.matrix.copy() for b in request.solver.bones]

@@ -1,5 +1,10 @@
 # Smash Viewport native plugin
 
+The independent [experimental Rust IK accelerator](ik_match/README.md) explores
+faster Position IK Controls and animation import. It is disabled by default
+because some inputs differ from Blender. Its build and validation are separate from the
+viewport renderer described below.
+
 Blender's Python GPU overlay cannot match SSBH Editor. This crate wraps
 `ssbh_wgpu` (the same renderer SSBH Editor uses), renders offscreen, and the
 addon blits that image into a 3D View set to **Rendered**.

@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import importlib
 import tempfile
+import time
 
 # Reuse the isolated profile and actual add-on registration fixture.
 fixture = Path(__file__).with_name('test_addon_registration_blender.py')
@@ -56,7 +57,7 @@ with tempfile.TemporaryDirectory() as folder:
     assert Path(output).read_bytes() == (Path(folder) / 'stepped.nuanmb').read_bytes()
 
     # Failure and cancellation must restore scene state and release the job guard.
-    class Failure(export.AnimationExportJob):
+    class Failure(export.AnimationExport):
         def report(self, *args): pass
         def export_steps(self, context):
             context.scene.frame_set(20)
@@ -73,7 +74,6 @@ with tempfile.TemporaryDirectory() as folder:
     assert obj.animation_data.action == original_action
     assert bpy.context.scene.frame_current == 7
     assert bpy.context.scene.tool_settings.use_keyframe_insert_auto
-    assert not export.AnimationExportJob._running
 
 # Real armature and batch exports, including SAP action restoration.
 bpy.ops.object.armature_add()
@@ -105,22 +105,30 @@ with tempfile.TemporaryDirectory() as folder:
     assert bpy.context.scene.frame_current == 4
     assert bpy.context.scene.frame_subframe == 0.5
 
-# Exercise the Escape branch with a suspended export and a modified scene.
-job = export.AnimationExportJob()
-job.report = lambda *args: None
-job._scene = bpy.context.scene
-job._frame = (4, 0.5)
-job._actions = [(obj, True, original_action, obj.animation_data.action_slot)]
-job._auto_key = True
-job._job = (value for value in (None, None))
-job._timer = None
-export.AnimationExportJob._running = True
-obj.animation_data.action = None
-bpy.context.scene.frame_set(19)
-assert job.modal(bpy.context, SimpleNamespace(type='ESC')) == {'CANCELLED'}
-assert obj.animation_data.action == original_action
-assert bpy.context.scene.frame_current == 4
-assert not export.AnimationExportJob._running
+# Export must not use any UI, timer, or progress API, even in a GUI context.
+class NoExportUI:
+    def __getattr__(self, name):
+        raise AssertionError(f'Export accessed UI API: {name}')
+
+class SynchronousExport(export.AnimationExport):
+    def report(self, *args): pass
+    def export_steps(self, context):
+        yield from export.export_camera_anim_steps(context, self, context.active_object,
+            self.filepath, 1, 30)
+
+bpy.ops.object.camera_add()
+obj = bpy.context.object
+for frame in (1, 30):
+    obj.location.x = frame / 10
+    obj.keyframe_insert('location', frame=frame)
+context_without_ui = SimpleNamespace(active_object=obj, scene=bpy.context.scene,
+    window_manager=NoExportUI(), workspace=NoExportUI())
+with tempfile.TemporaryDirectory() as folder:
+    for number in range(2):
+        operator = SynchronousExport()
+        operator.filepath = str(Path(folder) / f'no_progress_{number}.nuanmb')
+        assert operator.execute(context_without_ui) == {'FINISHED'}
+        assert Path(operator.filepath).is_file()
 
 addon_utils.disable(MODULE, default_set=False, handle_error=on_error)
 assert not errors, errors
