@@ -149,6 +149,12 @@ def run_variant(variant, source, scenario, limbs):
 
 def compare(baseline, candidate, names, tolerance):
     base_r, cand_r = baseline['residuals'], candidate['residuals']
+    if not base_r:
+        # An empty baseline compares nothing: every downstream aggregate
+        # (median_delta, total_delta, worst_rel) defaults to 0.0 and the run
+        # would otherwise pass having verified zero frames. Refuse instead.
+        raise ValueError('compare() got an empty baseline residual set; '
+                          'a comparison against zero frames cannot pass or fail')
     worse = better = identical = 0
     worst_rel, worst_frame = 0.0, None
     deltas = []

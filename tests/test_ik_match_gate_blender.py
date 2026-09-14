@@ -42,4 +42,15 @@ except AssertionError:
 else:
     raise AssertionError('require_engaged accepted a run with no engagement')
 
+# An empty comparison must never pass vacuously (Task 2 fix: compare() used to
+# report passed=True on zero frames because every delta aggregate defaults to 0.0).
+empty_a = dict(a); empty_a['residuals'] = {}
+empty_b = dict(b); empty_b['residuals'] = {}
+try:
+    gate.compare(empty_a, empty_b, a['names'], gate.TOLERANCE)
+except ValueError:
+    pass
+else:
+    raise AssertionError('compare() passed vacuously on an empty residual set')
+
 print('IK_MATCH_GATE_OK')
