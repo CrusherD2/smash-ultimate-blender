@@ -195,11 +195,14 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
     if anim_layers_compat.viewport_driving_action(obj)[0] is None:
         raise ValueError('Select the original animation action first')
     non_ik = [c for c in components if c.kind != 'IK']
-    owners = {b.bone:c.uid for c in non_ik for b in c.bones}
+    all_owners = {b.bone:c.uid for c in non_ik for b in c.bones}
+    isolated_ids={c.uid for c in non_ik if c.kind=='ISOLATED'}
+    isolated={n:uid for n,uid in all_owners.items() if uid in isolated_ids}
+    owners={n:uid for n,uid in all_owners.items() if uid not in isolated_ids}
     controls = _owned_controls(obj,non_ik)
     if owners and not controls:
         raise ValueError('Rebuild the custom components before matching')
-    if any(n not in obj.pose.bones for n in owners):
+    if any(n not in obj.pose.bones for n in all_owners):
         raise ValueError('A controlled bone is missing; update the component assignments')
     scene, frame = context.scene, context.scene.frame_current
     _activate_armature(context,obj)
@@ -222,7 +225,7 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
                 for f in range(start,end+1):
                     scene.frame_set(f)
                     ev=_update(context,obj)
-                    samples[f]={n:ev.pose.bones[n].matrix.copy() for n in owners}
+                    samples[f]={n:ev.pose.bones[n].matrix.copy() for n in all_owners}
                     progress.update(.15*(f-start+1)/max(1,end-start+1))
             finally:
                 for con,state in muted:
@@ -235,6 +238,15 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
                     ik_channels.match(context,obj,entire=True,key=True,_targets=targets)
                 finally:
                     scene.frame_start,scene.frame_end=old_range
+            # Isolated controls have a full transform: match them directly.
+            # Old residual offsets must not move the foot away from its handle.
+            obsolete=set()
+            for n,uid in isolated.items():
+                for con in obj.pose.bones[n].constraints:
+                    if con.name.startswith(_prefix(uid)) and con.name != _prefix(uid):
+                        con.mute=True
+                        obsolete.add(con.as_pointer())
+            fit_controls=[n for n in controls if obj.data.bones[n].get('sub_face_owner') not in isolated_ids]
             helpers=_helpers(context,obj,owners)
             writer=PoseKeyWriter(obj)
             # Parent-first offsets: child targets must see the corrected parent.
@@ -244,7 +256,24 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
                 for pair in helpers.values():
                     for name in pair:
                         obj.pose.bones[name].matrix_basis=Matrix.Identity(4)
-                _fit(context,obj,controls,poses)
+                _fit(context,obj,fit_controls,{n:poses[n] for n in owners})
+                for n,uid in isolated.items():
+                    con=obj.pose.bones[n].constraints.get(_prefix(uid))
+                    if not con or con.type!='COPY_TRANSFORMS':
+                        raise ValueError('Rebuild the isolated component before matching')
+                    output=obj.pose.bones[con.subtarget]
+                    root=output
+                    while root.parent and root.bone.get('sub_face_owner')==uid:
+                        root=root.parent
+                    # Roll and toe handles start neutral for an FK transfer.
+                    child=output
+                    while child!=root:
+                        child.matrix_basis=Matrix.Identity(4)
+                        child=child.parent
+                    ev=_update(context,obj)
+                    offset=ev.pose.bones[root.name].matrix.inverted_safe() @ ev.pose.bones[output.name].matrix
+                    root.matrix=poses[n] @ offset.inverted_safe()
+                    _update(context,obj)
                 extra=False
                 for name in ordered:
                     ev=_update(context,obj)
@@ -254,7 +283,7 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
                     obj.pose.bones[helpers[name][2]].matrix_basis=second
                     extra |= max(abs(delta[i][j]-(1 if i==j else 0)) for i in range(4) for j in range(4))>1e-4
                 ev=_update(context,obj)
-                error=max((abs(ev.pose.bones[n].matrix[i][j]-poses[n][i][j]) for n in owners for i in range(4) for j in range(4)),default=0)
+                error=max((abs(ev.pose.bones[n].matrix[i][j]-poses[n][i][j]) for n in all_owners for i in range(4) for j in range(4)),default=0)
                 if error>2e-4:
                     raise ValueError(f'Matching cannot preserve the pose at frame {f} (error {error:.5g})')
                 residual_frames += int(extra)
@@ -296,7 +325,7 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
             bpy.data.actions.remove(backup)
         for con,state in muted:
             try:
-                con.mute=state
+                con.mute=True if success and con.as_pointer() in locals().get('obsolete',set()) else state
             except ReferenceError:
                 pass
         scene.frame_set(frame)

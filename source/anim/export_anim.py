@@ -289,6 +289,9 @@ class SUB_PT_export_anim(Panel):
                 ssp = context.scene.sub_scene_properties
                 row.operator(SUB_OP_anim_export.bl_idname, icon='EXPORT', text='Export Current Animation')
                 
+                if obj.type == 'ARMATURE':
+                    layout.prop(ssp, 'anim_include_raw_animation', text='Also Export Raw Animation')
+
                 # Add collapsible batch export section
                 box = layout.box()
                 header_row = box.row()
@@ -654,6 +657,9 @@ class SUB_OP_batch_export_anim(AnimationExport, Operator):
             
             try:
                 if obj.type == 'ARMATURE':
+                    if ssp.anim_include_raw_animation:
+                        raw_path = resolve_raw_anim_export_path(filepath, ssp)
+                        export_raw_animation_for_object(context, self, obj, raw_path, self.first_blender_frame, last_blender_frame)
                     yield from export_model_anim_fast_steps(
                         context, self, obj, filepath,
                         self.include_transform_track, self.include_material_track,

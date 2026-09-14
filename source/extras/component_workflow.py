@@ -92,6 +92,8 @@ def build_isolated(context, obj, c):
         b['sub_component_tool'] = 'builtin.transform'
         b['sub_component_kind'] = c.kind
         b['sub_isolated_version'] = 2
+        b['sub_isolated_role'] = 'ROOT'
+        b['sub_isolated_source'] = n
         if i == 0:
             b['sub_component_id'] = c.uid
         controls[n] = name
@@ -125,14 +127,37 @@ def build_isolated(context, obj, c):
     # Keep each output offset in a helper parented only to its independent handle.
     bpy.ops.object.mode_set(mode='EDIT')
     helpers = {}
+    foot_handles = {}
     for n, name in controls.items():
+        parent_name = name
+        if getattr(c,'isolated_foot_controls',True):
+            for role, factor in (('Heel',-.25),('Toe',1.0)):
+                extra_name=name[:42]+'_'+role
+                extra=obj.data.edit_bones.get(extra_name)
+                if extra is None:
+                    extra=obj.data.edit_bones.new(extra_name)
+                    extra.length=max(obj.data.edit_bones[n].length*.35,.05)
+                    extra.matrix=visuals[n]
+                    pivot=visuals[n].copy()
+                    pivot.translation=visuals[n].translation + visuals[n].to_3x3().col[1].normalized()*obj.data.edit_bones[n].length*factor
+                    extra.matrix=pivot
+                extra.parent=obj.data.edit_bones[parent_name]
+                extra.use_deform=False
+                extra['sub_face_owner']=c.uid
+                extra['sub_component_control']=True
+                extra['sub_component_kind']='ISOLATED'
+                extra['sub_component_tool']='builtin.rotate'
+                extra['sub_isolated_role']=role.upper()
+                extra['sub_isolated_target']=name
+                foot_handles[extra_name]=role
+                parent_name=extra_name
         helper = name[:49] + '_Output'
         b = obj.data.edit_bones.get(helper)
         if b is None:
             b = obj.data.edit_bones.new(helper)
             b.length = obj.data.edit_bones[n].length
             b.matrix = visuals[n]
-            b.parent = obj.data.edit_bones[name]
+        b.parent = obj.data.edit_bones[parent_name]
         if legacy and name in legacy_controls:
             b.matrix = (obj.data.edit_bones[name].matrix
                         @ legacy_controls[name].inverted_safe() @ visuals[n])
@@ -145,7 +170,14 @@ def build_isolated(context, obj, c):
         for con in list(pb.constraints):
             if con.name.startswith('SUB Component ' + c.uid):
                 pb.constraints.remove(con)
-    expected = set(controls.values()) | set(helpers.values())
+    for name,role in foot_handles.items():
+        pb=obj.pose.bones[name]
+        collection.assign(pb.bone)
+        pb.lock_location=pb.lock_scale=(True,True,True)
+        pb.lock_rotation=(False,False,False)
+        pb['component_name']=c.name+' '+role+' Roll'
+        _assign_shape(pb,_widget_object(context,'circle'),max(pb.length,.1)*c.shape_scale,'THEME04',False)
+    expected = set(controls.values()) | set(helpers.values()) | set(foot_handles)
     stale = {
         p.name for p in obj.pose.bones if p.bone.get('sub_face_owner') == c.uid
     } - expected

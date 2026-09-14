@@ -61,6 +61,7 @@ EXTRA_DEFAULTS = {
     'look_plane': 'XY',
     'show_orbit': True,
     'hide_controlled': False,
+    'isolated_foot_controls': True,
     'shape': 'circle',
     'shape_scale': 1.0,
     'face_data': '{}',
@@ -106,6 +107,7 @@ class SUB_PG_component_bone(bpy.types.PropertyGroup):
 
 
 class SUB_PG_rig_component(bpy.types.PropertyGroup):
+    isolated_foot_controls: bpy.props.BoolProperty(name='Foot Roll / Toe Controls', default=True)
     hide_controlled: bpy.props.BoolProperty(
         name='Hide Bones Controlled by Component', default=False,
         update=_update_controlled_visibility,
@@ -315,6 +317,8 @@ def validate_preset(payload):
                 )
             ):
                 raise ValueError('Invalid control placement')
+        if not isinstance(item['isolated_foot_controls'], bool):
+            raise ValueError('Invalid isolated foot controls')
         if not isinstance(item['hide_controlled'], bool):
             raise ValueError('Invalid controlled-bone visibility')
         if item['look_plane'] not in {'XY', 'XZ', 'YZ'} or not isinstance(
@@ -1105,6 +1109,8 @@ def draw_editor(layout, context):
         layout.prop(c, 'shape', text='Shape')
         layout.prop(c, 'shape_scale', text='Size')
         layout.prop(c, 'hide_controlled', text='Hide Controlled Bones')
+        if c.kind == 'ISOLATED':
+            layout.prop(c, 'isolated_foot_controls')
         if c.kind in {'EYES', 'LOOK_TARGET'}:
             layout.prop(c, 'look_plane')
             layout.prop(c, 'aim_axis')
