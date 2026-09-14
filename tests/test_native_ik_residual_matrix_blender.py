@@ -13,17 +13,29 @@ Two things are checked per configuration:
 
 A configuration where the per-frame guards decline native matching is recorded
 with native_solvers == 0 and reported rather than silently counted as a pass.
+
+This drives tests/ik_match_gate.py rather than inlining its own comparison --
+see that module for the (unchanged) residual and pose comparison logic. The
+'native_solvers' count below is still gathered with a local Factory.__call__
+wrap (as the original single-file harness did), rather than through
+ik_match_diag: gate.run_variant()'s own diag snapshot only reflects the final
+top-level ik.match() call under test, while ik.create_controls() performs a
+brief internal match() of its own to seat the freshly-created IK controls --
+one native solve per limb -- before that. The published count in
+docs/benchmarks/native-ik-residual-criterion-2026-09-12.md includes both, so
+this wrap is kept to reproduce it exactly.
 """
 from pathlib import Path
 import importlib
 import json
 import os
+import sys
 
 fixture = Path(__file__).with_name('test_addon_registration_blender.py')
 exec(compile(fixture.read_text().split('addon_utils.disable(MODULE')[0], str(fixture), 'exec'))
-
-ik = importlib.import_module(MODULE + '.source.extras.ik_channels')
-ik_native = importlib.import_module(MODULE + '.source.extras.ik_native')
+sys.path.insert(0, str(Path(__file__).parent))
+gate = importlib.import_module('ik_match_gate')
+gate.bind(MODULE)
 
 BASELINE = Path(os.environ.get(
     'SUB_BASELINE_BLEND',
@@ -35,7 +47,7 @@ if not BASELINE.exists():
     raise SystemExit(0)
 
 solvers = {'count': 0}
-_factory_call = ik_native.Factory.__call__
+_factory_call = gate.ik_native.Factory.__call__
 
 
 def counting_call(self, *args, **kwargs):
@@ -44,99 +56,13 @@ def counting_call(self, *args, **kwargs):
     return solver
 
 
-ik_native.Factory.__call__ = counting_call
+gate.ik_native.Factory.__call__ = counting_call
 
 
-def active_armature():
-    obj = next(o for o in bpy.context.scene.objects if o.type == 'ARMATURE')
-    bpy.context.view_layer.objects.active = obj
-    for other in bpy.context.scene.objects:
-        other.select_set(other is obj)
-    return obj
-
-
-def limb_bone_names(obj, limbs):
-    names = []
-    for _kind, chain, _target, _pole in ik.chains(obj, limbs):
-        names.extend(ik.limb_path(obj, chain))
-    return list(dict.fromkeys(names))
-
-
-def capture(obj, names):
-    scene = bpy.context.scene
-    poses = {}
-    for frame in range(scene.frame_start, scene.frame_end + 1):
-        scene.frame_set(frame)
-        bpy.context.view_layer.update()
-        poses[frame] = {n: obj.pose.bones[n].matrix.copy() for n in names}
-    return poses
-
-
-def residuals(reference, solved, names):
-    out = {}
-    for frame, before in reference.items():
-        after = solved[frame]
-        total = 0.0
-        for name in names:
-            a, b = before[name], after[name]
-            for i in range(4):
-                total += (a.col[i] - b.col[i]).length_squared
-        out[frame] = total
-    return out
-
-
-def configure(obj, scenario):
-    """Reproduce the rig configurations from test_ik_match_fast_blender.py."""
-    scene = bpy.context.scene
-    jobs = list(ik.chains(obj))
-    if scenario == 'object_scale':
-        obj.scale = (1.2, .7, 1.1)
-        obj.rotation_euler = (.21, -.37, .14)
-    elif scenario == 'parent_scale':
-        pb = obj.pose.bones[ik.PREFIX + ik.limb_path(obj, jobs[0][1])[0]].parent
-        pb.scale = (1.2, .7, 1.1)
-        for f in range(scene.frame_start, scene.frame_end + 1):
-            pb.keyframe_insert('scale', frame=f)
-    elif scenario == 'inheritance':
-        for _, names, _, _ in jobs:
-            for n in ik.limb_path(obj, names):
-                obj.data.bones[n].inherit_scale = 'ALIGNED'
-                obj.data.bones[ik.PREFIX + n].inherit_scale = 'ALIGNED'
-    elif scenario in {'stretch', 'arm_pull', 'animated_stretch'}:
-        obj.data.sub_ik_stretch_arms = True
-        obj.data.sub_ik_stretch_legs = True
-        obj.data.sub_ik_stretch_chain_arms = True
-        obj.data.sub_ik_stretch_chain_legs = True
-        if scenario == 'arm_pull':
-            for kind, _, _, pole in jobs:
-                if kind == 'ARMS':
-                    setattr(obj.data.bones[pole], ik.ARM_PULL_PROPERTY, .7)
-        elif scenario == 'animated_stretch':
-            for f in range(scene.frame_start, scene.frame_end + 1):
-                obj.data.sub_ik_stretch_arms = bool(f % 2)
-                obj.data.keyframe_insert('sub_ik_stretch_arms', frame=f)
-    elif scenario == 'foot_controls':
-        for _, names, _, _ in jobs:
-            foot = ik.foot_controls(names, obj)
-            if foot:
-                obj.pose.bones[foot[0]].rotation_euler.x = .3
-                obj.pose.bones[foot[1]].rotation_euler.x = -.2
-
-
-def run(scenario, limbs, mode):
-    os.environ['SUB_NATIVE_IK'] = mode
+def run(variant, scenario, limbs):
     solvers['count'] = 0
-    bpy.ops.wm.open_mainfile(filepath=str(BASELINE))
-    obj = active_armature()
-    if bpy.context.object.mode != 'POSE':
-        bpy.ops.object.mode_set(mode='POSE')
-    ik.create_controls(bpy.context, obj, 'BOTH')
-    names = limb_bone_names(obj, limbs)
-    configure(obj, scenario)
-    fk = capture(obj, names)
-    ik.match(bpy.context, obj, limbs=limbs, entire=True, key=True, _batch=True)
-    solved = capture(obj, names)
-    return residuals(fk, solved, names), solved, names, solvers['count']
+    run_ = gate.run_variant(variant, BASELINE, scenario, limbs)
+    return run_, solvers['count']
 
 
 CONFIGURATIONS = [
@@ -155,34 +81,26 @@ CONFIGURATIONS = [
 rows = []
 failures = []
 for scenario, limbs in CONFIGURATIONS:
-    base_residuals, base_poses, names, base_solvers = run(scenario, limbs, '0')
-    native_residuals, native_poses, _, native_solvers = run(scenario, limbs, NATIVE_MODE)
+    base, base_solvers = run('blender', scenario, limbs)
+    native, native_solvers = run('native', scenario, limbs)
     assert base_solvers == 0, f'{scenario}/{limbs} used {base_solvers} native solvers on the Blender pass'
 
+    verdict = gate.compare(base, native, base['names'], gate.TOLERANCE)
+
     worse = []
-    for frame in base_residuals:
-        a, b = base_residuals[frame], native_residuals[frame]
+    for frame, a in base['residuals'].items():
+        b = native['residuals'][frame]
         if b > a:
             worse.append((frame, b - a))
     worse.sort(key=lambda row: -row[1])
 
-    pose_delta, pose_where = 0.0, None
-    for frame in base_poses:
-        for name in names:
-            a, b = base_poses[frame][name], native_poses[frame][name]
-            for r in range(4):
-                for c in range(4):
-                    d = abs(a[r][c] - b[r][c])
-                    if d > pose_delta:
-                        pose_delta, pose_where = d, f'{name}@{frame}[{r}][{c}]'
-
     row = dict(scenario=scenario, limbs=limbs, native_solvers=native_solvers,
-               frames=len(base_residuals), bones=len(names),
-               frames_worse=len(worse), max_pose_difference=pose_delta,
-               max_pose_difference_at=pose_where,
+               frames=len(base['residuals']), bones=len(base['names']),
+               frames_worse=len(worse), max_pose_difference=verdict['max_pose_difference'],
+               max_pose_difference_at=verdict['max_pose_difference_at'],
                worst_residual_delta=worse[0][1] if worse else 0.0,
-               total_residual_blender=sum(base_residuals.values()),
-               total_residual_native=sum(native_residuals.values()))
+               total_residual_blender=sum(base['residuals'].values()),
+               total_residual_native=sum(native['residuals'].values()))
     rows.append(row)
     print('RESIDUAL_ROW ' + json.dumps(row), flush=True)
     if worse:

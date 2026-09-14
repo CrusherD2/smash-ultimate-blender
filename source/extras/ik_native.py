@@ -136,6 +136,8 @@ class Factory:
         except (OSError, ValueError, RuntimeError, AttributeError):
             return None
         self.solvers.append(solver)
+        if solver is not None:
+            diag.add('native_solves', 0.0, 1)
         return solver
 
     def close(self):
