@@ -102,8 +102,8 @@ controls for styling, selection tools and switching. LegC and ClavicleC are hidd
 and unselectable when building or restoring the Animation Rig.
 
 With viewport gizmos enabled, selecting an Animation Rig IK controller shows a
-labeled **Switch FK** button beneath its widget. **Plant** and **Release** appear
-when floor contact is configured. The row follows the visible widget bounds and
+labeled wireframe **Switch FK** button inside its box. **Plant** and **Release** appear
+when floor contact is configured. The buttons sit on the visible box face, with names above them, and
 uses the same keyed operators as the IK panel. Standalone IK Tools do not show
 these buttons.
 

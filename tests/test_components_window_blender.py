@@ -1,4 +1,4 @@
-"""Run in interactive factory Blender; verifies the compact sidebar and IK buttons."""
+﻿"""Run in interactive factory Blender; verifies the compact sidebar and IK buttons."""
 
 from pathlib import Path
 
@@ -49,6 +49,11 @@ original_draw = gg.SUB_GGT_ik_buttons.draw_prepare
 
 def checked_draw(self, context):
     original_draw(self, context)
+    for button in self.buttons:
+        if not button.hide and button.corners:
+            center = sum(button.corners, Vector((0, 0))) / 4
+            assert button.test_select(context, center) == 0
+            assert button.test_select(context, (-1000, -1000)) == -1
     gizmo_seen.append(True)
 
 
@@ -141,3 +146,4 @@ def start():
 
 
 bpy.app.timers.register(start, first_interval=2)
+

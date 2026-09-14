@@ -1,4 +1,4 @@
-"""Small viewport buttons anchored beside the selected IK control."""
+"""Clickable wireframe buttons inset into the selected IK control box."""
 
 import bpy
 from mathutils import Matrix, Vector, Euler
@@ -27,52 +27,117 @@ def button_layout(context):
     if not found or not context.region or context.region.type != 'WINDOW':
         return []
     obj, pb, info = found
+    if not pb.custom_shape or pb.name != info[1]:
+        return []
     evaluated = obj.evaluated_get(context.evaluated_depsgraph_get())
     pose = evaluated.pose.bones[pb.name]
     shape_pose = evaluated.pose.bones.get(pb.custom_shape_transform.name) if pb.custom_shape_transform else pose
-    matrix = evaluated.matrix_world @ shape_pose.matrix
-    if pb.custom_shape:
-        scale = Vector(pb.custom_shape_scale_xyz)
-        if pb.use_custom_shape_bone_size:
-            scale *= pb.length
-        matrix = matrix @ Matrix.Translation(pb.custom_shape_translation) @ Euler(pb.custom_shape_rotation_euler).to_matrix().to_4x4() @ Matrix.Diagonal((*scale, 1))
-        corners = [matrix @ Vector(v) for v in pb.custom_shape.bound_box]
-    else:
-        corners = [matrix.translation]
-    projected = [location_3d_to_region_2d(context.region, context.space_data.region_3d, p) for p in corners]
-    if not projected or any(p is None for p in projected):
+    scale = Vector(pb.custom_shape_scale_xyz)
+    if pb.use_custom_shape_bone_size:
+        scale *= pb.length
+    matrix = (evaluated.matrix_world @ shape_pose.matrix
+              @ Matrix.Translation(pb.custom_shape_translation)
+              @ Euler(pb.custom_shape_rotation_euler).to_matrix().to_4x4()
+              @ Matrix.Diagonal((*scale, 1)))
+    bounds = [Vector(v) for v in pb.custom_shape.bound_box]
+    low = Vector(tuple(min(v[i] for v in bounds) for i in range(3)))
+    high = Vector(tuple(max(v[i] for v in bounds) for i in range(3)))
+    view = context.space_data.region_3d
+    camera = view.view_matrix.inverted().translation
+    faces = []
+    for axis in range(3):
+        u, v = [i for i in range(3) if i != axis]
+        for side in (0, 1):
+            points = []
+            for x, y in ((0,0),(1,0),(1,1),(0,1)):
+                p = low.copy()
+                p[axis] = (low,high)[side][axis]
+                p[u],p[v] = (low,high)[x][u],(low,high)[y][v]
+                points.append(matrix @ p)
+            normal = Vector((0,0,0))
+            normal[axis] = 1 if side else -1
+            normal = matrix.to_3x3().inverted_safe().transposed() @ normal
+            toward = camera-sum(points,Vector())/4 if view.is_perspective else view.view_rotation @ Vector((0,0,1))
+            if normal.dot(toward) <= 0:
+                continue
+            quad = [location_3d_to_region_2d(context.region, view, p) for p in points]
+            if any(p is None for p in quad):
+                continue
+            area = abs(sum(quad[i].x*quad[(i+1)%4].y-quad[(i+1)%4].x*quad[i].y for i in range(4)))
+            faces.append((area,quad))
+    if not faces:
         return []
-    center_x = (min(p.x for p in projected) + max(p.x for p in projected)) / 2
-    bottom = min(p.y for p in projected)
-    # Disappear offscreen instead of piling up against the viewport edge.
-    if center_x < 0 or center_x > context.region.width or bottom > context.region.height or max(p.y for p in projected) < 0:
-        return []
+    _, quad = max(faces,key=lambda entry:entry[0])
+    # Use the lower edge of the visible box face as the button rail. All
+    # positions are on that face, so they rotate and scale with the widget.
+    edge = min(range(4),key=lambda i:(quad[i].y+quad[(i+1)%4].y)/2)
+    a,b,c,d = [quad[(edge+i)%4] for i in range(4)]
+    if a.x>b.x:
+        a,b,c,d=b,a,d,c
+    def point(u,v):
+        return a*(1-u)*(1-v)+b*u*(1-v)+c*u*v+d*(1-u)*v
     contact = any(l.control == info[1] for l in obj.sub_floor_contact.limbs)
-    indexes = [0, 1, 2] if contact else [2]
-    ui_scale = context.preferences.system.ui_scale
-    spacing, radius = 66 * ui_scale, 18 * ui_scale
-    half_width = (len(indexes)-1) * spacing / 2
-    x = min(max(center_x, half_width + radius), context.region.width-half_width-radius)
-    y = min(max(bottom - 44 * ui_scale, radius), context.region.height - 42 * ui_scale)
-    return [(index, x + (i-(len(indexes)-1)/2)*spacing, y) for i,index in enumerate(indexes)]
+    indexes = [0,1,2] if contact else [2]
+    result=[]
+    for slot,index in enumerate(indexes):
+        center=.5+(slot-(len(indexes)-1)/2)*.29
+        corners=[point(center+u,v) for u,v in ((-.11,.08),(.11,.08),(.11,.23),(-.11,.23))]
+        # Tiny/edge-on boxes cannot offer a reliable click target.
+        if (corners[1]-corners[0]).length<12 or (corners[3]-corners[0]).length<6:
+            continue
+        result.append((index,corners,point(center,.28)))
+    return result
 
 
 def draw_labels():
-    context = bpy.context
-    if not getattr(context.scene, 'sub_ik_view_buttons', False):
+    context=bpy.context
+    if not getattr(context.scene,'sub_ik_view_buttons',False):
         return
-    if not context.space_data or context.space_data.type != 'VIEW_3D' or not context.space_data.show_gizmo:
+    if not context.space_data or context.space_data.type!='VIEW_3D' or not context.space_data.show_gizmo:
         return
-    blf.size(0, 11 * context.preferences.system.ui_scale)
-    blf.color(0, 0.95, 0.95, 0.95, 1)
-    blf.enable(0, blf.SHADOW)
-    blf.shadow(0, 3, 0, 0, 0, 0.8)
-    for index, x, y in button_layout(context):
-        label = ('Plant', 'Release', 'Switch FK')[index]
-        width, _ = blf.dimensions(0, label)
-        blf.position(0, x-width/2, y + 20 * context.preferences.system.ui_scale, 0)
-        blf.draw(0, label)
-    blf.disable(0, blf.SHADOW)
+    blf.color(0,.55,.85,1,1)
+    blf.enable(0,blf.SHADOW)
+    blf.shadow(0,3,0,0,0,.8)
+    for index,corners,position in button_layout(context):
+        label=('Plant','Release','Switch FK')[index]
+        blf.size(0,11*context.preferences.system.ui_scale)
+        width,_=blf.dimensions(0,label)
+        available=(corners[1]-corners[0]).length*1.15
+        if width>available:
+            blf.size(0,max(7,11*context.preferences.system.ui_scale*available/width))
+        width,_=blf.dimensions(0,label)
+        blf.position(0,position.x-width/2,position.y,0)
+        blf.draw(0,label)
+    blf.disable(0,blf.SHADOW)
+
+
+class SUB_GT_ik_box_button(bpy.types.Gizmo):
+    bl_idname='SUB_GT_ik_box_button'
+
+    def setup(self):
+        self.corners=[]
+        self.use_draw_scale=False
+        self.use_draw_modal=False
+
+    def draw(self,context):
+        if not self.corners:
+            return
+        vertices=[(p.x,p.y,0) for p in self.corners]
+        outline=[vertices[i] for edge in ((0,1),(1,2),(2,3),(3,0)) for i in edge]
+        self.draw_custom_shape(self.new_custom_shape('LINES',outline))
+        if self.is_highlight:
+            fill=[vertices[i] for i in (0,1,2,0,2,3)]
+            self.draw_custom_shape(self.new_custom_shape('TRIS',fill))
+
+    def test_select(self,context,location):
+        if len(self.corners)!=4:
+            return -1
+        p=Vector(location)
+        crosses=[]
+        for i,a in enumerate(self.corners):
+            b=self.corners[(i+1)%4]
+            crosses.append((b.x-a.x)*(p.y-a.y)-(b.y-a.y)*(p.x-a.x))
+        return 0 if all(v>=0 for v in crosses) or all(v<=0 for v in crosses) else -1
 
 
 class SUB_OP_ik_view_button(bpy.types.Operator):
@@ -120,16 +185,11 @@ class SUB_GGT_ik_buttons(bpy.types.GizmoGroup):
 
     def setup(self, context):
         self.buttons = []
-        for action, icon in [
-            ('PLANT', 'PINNED'),
-            ('RELEASE', 'UNPINNED'),
-            ('FK', 'CON_KINEMATIC'),
-        ]:
-            gizmo = self.gizmos.new('GIZMO_GT_button_2d')
-            gizmo.icon = icon
-            gizmo.draw_options = {'BACKDROP', 'OUTLINE'}
-            gizmo.scale_basis = 0.5
-            gizmo.color = (0.12, 0.24, 0.36)
+        for action in ('PLANT', 'RELEASE', 'FK'):
+            gizmo = self.gizmos.new('SUB_GT_ik_box_button')
+            gizmo.scale_basis = 1
+            gizmo.line_width = 2
+            gizmo.color = (0.35, 0.75, 1)
             gizmo.alpha = 0.85
             gizmo.color_highlight = (0.3, 0.65, 1)
             gizmo.alpha_highlight = 1
@@ -137,12 +197,11 @@ class SUB_GGT_ik_buttons(bpy.types.GizmoGroup):
             self.buttons.append(gizmo)
 
     def draw_prepare(self, context):
-        positions = {index:(x,y) for index,x,y in button_layout(context)}
-        for index, gizmo in enumerate(self.buttons):
+        positions = {index:corners for index,corners,label in button_layout(context)}
+        for index,gizmo in enumerate(self.buttons):
             gizmo.hide = index not in positions
-            if index in positions:
-                x, y = positions[index]
-                gizmo.matrix_basis = Matrix.Translation((x, y, 0))
+            gizmo.corners = positions.get(index,[])
+            gizmo.matrix_basis = Matrix.Identity(4)
 
 
 _label_handler = None
@@ -154,6 +213,7 @@ def register():
         name='IK Buttons in Viewport', default=True
     )
     bpy.utils.register_class(SUB_OP_ik_view_button)
+    bpy.utils.register_class(SUB_GT_ik_box_button)
     bpy.utils.register_class(SUB_GGT_ik_buttons)
     _label_handler = bpy.types.SpaceView3D.draw_handler_add(draw_labels, (), 'WINDOW', 'POST_PIXEL')
 
@@ -164,5 +224,6 @@ def unregister():
         bpy.types.SpaceView3D.draw_handler_remove(_label_handler, 'WINDOW')
         _label_handler = None
     bpy.utils.unregister_class(SUB_GGT_ik_buttons)
+    bpy.utils.unregister_class(SUB_GT_ik_box_button)
     bpy.utils.unregister_class(SUB_OP_ik_view_button)
     del bpy.types.Scene.sub_ik_view_buttons
