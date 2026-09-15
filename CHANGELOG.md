@@ -129,6 +129,12 @@ animation export.
   the two differ, in matrix elements whose exact value is zero. Use
   `SUB_NATIVE_IK=1` or `=0` where exactness must be guaranteed rather than
   measured
+- Add-on Preferences now has a **Use Native IK Accelerator** toggle, on by
+  default, for turning the accelerator off without setting an environment
+  variable before launching Blender. An explicitly set `SUB_NATIVE_IK` (even
+  `=1` or `=experimental`) always overrides the preference; a rig whose
+  guards decline heavily is the main reason to untick it, falling back to
+  Blender's own solver
 
 ## Bug fixes
 

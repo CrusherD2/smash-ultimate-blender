@@ -32,9 +32,40 @@ _DEFAULT_MODE = 'experimental'
 _ENABLED_MODES = {'1', 'experimental'}
 
 
+def _native_ik_preference_enabled():
+    """Whether the add-on's own off switch allows the native backend.
+
+    Defensive by design: bpy.context.preferences.addons[...] can be absent or
+    raise during registration, in background/headless runs, or if this add-on
+    is loaded under an unexpected module name. Any failure here resolves to
+    True (the default) and never raises, so headless test runs -- which are
+    how this whole project is verified -- can't be broken by this lookup.
+    """
+    try:
+        from ..addon_preferences import get_addon_preferences
+        prefs = get_addon_preferences()
+        if prefs is None:
+            return True
+        return bool(prefs.use_native_ik_accelerator)
+    except Exception:
+        return True
+
+
 def mode():
-    """The resolved SUB_NATIVE_IK mode, with the default already applied."""
-    return os.environ.get('SUB_NATIVE_IK', _DEFAULT_MODE)
+    """The resolved SUB_NATIVE_IK mode, with the default and preference applied.
+
+    An explicit SUB_NATIVE_IK always wins, including '0': it is the documented
+    escape hatch and the developer's verification tool, and every existing
+    test sets it, so a saved preference must never override it. Only when the
+    variable is unset does the add-on preference get a say, and an unticked
+    preference then behaves exactly like an explicit '0'.
+    """
+    value = os.environ.get('SUB_NATIVE_IK')
+    if value is not None:
+        return value
+    if not _native_ik_preference_enabled():
+        return '0'
+    return _DEFAULT_MODE
 
 
 def enabled():

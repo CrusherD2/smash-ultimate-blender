@@ -32,7 +32,10 @@ This preserves exactness but adds overhead; it is for development, not accelerat
 Do not rely on either when bit-exact matching is required rather than measured.
 With no environment override, ordinary matching and import now take the native path
 where the guards above admit it, and the previously optimized Blender path everywhere
-else.
+else. Add-on Preferences has a **Use Native IK Accelerator** toggle for modders who
+don't set environment variables; unticking it is equivalent to `SUB_NATIVE_IK=0`.
+An explicitly set `SUB_NATIVE_IK` (including `=1` or `=experimental`) always wins
+over that preference.
 
 The acceptance heuristics do not establish a numerical compatibility boundary.
 The diagnostic kernel's unrestricted iterations produced divergent results on
@@ -87,7 +90,10 @@ Sceptile fixtures under `.tests/benchmarks/ik_apply/out/`; the benchmark accepts
 available, otherwise the current source with the accelerator disabled. They
 record whole-rig pose and key fingerprints, compiler-input/DLL hashes and timing.
 
-`SUB_NATIVE_IK=0` explicitly disables the native backend everywhere. `SUB_NATIVE_THREADS`
+`SUB_NATIVE_IK=0` explicitly disables the native backend everywhere, and the
+**Use Native IK Accelerator** add-on preference offers the same off switch without
+an environment variable (the environment variable wins whenever it is set).
+`SUB_NATIVE_THREADS`
 selects one or four native threads. Frames and previous-angle candidates remain
 ordered; only independent limbs are eligible for native batch execution.
 One thread is the default: measured whole-operation times were faster than with

@@ -77,6 +77,16 @@ class SUB_AddonPreferences(AddonPreferences):
         default=True,
     )
 
+    use_native_ik_accelerator: BoolProperty(
+        name="Use Native IK Accelerator",
+        description="Use the bundled Rust accelerator for two-bone IK matching on supported "
+                    "platforms (Windows x64, Blender 4.5/5.2). Disable to always fall back to "
+                    "Blender's own solver, which is slower but is the reference implementation; "
+                    "consider this if a rig's IK results look wrong. Ignored if the SUB_NATIVE_IK "
+                    "environment variable is set",
+        default=True,
+    )
+
     collection_preset_directory: StringProperty(
         name="Custom Collection Preset Directory",
         description="Directory used when the Collection Presets panel library is set to Custom",
@@ -113,6 +123,10 @@ class SUB_AddonPreferences(AddonPreferences):
         box.label(text="Show Animation File Extension")
         box.prop(self, "show_nuanmb_extension_on_import")
         box.prop(self, "show_rawanim_extension_on_import")
+
+        box = layout.box()
+        box.label(text="IK Matching")
+        box.prop(self, "use_native_ik_accelerator")
 
         box = layout.box()
         box.label(text="Armature Collection Presets")
