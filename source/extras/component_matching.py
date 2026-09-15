@@ -172,6 +172,61 @@ def _fit(context, obj, control_names, targets):
     evaluate(values)
 
 
+def _finger_slider_plan(obj, names):
+    """Precompute the linear curl/spread mapping once, without scene probes."""
+    from . import finger_sliders as fingers
+    names=sorted(names)
+    channels={}
+    entries=[]
+    for row,name in enumerate(names):
+        for con in obj.pose.bones[name].constraints:
+            if con.type!='TRANSFORM' or not con.name.startswith(fingers.FINGER_CON_PREFIX) or con.target!=obj:
+                continue
+            # A neutral cascade avoids its piecewise discontinuities. Shared
+            # curl, per-finger offset, spread and thumb side are fitted together.
+            if 'Cascade' in con.name: continue
+            axis=fingers._slider_loc_axis(con)
+            low,high=fingers._constraint_from_range(con,axis)
+            if abs(high-low)<1e-8: continue
+            channel=(con.subtarget,axis)
+            channels.setdefault(channel,len(channels))
+            for out,key in enumerate('xyz'):
+                lo=getattr(con,'to_min_'+key+'_rot')
+                hi=getattr(con,'to_max_'+key+'_rot')
+                coefficient=(hi-lo)/(high-low)*con.influence
+                if coefficient: entries.append((row*3+out,channels[channel],coefficient))
+    matrix=np.zeros((len(names)*3,len(channels)))
+    for row,col,value in entries: matrix[row,col]+=value
+    inverse=np.linalg.pinv(matrix,rcond=1e-5) if channels else None
+    return names,list(channels),matrix,inverse
+
+
+def _fit_finger_sliders(context,obj,poses,plan,control_names):
+    names,channels,matrix,inverse=plan
+    if inverse is None: return
+    ev=_update(context,obj)
+    goal=[]
+    for name in names:
+        pb=obj.pose.bones[name]
+        parent=(poses.get(pb.parent.name,ev.pose.bones[pb.parent.name].matrix)
+                if pb.parent else Matrix.Identity(4))
+        rest=pb.parent.bone.matrix_local if pb.parent else Matrix.Identity(4)
+        local=pb.bone.convert_local_to_pose(poses[name],pb.bone.matrix_local,
+            parent_matrix=parent,parent_matrix_local=rest,invert=True)
+        goal.extend(local.to_euler('XYZ'))
+    values=inverse@np.asarray(goal)
+    for name in control_names:
+        obj.pose.bones[name].location=(0,0,0)
+    for (name,axis),value in zip(channels,values):
+        pb=obj.pose.bones[name]
+        for con in pb.constraints:
+            if con.type=='LIMIT_LOCATION' and con.owner_space=='LOCAL':
+                key='xyz'[axis]
+                if getattr(con,'use_min_'+key): value=max(value,getattr(con,'min_'+key))
+                if getattr(con,'use_max_'+key): value=min(value,getattr(con,'max_'+key))
+        pb.location[axis]=float(value)
+
+
 def match_animation(context, obj, start, end, include_fingers=False, match_ik=True, fingers_only=False):
     from .component_workflow import definitions
     from . import ik_channels, anim_layers_compat
@@ -253,6 +308,9 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
                     if con.name in {_prefix(FINGER_MATCH_ID)+' '+label for label in ('Input','Match','Match2')}:
                         con.mute=True
                         obsolete.add(con.as_pointer())
+            finger_controls={name for c in non_ik if c.uid==FINGER_MATCH_ID for name in c.controls}
+            finger_plan=_finger_slider_plan(obj,finger_names) if finger_names else None
+            fit_controls=[n for n in fit_controls if n not in finger_controls]
             helpers=_helpers(context,obj,owners)
             writer=PoseKeyWriter(obj)
             # Parent-first offsets: child targets must see the corrected parent.
@@ -264,24 +322,42 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
                         obj.pose.bones[name].matrix_basis=Matrix.Identity(4)
                 for n in finger_names:
                     obj.pose.bones[n].matrix_basis=Matrix.Identity(4)
-                _fit(context,obj,fit_controls,{n:poses[n] for n in set(owners)|finger_names})
-                # Sliders supply the shared curl; editable circles retain each
-                # joint's remaining motion, including translation and scale.
-                for n in sorted(finger_names,key=lambda n:len(obj.pose.bones[n].parent_recursive)):
-                    pb=obj.pose.bones[n]
-                    locks=(tuple(pb.lock_location),tuple(pb.lock_rotation),tuple(pb.lock_scale))
-                    try:
-                        pb.lock_location=pb.lock_rotation=pb.lock_scale=(False,False,False)
-                        pb.matrix_basis=Matrix.Identity(4)
-                        ev=_update(context,obj)
+                if owners:
+                    _fit(context,obj,fit_controls,{n:poses[n] for n in owners})
+                if finger_plan:
+                    _fit_finger_sliders(context,obj,poses,finger_plan,finger_controls)
+                # Evaluate the neutral circles with the fitted sliders once.
+                # Desired parent matrices are already sampled, so every joint's
+                # local correction can be calculated before changing the scene.
+                if finger_names:
+                    ev=_update(context,obj)
+                    corrections={}
+                    for n in finger_names:
+                        pb=obj.pose.bones[n]
                         parent=ev.pose.bones[pb.parent.name].matrix if pb.parent else Matrix.Identity(4)
+                        wanted_parent=poses.get(pb.parent.name,parent) if pb.parent else parent
                         rest_parent=pb.parent.bone.matrix_local if pb.parent else Matrix.Identity(4)
-                        def local(m):
-                            return pb.bone.convert_local_to_pose(m,pb.bone.matrix_local,parent_matrix=parent,parent_matrix_local=rest_parent,invert=True)
-                        pb.matrix_basis=local(poses[n]) @ local(ev.pose.bones[n].matrix).inverted_safe()
-                        _fit(context,obj,[n],{n:poses[n]})
-                    finally:
-                        pb.lock_location,pb.lock_rotation,pb.lock_scale=locks
+                        def local(m,parent_matrix):
+                            return pb.bone.convert_local_to_pose(m,pb.bone.matrix_local,
+                                parent_matrix=parent_matrix,parent_matrix_local=rest_parent,invert=True)
+                        contribution=local(ev.pose.bones[n].matrix,parent)
+                        corrections[n]=local(poses[n],wanted_parent) @ contribution.inverted_safe()
+                    for n,basis in corrections.items():
+                        obj.pose.bones[n].matrix_basis=basis
+                    ev=_update(context,obj)
+                    # Verify all joints together. Unusual constraint stacks or
+                    # non-TRS transforms retain the existing precise fallback.
+                    for n in sorted(finger_names,key=lambda n:len(obj.pose.bones[n].parent_recursive)):
+                        if max(abs(ev.pose.bones[n].matrix[i][j]-poses[n][i][j]) for i in range(4) for j in range(4))<=2e-6:
+                            continue
+                        pb=obj.pose.bones[n]
+                        locks=(tuple(pb.lock_location),tuple(pb.lock_rotation),tuple(pb.lock_scale))
+                        try:
+                            pb.lock_location=pb.lock_rotation=pb.lock_scale=(False,False,False)
+                            _fit(context,obj,[n],{n:poses[n]})
+                            ev=_update(context,obj)
+                        finally:
+                            pb.lock_location,pb.lock_rotation,pb.lock_scale=locks
                 for n,uid in isolated.items():
                     con=obj.pose.bones[n].constraints.get(_prefix(uid))
                     if not con or con.type!='COPY_TRANSFORMS':
