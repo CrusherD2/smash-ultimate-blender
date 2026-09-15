@@ -201,3 +201,10 @@ existing sibling `rawanims` folder convention. New raw files include controller
 bones, widgets, constraints, drivers, rig settings, both finger control modes,
 and keyframe handle types. Import restores that setup without FK-to-IK matching.
 Older raw files cannot recover rig settings that were never stored in them.
+
+Mouth and Eyelids / Blink use one visible controller with an Expression dropdown
+and Strength slider in Rig Extras and Preview & Animate. Both properties can be
+keyframed (right-click, Insert Keyframe). Expression changes select a pose; use
+Strength to fade it in or out. New Expression chooses an unused name. To replace
+a saved pose, use its edit button under Manage Saved Poses. Older individual
+expression tracks remain hidden internally to preserve existing animation.

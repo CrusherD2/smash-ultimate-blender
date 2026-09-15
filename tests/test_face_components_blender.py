@@ -53,13 +53,16 @@ sliders['Left Closed'].location.y = 1
 close(matrix('LidUpper'), left, 'left close')
 close(matrix('LidLower'), neutral['LidLower'], 'other eye stays neutral')
 sliders['Left Closed'].location.y = 0
-sliders['Both Eyelids'].location.y = 1
+assert set(sliders)=={'Left Closed','Right Closed','Selected Expression'}
+assert cc.control_name(obj,c) in obj.pose.bones
+sliders['Left Closed'].location.y = 1
+sliders['Right Closed'].location.y = 1
 close(matrix('LidUpper'), left, 'both left')
 close(matrix('LidLower'), right, 'both right')
 sliders['Left Closed'].location.y = 1
 close(matrix('LidUpper'), left, 'shared plus individual clamps')
 sliders['Left Closed'].location.y = 0
-sliders['Both Eyelids'].location.y = 0
+sliders['Right Closed'].location.y = 0
 
 component('MOUTH', 'Mouth', ['Jaw'])
 editor.active_index = 1
@@ -75,10 +78,10 @@ c = editor.components[1]
 slider = next(p for p in face.owned(obj, c) if p.get('expression') == 'Smile')
 slider.location.y = 1
 close(matrix('Jaw'), expression, 'full mouth expression')
-master = obj.pose.bones[cc.control_name(obj, c)]
-master.location.y = 0
+assert cc.control_name(obj,c) in obj.pose.bones
+assert {p.get('expression') for p in face.owned(obj,c) if not p.bone.get('sub_face_helper')}=={'Smile','Selected Expression'}
+slider.location.y = 0
 assert abs(matrix('Jaw').translation.z - 3.5) < 1e-5
-master.location.y = 1
 slider.location.y = 0.5
 half = matrix('Jaw')
 assert abs(half.translation.z - (expression.translation.z + 3.5) / 2) < 1e-5

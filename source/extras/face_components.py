@@ -12,6 +12,43 @@ from mathutils import Vector, Quaternion
 KINDS = {'EYES', 'LIDS', 'MOUTH'}
 
 
+_expression_items_cache = {}
+
+
+def expression_items(pb, context):
+    raw=pb.get('sub_expression_labels','[]')
+    active=pb.get('sub_expression_active',raw)
+    key=(raw,active)
+    if key not in _expression_items_cache:
+        labels=json.loads(raw)
+        enabled=set(json.loads(active))
+        _expression_items_cache[key]=[('NONE','None','Neutral',0)]+[
+            ('POSE_'+str(i+1),label,'',i+1) for i,label in enumerate(labels) if label in enabled]
+    return _expression_items_cache[key]
+
+
+def expression_get(pb):
+    return int(pb.get('sub_expression_choice',0))
+
+
+def expression_set(pb,value):
+    pb['sub_expression_choice']=int(value)
+    pb.id_data.update_tag()
+
+
+def draw_expression_control(layout,pb):
+    layout.prop(pb,'sub_face_expression',text='Expression')
+    layout.prop(pb,'location',index=1,text='Strength',slider=True)
+
+
+def draw_rig_expressions(layout,obj):
+    for pb in obj.pose.bones:
+        if 'sub_expression_labels' in pb:
+            box=layout.box()
+            box.label(text=pb.get('component_name',pb.name))
+            draw_expression_control(box,pb)
+
+
 def validate_data(raw):
     if not isinstance(raw, str):
         raise ValueError('Invalid face pose data')
@@ -117,7 +154,7 @@ def set_edit(obj, c, enabled):
     obj.update_tag()
 
 
-def _driver(pb, channel, index, value, terms, obj, strength=None):
+def _driver(pb, channel, index, value, terms, obj, strength=None, selector=None):
     if not any(abs(term[0]) >= 1e-9 for term in terms):
         pb.driver_remove(channel, index)
         getattr(pb, channel)[index] = value
@@ -134,6 +171,11 @@ def _driver(pb, channel, index, value, terms, obj, strength=None):
         var.targets[0].bone_target = strength
         var.targets[0].transform_type = 'LOC_Y'
         var.targets[0].transform_space = 'LOCAL_SPACE'
+    if selector:
+        var=driver.variables.new()
+        var.name,var.type='choice','SINGLE_PROP'
+        var.targets[0].id=obj
+        var.targets[0].data_path=obj.pose.bones[selector].path_from_id()+'.sub_face_expression'
     expressions = [format(value, '.9g')]
     for i, (coefficient, source, axis, expression, shared) in enumerate(terms):
         if abs(coefficient) < 1e-9:
@@ -175,8 +217,12 @@ def build_face(context, obj, c):
     data = validate_data(c.face_data)
     if not data.get('neutral'):
         data['neutral'] = {n: sample(obj.pose.bones[n]) for n in names}
-    if set(data['neutral']) != set(names):
-        raise ValueError(c.name + ': bone assignments changed; capture Neutral again')
+    # Adding an assignment should extend the pose library, not invalidate it.
+    # Existing snapshots remain intact; new bones start unchanged in saved poses.
+    # Retain unassigned snapshots so removing/re-adding a bone is non-destructive.
+    for name in names:
+        if name not in data['neutral']:
+            data['neutral'][name] = sample(obj.pose.bones[name])
     poses = data.setdefault('poses', {})
     if c.kind == 'EYES' and set(poses) - {'Left', 'Right', 'Up', 'Down'}:
         raise ValueError('Eye limits must be named Left, Right, Up or Down')
@@ -261,7 +307,8 @@ def build_face(context, obj, c):
         b.length = source.length
         helpers[n] = name
     bpy.ops.object.mode_set(mode='POSE')
-    expected = {main, *helpers.values(), *sliders.values()}
+    expected = {*helpers.values(), *sliders.values()}
+    expected.add(main)
     if c.kind == 'EYES':
         expected.update({look, pivot_limit})
     stale = {p.name for p in owned(obj, c)} - expected
@@ -279,7 +326,9 @@ def build_face(context, obj, c):
     ) or obj.data.collections.new('Custom Component Mechanism')
     hidden.is_visible = False
     for pb in owned(obj, c):
-        if pb.bone.get('sub_face_helper'):
+        expression_track = c.kind != 'EYES' and pb.name in sliders.values()
+        if pb.bone.get('sub_face_helper') or expression_track:
+            for col in list(pb.bone.collections): col.unassign(pb.bone)
             hidden.assign(pb.bone)
             pb.bone.hide = True
             pb.bone.hide_select = True
@@ -321,15 +370,19 @@ def build_face(context, obj, c):
                     limit.min_x, limit.max_x = -1, 1
     for label, name in sliders.items():
         obj.pose.bones[name]['expression'] = label if c.kind != 'EYES' else 'Look X / Y'
-    main_pb = obj.pose.bones[main]
-    if c.kind == 'MOUTH' and not main_pb.bone.get('sub_strength_initialized'):
-        main_pb.location.y = 1
-        main_pb.bone['sub_strength_initialized'] = True
-    main_pb['expression'] = (
-        'Both Eyelids'
-        if c.kind == 'LIDS'
-        else ('Eye Orbit Pivot' if c.kind == 'EYES' else 'Expression Strength')
-    )
+    if c.kind == 'EYES':
+        obj.pose.bones[main]['expression'] = 'Eye Orbit Pivot'
+    if c.kind != 'EYES':
+        main_pb=obj.pose.bones[main]
+        labels=json.loads(main_pb.get('sub_expression_labels','[]'))
+        labels.extend(label for label in poses if label not in labels)
+        main_pb['sub_expression_labels']=json.dumps(labels)
+        main_pb['sub_expression_active']=json.dumps(list(poses))
+        main_pb['expression']='Selected Expression'
+        if 'sub_expression_choice' not in main_pb: main_pb['sub_expression_choice']=0
+        if 'sub_expression_strength_initialized' not in main_pb:
+            main_pb.location.y=0
+            main_pb['sub_expression_strength_initialized']=True
     driver_jobs = dict(helpers)
     if c.kind == 'EYES':
         driver_jobs['@pivot'] = pivot_limit
@@ -357,9 +410,14 @@ def build_face(context, obj, c):
         for j in range(9):
             channel = ('location', 'rotation_euler', 'scale')[j // 3]
             terms = [
-                (v[j] - base[j], slider, axis, expr, main if c.kind == 'LIDS' else None)
+                (v[j] - base[j], slider, axis, expr, None)
                 for v, slider, axis, expr in deltas
             ]
+            if c.kind != 'EYES':
+                for label,(values,slider,axis,expr) in zip(poses,deltas):
+                    index=labels.index(label)+1
+                    terms.append((values[j]-base[j],main,'Y',
+                        f'(min(1,max(0,VALUE)) if choice=={index} else 0)',None))
             _driver(
                 pb,
                 channel,
@@ -367,7 +425,8 @@ def build_face(context, obj, c):
                 base[j],
                 terms,
                 obj,
-                main if c.kind == 'MOUTH' else None,
+                None,
+                selector=main if c.kind != 'EYES' else None,
             )
         if n == '@pivot':
             continue
@@ -384,7 +443,7 @@ def build_face(context, obj, c):
     handles = (
         [look]
         if c.kind == 'EYES'
-        else [p.name for p in owned(obj, c) if not p.bone.get('sub_face_helper')]
+        else [main]
     )
     place_controls(context, obj, c, handles, plane=c.kind == 'EYES')
     if c.kind == 'EYES':
@@ -437,7 +496,7 @@ class SUB_OP_face_pose(bpy.types.Operator):
     action: bpy.props.EnumProperty(
         items=[
             (v, v, '')
-            for v in ('NEUTRAL', 'EDIT', 'ORBIT', 'CAPTURE', 'CANCEL', 'DELETE')
+            for v in ('NEUTRAL', 'NEW', 'EDIT', 'ORBIT', 'CAPTURE', 'CANCEL', 'DELETE')
         ]
     )
     label: bpy.props.StringProperty()
@@ -458,6 +517,7 @@ class SUB_OP_face_pose(bpy.types.Operator):
             names = validate_component(obj, c)
             data = validate_data(c.face_data)
             label = self.label or c.pose_name.strip()
+            if self.action=='EDIT' and self.label: c.pose_name=self.label
             with _disable_autokey(context):
                 if self.action == 'NEUTRAL':
                     data = {
@@ -466,7 +526,15 @@ class SUB_OP_face_pose(bpy.types.Operator):
                     }
                 elif not data.get('neutral'):
                     raise ValueError('Capture Neutral first')
-                elif self.action in {'EDIT', 'ORBIT'}:
+                elif self.action in {'NEW', 'EDIT', 'ORBIT'}:
+                    if self.action == 'NEW':
+                        base='Expression'
+                        label=base
+                        number=2
+                        while label in data.get('poses',{}):
+                            label=f'{base} {number}'
+                            number+=1
+                        c.pose_name=label
                     if obj.get('sub_face_edit_' + c.uid) or obj.get(
                         'sub_face_orbit_' + c.uid
                     ):
@@ -614,19 +682,24 @@ def draw_face(layout, context, obj, c):
         icon='INFO',
     )
     row = layout.row(align=True)
-    row.operator('sub.face_pose', text='Create / Replace Pose', icon='ADD').action = (
-        'EDIT'
+    row.operator('sub.face_pose', text='Create Eye Limit' if c.kind=='EYES' else 'New Expression', icon='ADD').action = (
+        'EDIT' if c.kind=='EYES' else 'NEW'
     )
     if c.kind == 'EYES':
         row.operator('sub.face_pose', text='Create Orbit Limit').action = 'ORBIT'
     if c.kind == 'LIDS' and not poses:
         layout.label(
-            text='Capture each eye closed separately; the shared slider combines them.'
+            text='Save separate eyelid poses or a combined blink expression.'
         )
     if poses:
         body = disclosure(layout, editor, 'show_pose_preview', 'Preview & Animate')
         if body is not None and obj:
+            if c.kind != 'EYES':
+                from .custom_components import control_name
+                pb=obj.pose.bones.get(control_name(obj,c))
+                if pb: draw_expression_control(body,pb)
             for pb in owned(obj, c):
+                if c.kind != 'EYES': continue
                 if pb.bone.get('sub_face_helper') or not pb.get('expression'):
                     continue
                 if c.kind == 'EYES' and pb.bone.get('sub_component_id') == c.uid:
@@ -641,6 +714,8 @@ def draw_face(layout, context, obj, c):
         for label in poses:
             row = body.row(align=True)
             row.label(text=label)
+            op=row.operator('sub.face_pose',text='',icon='GREASEPENCIL')
+            op.action,op.label='EDIT',label
             op = row.operator('sub.face_pose', text='', icon='X')
             op.action, op.label = 'DELETE', label
         body.operator(
@@ -649,8 +724,12 @@ def draw_face(layout, context, obj, c):
 
 
 def register():
+    bpy.types.PoseBone.sub_face_expression=bpy.props.EnumProperty(
+        name='Expression',items=expression_items,get=expression_get,set=expression_set,
+        options={'ANIMATABLE'})
     bpy.utils.register_class(SUB_OP_face_pose)
 
 
 def unregister():
+    del bpy.types.PoseBone.sub_face_expression
     bpy.utils.unregister_class(SUB_OP_face_pose)

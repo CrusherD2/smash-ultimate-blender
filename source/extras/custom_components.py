@@ -31,7 +31,7 @@ TYPES = [
     ('IK', 'Custom IK Chain', 'A target and bend control for a connected bone chain'),
     ('MOUTH', 'Mouth Expressions', 'Capture and blend any number of mouth poses'),
     ('JAW', 'Jaw', 'Open and close selected jaw bones'),
-    ('LIDS', 'Eyelids / Blink', 'One slider with independently signed lid weights'),
+    ('LIDS', 'Eyelids / Blink', 'One controller per saved eyelid pose'),
     ('CURL', 'Tail / Tentacle Curl', 'Distribute bending through a selected chain'),
     ('FAN', 'Wing / Feather Fan', 'Fan or fold selected bones with per-bone weights'),
     ('ROTATION', 'Rotation Slider', 'Drive any group of bones from one slider'),
