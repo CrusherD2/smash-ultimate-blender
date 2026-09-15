@@ -1106,13 +1106,32 @@ _POLE_TOLERANCE = 1e-9
 # Golden-section iterations used to refine the pole angle. See the note in
 # _match_chain_steps for why the search is kept at all.
 #
-# Was 18. Swept over six varied clips (.tests/benchmarks/ik_apply/pole_sweep.py):
-# at 12 the median limb error moves by nothing measurable on any clip and the
-# worst frame is identical to five decimals, while the match runs 1.18x faster.
-# Below 12 small regressions start appearing -- 0.5% of the median at 10, 3.6%
-# at 4 -- so 12 is where the search has genuinely converged rather than where
-# the trade merely still looks acceptable.
-_POLE_REFINE_STEPS = 12
+# 18 -> 12 when the residual was the output: below 12, limb error regressed.
+# The BL_SUB_IK_MATCH_ correction bones changed what this number buys. The
+# deform bones now land on sampled FK exactly whatever the pole angle is, and
+# the pole *control* is placed by arithmetic the search never touches, so
+# neither the posed character nor any visible control depends on this at all.
+# Swept 12..0 on the benchmark clip, 157 frames, four chains, both Blender
+# versions and all three native modes (tests/benchmark_pole_refine_sweep_blender.py,
+# docs/benchmarks/pole-refine-2026-09-15.md): worst FK drift is 7.63e-06 at
+# *every* budget including 0. Exactness does not depend on this number.
+#
+# What it still buys is a smaller residual for the corrections to absorb, and
+# that residual is frozen into a local offset -- so it is what goes wrong once
+# an animator drags the IK target away from the matched pose. That degrades in
+# two clear steps: 12 -> 4 moves the worst and p99 correction by nothing
+# (0.4726 -> 0.4724, 0.3458 -> 0.3467) and the median by 8% (0.0349 ->
+# 0.0376); 4 -> 1 costs 44% of the median (0.0541) and 1 -> 0 doubles the
+# worst outright (0.9104, 14.0deg). So 4 is the last budget that is free on
+# every measure, and 0 is never acceptable.
+#
+# Cutting to 4 saves nothing in the shipped default mode, where the search is
+# resolved inside the DLL for a flat 314 evaluations at any budget. It pays in
+# every fallback: Blender-only drops 2983 -> 1727 evaluations (-42%) and
+# verification 3140 -> 1884. Those paths are reached with the preference off,
+# on the chain-frames the native guard declines (up to 21.3% of one corpus
+# rig), and whenever a match cannot batch.
+_POLE_REFINE_STEPS = 4
 
 
 def _chain_cache(obj, jobs):
