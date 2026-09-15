@@ -83,6 +83,7 @@ classes = [
     source.extras.anim_rig_extras.SUB_OP_anim_rig_remove_ik,
     source.extras.anim_rig_extras.SUB_OP_anim_rig_add_eyes,
     source.extras.anim_rig_extras.SUB_OP_anim_rig_remove_eyes,
+    source.extras.anim_rig_extras.SUB_OP_anim_rig_match_fingers,
     source.extras.anim_rig_extras.SUB_OP_anim_rig_add_fingers,
     source.extras.anim_rig_extras.SUB_OP_anim_rig_remove_fingers,
     source.extras.finger_sliders.SUB_OP_bake_finger_sliders,

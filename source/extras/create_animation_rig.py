@@ -637,6 +637,11 @@ def _shape_rotation_world_up(pose_bone, armature_obj):
 
 
 def _assign_shape(pose_bone, widget, scale, color, center_on_bone, armature_obj=None, world_flat=False, rotation_euler=None):
+    override = pose_bone.bone.get('sub_shape_override')
+    if override:
+        from .control_appearance import apply_override
+        apply_override(pose_bone)
+        return
     pose_bone.custom_shape = widget
     pose_bone.use_custom_shape_bone_size = False
     if isinstance(scale, (int, float)):
@@ -666,7 +671,7 @@ def _assign_shape(pose_bone, widget, scale, color, center_on_bone, armature_obj=
 def _should_hide_bone(base_name):
     if base_name.startswith('H_') or base_name.startswith('S_'):
         return True
-    return base_name.endswith(('_eff', '_null', '_offset')) or base_name == 'Rot'
+    return base_name.endswith(('_eff', '_null', '_offset')) or base_name in {'Rot', 'LegC', 'ClavicleC'}
 
 
 def _ensure_trans_aim_bone(context, armature_obj):
@@ -858,7 +863,27 @@ def _apply_shapes(context, armature_obj):
             except Exception:
                 pass
         shaped += 1
+    from .control_appearance import style_ik_controls
+    style_ik_controls(context, armature_obj)
     return shaped
+
+
+def repair_foot_control_shapes(context, armature_obj):
+    """Restore missing FK foot widgets on existing animation rigs."""
+    if not armature_has_animation_rig(armature_obj):
+        return 0
+    missing = [pb for pb in armature_obj.pose.bones
+               if re.fullmatch(r'Foot[LR]\d*', canonical_bone_name(pb.name))
+               and pb.custom_shape is None
+               and not pb.bone.get('sub_shape_override')]
+    if not missing:
+        return 0
+    scale = _estimate_character_scale(armature_obj)
+    for pb in missing:
+        widget_id, color, multiplier, center = _classify_bone(canonical_bone_name(pb.name))
+        _assign_shape(pb, _widget_object(context, widget_id), scale * multiplier,
+                      color, center, armature_obj)
+    return len(missing)
 
 
 def apply_eye_look_shape(context, armature_obj):
@@ -1426,6 +1451,38 @@ def _ensure_extra_arm_ik(armature_obj):
 
 def _set_ik_bone_visibility(armature_obj, visible, limbs='BOTH'):
     from ..blender_compat import is_pose_bone_selected, set_pose_bone_select
+    if armature_obj.data.get('sub_independent_ik'):
+        from . import ik_channels
+        for kind, names, target, pole in ik_channels.chains(armature_obj, limbs):
+            factor = _effective_limb_ik_factor(armature_obj, kind)
+            for name in ik_channels.limb_path(armature_obj, names):
+                bone = armature_obj.data.bones[name]
+                hidden = factor >= 1.0 - _FK_ON_EPSILON or bool(bone.get("sub_component_hidden"))
+                if bone.hide != hidden:
+                    bone.hide = hidden
+            controls = [target, pole]
+            foot = ik_channels.foot_controls(names, armature_obj) if kind == 'LEGS' else None
+            if foot:
+                controls.extend(foot[:2])
+                articulation = ik_channels.toe_articulation(armature_obj, names)
+                if articulation:
+                    controls.append(articulation[0])
+            for name in controls:
+                if name in armature_obj.data.bones:
+                    bone = armature_obj.data.bones[name]
+                    if bone.hide == visible:
+                        bone.hide = not visible
+        if visible:
+            _set_collection_visible(armature_obj.data, 'IK Bones', True)
+        return
+    from .apply_ik_animation import collect_fk_bone_names
+    for kind in ('ARMS', 'LEGS'):
+        if limbs not in (kind, 'BOTH'):
+            continue
+        fully_ik = _effective_limb_ik_factor(armature_obj, kind) >= 1.0 - _FK_ON_EPSILON
+        for name in collect_fk_bone_names(armature_obj, limbs=kind):
+            bone = armature_obj.data.bones[name]
+            bone.hide = fully_ik or bool(bone.get("sub_component_hidden"))
     selected = [
         pose_bone.name
         for pose_bone in armature_obj.pose.bones
@@ -1471,7 +1528,8 @@ def _ik_fk_chain_bones(armature_obj):
 
 
 def _ik_control_bone_names(armature_obj, limbs='BOTH'):
-    names = []
+    from .control_appearance import controls
+    names = [n for n, info in controls(armature_obj).items() if limbs in {'BOTH', info[0]}]
     for bone in armature_obj.pose.bones:
         match = _IK_BONE.match(canonical_bone_name(bone.name))
         if match is None:
@@ -1480,7 +1538,8 @@ def _ik_control_bone_names(armature_obj, limbs='BOTH'):
         kind = 'ARMS' if part in {'Hand', 'Arm'} else 'LEGS'
         if limbs != 'BOTH' and kind != limbs:
             continue
-        names.append(bone.name)
+        if bone.name not in names:
+            names.append(bone.name)
     return names
 
 
@@ -1565,6 +1624,9 @@ def _iter_armature_actions(armature_obj):
 
 def _bone_ik_fk_role(bone_name, armature_obj=None):
     """Return ('fk'|'ik', 'ARMS'|'LEGS') or None for bones involved in the switch."""
+    bone = armature_obj.data.bones.get(bone_name) if armature_obj is not None else None
+    if bone is not None and bone.get('sub_ik_control_kind') in {'ARMS', 'LEGS'}:
+        return 'ik', bone['sub_ik_control_kind']
     base = canonical_bone_name(bone_name)
     ik_match = _IK_BONE.match(base)
     if ik_match:
@@ -1692,6 +1754,12 @@ def finalize_ik_controls(armature_obj, context=None):
         return
     context = context or bpy.context
     ik_channels.ensure(armature_obj, context)
+    from .control_appearance import style_ik_controls
+    style_ik_controls(context, armature_obj)
+    for bone in armature_obj.data.bones:
+        if canonical_bone_name(bone.name) in {'LegC', 'ClavicleC'}:
+            bone.hide = True
+            bone.hide_select = True
     armature_obj.data[ARMATURE_FLAG] = True
 
 
@@ -1929,9 +1997,17 @@ def _sync_ik_fk_visibility(scene, depsgraph=None):
         for obj in scene.objects:
             if obj.type != 'ARMATURE':
                 continue
-            if not armature_has_ik(obj):
-                continue
             if obj.data.get("sub_independent_ik"):
+                # Unchanged visibility must not dirty the armature's depsgraph.
+                state = (obj.data.as_pointer(), len(obj.data.bones),
+                         _ik_mode_bucket(obj.data.sub_use_ik_arms),
+                         _ik_mode_bucket(obj.data.sub_use_ik_legs))
+                if cache.get(obj.name) != state:
+                    for kind in ('ARMS', 'LEGS'):
+                        _set_ik_bone_visibility(obj, _effective_limb_ik_factor(obj, kind) > _FK_ON_EPSILON, kind)
+                    cache[obj.name] = state
+                continue
+            if not armature_has_ik(obj):
                 continue
             data = obj.data
             if not data.get(ARMATURE_FLAG):
@@ -1966,6 +2042,10 @@ def _sync_ik_fk_visibility(scene, depsgraph=None):
 
 def _apply_ik_fk_state(armature_obj, enabled, limbs='BOTH'):
     """Apply IK vs FK as a hard switch for the requested limbs."""
+    if armature_obj.data.get('sub_independent_ik'):
+        for kind in ('ARMS', 'LEGS'):
+            _set_ik_bone_visibility(armature_obj, _effective_limb_ik_factor(armature_obj, kind) > _FK_ON_EPSILON, kind)
+        return
     del enabled  # limb on/off comes from the switch props (already set by caller)
     _strip_competing_ik_influence_keys(armature_obj)
     # Sync ALL limbs from their props so Arms-only toggles cannot leave Legs live.
@@ -2648,6 +2728,8 @@ def strip_animation_rig(context, armature_obj):
 
     cleared = 0
     for pose_bone in armature_obj.pose.bones:
+        if pose_bone.bone.get('sub_face_owner') or pose_bone.bone.get('sub_component_id'):
+            continue
         widget = pose_bone.custom_shape
         if widget is None or not widget.name.startswith(WIDGET_PREFIX):
             continue
@@ -2710,6 +2792,13 @@ class SUB_OP_create_animation_rig(Operator):
         description="Add the BL_EyeLook bone in front of the head and set up CustomVector31 so posing it aims the eyes",
         default=True,
     )
+    def _component_presets(self, context):
+        from .component_workflow import preset_items
+        return preset_items(self, context)
+
+    setup_custom_components: bpy.props.BoolProperty(name='Custom Components', default=False)
+    custom_component_preset: bpy.props.EnumProperty(name='Component Preset', items=_component_presets)
+
     setup_finger_sliders: bpy.props.BoolProperty(
         name="Add Finger Sliders",
         description="Add finger sliders on each hand, including extra hands. The thumb is a 2D pad. Turn off to pose Smash finger bones only",
@@ -2824,6 +2913,8 @@ class SUB_OP_create_animation_rig(Operator):
             "ik_limbs": self.ik_limbs,
             "setup_eye_look": self.setup_eye_look,
             "setup_finger_sliders": self.setup_finger_sliders,
+            "setup_custom_components": self.setup_custom_components,
+            "custom_component_preset": self.custom_component_preset,
             "hide_helpers": self.hide_helpers,
             "match_position": self.match_position,
             "ik_entire_animation": self.ik_entire_animation,
@@ -2871,6 +2962,9 @@ class SUB_OP_create_animation_rig(Operator):
                 layout.prop(self, "ik_limbs")
             layout.prop(self, "setup_eye_look")
             layout.prop(self, "setup_finger_sliders")
+            layout.prop(self, "setup_custom_components")
+            if self.setup_custom_components:
+                layout.prop(self, "custom_component_preset")
             layout.prop(self, "hide_helpers")
             return
         if self.stage == 'IK':
@@ -2909,6 +3003,13 @@ class SUB_OP_create_animation_rig(Operator):
             )
             return {'CANCELLED'}
 
+        if self.setup_custom_components:
+            from .component_workflow import validate_preset_for_object
+            try:
+                validate_preset_for_object(armature_obj, self.custom_component_preset)
+            except (ValueError, OSError) as exc:
+                self.report({'ERROR'}, str(exc))
+                return {'CANCELLED'}
         _activate_armature(context, armature_obj)
         cleaned = 0
         with ProgressCursor(context) as progress:
@@ -2962,6 +3063,10 @@ class SUB_OP_create_animation_rig(Operator):
                 slider_count = finger_sliders.build_finger_sliders(context, armature_obj)
                 progress.update(0.7)
 
+            for bone in armature_obj.data.bones:
+                if canonical_bone_name(bone.name) in {'LegC', 'ClavicleC'}:
+                    bone.hide = True
+                    bone.hide_select = True
             if self.hide_helpers:
                 _hide_clutter(armature_obj)
 
@@ -2980,6 +3085,9 @@ class SUB_OP_create_animation_rig(Operator):
                         show_progress=False,
                     )
                 finalize_ik_controls(armature_obj, context)
+            if self.setup_custom_components:
+                from .component_workflow import build_preset
+                build_preset(context, armature_obj, self.custom_component_preset)
             cleaned = 0
             if ssp is not None and ssp.clean_keyframes_after_rig:
                 from .finger_sliders import is_finger_match_fcurve_path
@@ -2991,6 +3099,9 @@ class SUB_OP_create_animation_rig(Operator):
                 cleaned += clean_redundant_keys_on_id(armature_obj.data)
             progress.update(1.0)
 
+        if slider_count:
+            from .anim_rig_extras import match_existing_finger_animation
+            match_existing_finger_animation(context, armature_obj)
         extra = " IK controls added." if ik_created else ""
         if slider_count:
             extra += f" {slider_count} finger sliders on the hand boxes."
@@ -3020,6 +3131,9 @@ class SUB_OP_remove_animation_rig(Operator):
             return {'CANCELLED'}
 
         _activate_armature(context, armature_obj)
+        from .component_workflow import bake_remove, has_components
+        if has_components(armature_obj):
+            bake_remove(context, armature_obj, False)
         cleared = strip_animation_rig(context, armature_obj)
         self.report({'INFO'}, f"Removed animation rig shapes from {armature_obj.name} ({cleared} bones).")
         return {'FINISHED'}
@@ -3032,6 +3146,8 @@ class SUB_OP_bake_and_remove_rig(Operator):
         "Bake selected animation-rig extras to Smash bones / CustomVector31, then remove the extra controls"
     )
     bl_options = {'REGISTER', 'UNDO'}
+
+    bake_custom_components: bpy.props.BoolProperty(name='Custom Components', default=True)
 
     bake_fingers: bpy.props.BoolProperty(
         name="Fingers",
@@ -3062,6 +3178,8 @@ class SUB_OP_bake_and_remove_rig(Operator):
         self.bake_fingers = has_finger_sliders(armature_obj)
         self.bake_eyes = armature_obj.pose.bones.get(EYE_CTRL_BONE) is not None
         self.bake_ik = armature_has_ik(armature_obj)
+        from .component_workflow import has_components
+        self.bake_custom_components = has_components(armature_obj)
         return context.window_manager.invoke_props_dialog(self, width=320)
 
     def draw(self, context):
@@ -3070,6 +3188,7 @@ class SUB_OP_bake_and_remove_rig(Operator):
         layout.prop(self, "bake_fingers")
         layout.prop(self, "bake_eyes")
         layout.prop(self, "bake_ik")
+        layout.prop(self, "bake_custom_components")
         layout.separator()
         layout.label(text="Then the extra rig controls will be removed.")
 
@@ -3083,6 +3202,10 @@ class SUB_OP_bake_and_remove_rig(Operator):
             bpy.ops.object.mode_set(mode='POSE')
 
         parts = []
+        if self.bake_custom_components:
+            from .component_workflow import bake_remove
+            count = bake_remove(context, armature_obj, True)
+            parts.append(f'{count} custom component bones')
         with ProgressCursor(context) as progress:
             steps = int(self.bake_fingers) + int(self.bake_eyes) + int(self.bake_ik) + 1
             done = 0
@@ -3263,6 +3386,8 @@ def _tool_id_for_pose_bone(pose_bone):
     from .eye_rig import EYE_CTRL_BONE, EYE_OPT_INVERT_X, EYE_OPT_INVERT_Y
     from .finger_sliders import is_finger_pad_bone, is_finger_slider_bone, is_thumb_slider_bone
     name = canonical_bone_name(pose_bone.name)
+    if pose_bone.bone.get('sub_component_control'):
+        return pose_bone.bone.get('sub_component_tool', 'builtin.move')
     if is_finger_pad_bone(pose_bone.name):
         return None
     if is_finger_slider_bone(pose_bone.name) or is_thumb_slider_bone(pose_bone.name) or name in {EYE_OPT_INVERT_X, EYE_OPT_INVERT_Y}:
@@ -3508,9 +3633,19 @@ def _ensure_ik_drivers_on_loaded_rigs():
     for obj in bpy.data.objects:
         if obj.type != 'ARMATURE':
             continue
+        from .finger_sliders import upgrade_finger_curl
+        upgrade_finger_curl(obj)
         if not (obj.data.get(ARMATURE_FLAG) or obj.data.get('sub_independent_ik')):
             continue
+        for bone in obj.data.bones:
+            if canonical_bone_name(bone.name) in {'LegC', 'ClavicleC'}:
+                bone.hide = True
+                bone.hide_select = True
+        repair_foot_control_shapes(bpy.context, obj)
         if armature_has_ik(obj):
+            if obj.data.get(ARMATURE_FLAG):
+                from .control_appearance import style_ik_controls
+                style_ik_controls(bpy.context, obj)
             if obj.data.get('sub_independent_ik') and obj.name in bpy.context.view_layer.objects:
                 from .ik_channels import upgrade_pull_controls
                 upgrade_pull_controls(bpy.context, obj)
@@ -3540,7 +3675,7 @@ def _unregister_ik_fk_props():
         for name in ("sub_use_ik", "sub_use_ik_arms", "sub_use_ik_legs",
                      "sub_ik_stretch_arms", "sub_ik_stretch_legs",
                      "sub_ik_stretch_chain_arms", "sub_ik_stretch_chain_legs",
-                     "sub_ik_arm_pull"):
+                     "sub_ik_arm_pull", "sub_ik_progressive_scale_arms", "sub_ik_progressive_scale_legs"):
             if hasattr(cls, name):
                 try:
                     delattr(cls, name)
@@ -3560,6 +3695,10 @@ def register():
         options={'ANIMATABLE'},
     )
     for kind in ('arms', 'legs'):
+        setattr(bpy.types.Armature, 'sub_ik_progressive_scale_' + kind, bpy.props.FloatProperty(
+            name='Progressive Scale', default=0.0, min=0.0, max=1.0, subtype='FACTOR',
+            description='Blend bone scale progressively from the chain root to the IK target',
+            update=_update_stretch_chain))
         setattr(bpy.types.Armature, 'sub_ik_stretch_chain_' + kind, bpy.props.BoolProperty(
             name='Stretch Chain',
             description='Progressively pull bone positions toward the IK target without adding scale',

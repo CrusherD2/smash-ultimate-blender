@@ -233,6 +233,12 @@ def isolated(context, obj, jobs, ik):
             direct = set()
             for _,names,target,pole in jobs:
                 direct.update(ik.PREFIX+n for n in ik.limb_path(obj,names))
+                # Correction bones are written by the solve, but nothing the
+                # closure walks *reads* them -- they are children of the solve
+                # bones, and _closure only follows parents and constraint
+                # targets. Name them directly or pruning drops them and
+                # _match_chain_steps silently stops writing the residual.
+                direct.update(ik.CORRECTION_PREFIX+n for n in ik.limb_path(obj,names))
                 direct.update((target,pole))
                 direct.update((ik.foot_controls(names,obj) or ())[:3])
                 direct.update((ik.toe_articulation(obj,names) or ())[:2])

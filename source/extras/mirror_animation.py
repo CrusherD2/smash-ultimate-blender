@@ -311,7 +311,7 @@ def mirror_action_smash_y(
 ):
     """
     Y-axis Smash Ultimate mirror: same Studio SB flip + importer as Idle Pose
-    Library Mirrored. Prefers the Smash TRS cache written on nuanmb import.
+    Library Mirrored. Samples the current evaluated animation, including edits.
     """
     if not context or not context.active_object or context.active_object.type != 'ARMATURE':
         print("Smash Y mirror requires an active armature")
@@ -340,7 +340,6 @@ def mirror_action_smash_y(
         excluded_bones -= source_bones
 
     scene = context.scene
-    smash_cache = load_smash_pose_cache(act)
     bone_filter = source_bones
     if bone_filter is None:
         animated_bones = _action_bone_names(act)
@@ -353,30 +352,43 @@ def mirror_action_smash_y(
         selected_bone_names=source_bones,
     )
 
+    # Snapshot every source frame before inserting keys. Otherwise a new key on
+    # the opposite side changes the source interpolation of later frames.
+    from .mirror_custom_bones import (
+        custom_mirror_names, snapshot_custom_pose, apply_custom_pose, control_mirror_map,
+    )
+    custom_names = custom_mirror_names(armature) - excluded_bones
+    if bone_filter is not None:
+        custom_names &= set(bone_filter)
+    custom_map = control_mirror_map(armature)
     original_frame = scene.frame_current
-    for frame in frames:
-        if scene.frame_current != frame:
+    snapshots = []
+    try:
+        for frame in frames:
             scene.frame_set(frame)
-        context.view_layer.update()
-        if in_place and source_bones:
-            # Read the selected bones directly from the evaluated pose at this frame.
-            pose_data = smash_pose_data_from_armature(armature, bone_filter=source_bones)
-        else:
-            pose_data = smash_pose_data_from_cache(smash_cache, frame) if smash_cache else None
-            if pose_data is None:
-                pose_data = _idle_library_pose_data(context, act)
-        applied = mirror_evaluated_pose(
-            armature,
-            excluded_bones=excluded_bones,
-            target_bones=target_bones,
-            source_bones=source_bones,
-            pose_data=pose_data,
-            bone_filter=bone_filter,
-            in_place=in_place,
-        )
-        keyframe_pose_bones(applied, frame)
-
-    if scene.frame_current != original_frame:
+            context.view_layer.update()
+            live = smash_pose_data_from_armature(armature, bone_filter=bone_filter)
+            pose_data = live
+            custom_pose = snapshot_custom_pose(armature, custom_names, custom_map, in_place)
+            custom_pose = {name: matrix for name, matrix in custom_pose.items()
+                           if name not in excluded_bones}
+            pose_data = {name: data for name, data in pose_data.items() if name not in custom_names}
+            snapshots.append((frame, pose_data, custom_pose))
+        for frame, pose_data, custom_pose in snapshots:
+            scene.frame_set(frame)
+            context.view_layer.update()
+            applied = mirror_evaluated_pose(
+                armature,
+                excluded_bones=excluded_bones,
+                target_bones=target_bones,
+                source_bones=source_bones,
+                pose_data=pose_data,
+                bone_filter=bone_filter,
+                in_place=in_place,
+            )
+            applied.extend(apply_custom_pose(armature, custom_pose))
+            keyframe_pose_bones(applied, frame)
+    finally:
         scene.frame_set(original_frame)
 
 

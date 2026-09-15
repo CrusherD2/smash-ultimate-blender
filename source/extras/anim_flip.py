@@ -236,6 +236,8 @@ def keyframe_pose_bones(bones, frame):
         bone.keyframe_insert(data_path="location", frame=frame, group=bone.name)
         if bone.rotation_mode == 'QUATERNION':
             bone.keyframe_insert(data_path="rotation_quaternion", frame=frame, group=bone.name)
+        elif bone.rotation_mode == 'AXIS_ANGLE':
+            bone.keyframe_insert(data_path="rotation_axis_angle", frame=frame, group=bone.name)
         else:
             bone.keyframe_insert(data_path="rotation_euler", frame=frame, group=bone.name)
         bone.keyframe_insert(data_path="scale", frame=frame, group=bone.name)
@@ -410,11 +412,11 @@ def collect_unchecked_custom_mirror_bones(armature, custom_items):
     """
     if not custom_items:
         return set()
-    included = {item.name for item in custom_items if getattr(item, 'include', False)}
+    unchecked = {item.name for item in custom_items if not getattr(item, 'include', False)}
     return {
         name
         for name in find_custom_mirror_bones(armature)
-        if name not in included
+        if name in unchecked
     }
 
 
@@ -425,6 +427,14 @@ def should_exclude_bone_from_mirroring(bone_name, armature=None, include_fingers
 
     if is_untouchable_mirror_bone(bone_name):
         return True
+
+    if armature is not None:
+        bone = armature.data.bones.get(bone_name)
+        if bone is not None:
+            if bone.get('sub_face_helper') or bone_name.startswith('BL_CC_MCH_'):
+                return True
+            if bone.get('sub_component_control'):
+                return False
 
     bone_name_lower = bone_name.lower()
     if bone_name_lower in ('hip', 'hipn', 'trans', 'root', 'pelvis'):
@@ -460,7 +470,7 @@ def collect_excluded_bone_names(armature, include_fingers=True):
     }
 
 
-def mirror_smash_pose_data(pose_data, excluded_bones=None, source_bones=None, in_place=False):
+def mirror_smash_pose_data(pose_data, excluded_bones=None, source_bones=None, in_place=False, mirror_map=None):
     """
     Apply anim_flip to Smash-space pose dicts used by the idle pose library.
 
@@ -469,6 +479,10 @@ def mirror_smash_pose_data(pose_data, excluded_bones=None, source_bones=None, in
     """
     excluded_bones = excluded_bones or set()
     mirrored = {}
+    if mirror_map is None:
+        # Standalone idle pose dictionaries may contain only one side; retain
+        # the original Smash suffix behavior without requiring its counterpart.
+        mirror_map = create_mirror_map(set(pose_data) | {swap_lr_bone_name(n) for n in pose_data})
     for bone_name, data in pose_data.items():
         if source_bones is not None and bone_name not in source_bones:
             continue
@@ -476,7 +490,7 @@ def mirror_smash_pose_data(pose_data, excluded_bones=None, source_bones=None, in
             continue
         if bone_name in excluded_bones:
             continue
-        target_name = bone_name if in_place else swap_lr_bone_name(bone_name)
+        target_name = bone_name if in_place else mirror_map.get(bone_name, bone_name)
         flipped = dict(data)
         if "translation" in flipped:
             flipped["translation"] = flip_smash_translation(flipped["translation"])
@@ -507,6 +521,7 @@ def mirror_evaluated_pose(
         excluded_bones=excluded_bones,
         source_bones=source_bones,
         in_place=in_place,
+        mirror_map=create_mirror_map(armature.pose.bones.keys()),
     )
     return apply_smash_pose_data(
         armature,

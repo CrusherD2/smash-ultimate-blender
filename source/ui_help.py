@@ -41,6 +41,8 @@ def panel_doc_path(panel):
         return 'README.md#raw-animations'
     if 'motion_list' in module:
         return 'docs/motion-list.md'
+    if 'custom_components' in module or 'component_' in module:
+        return 'docs/custom-components.md'
     if '.retargeting' in module:
         anchor = 'retargeting'
     elif '.doctor' in module:

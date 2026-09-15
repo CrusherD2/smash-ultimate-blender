@@ -56,7 +56,7 @@ with tempfile.TemporaryDirectory() as folder:
     assert sum(1 for _ in iterator) >= 30
     assert Path(output).read_bytes() == (Path(folder) / 'stepped.nuanmb').read_bytes()
 
-    # Failure and cancellation must restore scene state and release the job guard.
+    # A failed synchronous export must restore scene state.
     class Failure(export.AnimationExport):
         def report(self, *args): pass
         def export_steps(self, context):
@@ -129,6 +129,8 @@ with tempfile.TemporaryDirectory() as folder:
         operator.filepath = str(Path(folder) / f'no_progress_{number}.nuanmb')
         assert operator.execute(context_without_ui) == {'FINISHED'}
         assert Path(operator.filepath).is_file()
+# Generator cancellation and temporary IK action restoration are covered by
+# test_ik_workflow_regressions_blender.py.
 
 addon_utils.disable(MODULE, default_set=False, handle_error=on_error)
 assert not errors, errors

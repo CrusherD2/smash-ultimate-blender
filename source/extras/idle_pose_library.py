@@ -1,5 +1,6 @@
 import bpy
 import json
+import re
 from pathlib import Path
 from bpy.types import Operator
 from bpy.props import StringProperty
@@ -52,7 +53,7 @@ def refresh_idle_poses(ssp):
     ssp.idle_pose_list_index = next(
         (i for i, pose in enumerate(ssp.idle_pose_list) if pose.name == selected), 0)
 
-def apply_pose_with_options(context, pose_data_str, include_trans=True, mirrored=False, rotate_180=False):
+def apply_pose_with_options(context, pose_data_str, include_trans=True, mirrored=False, rotate_180=False, ik_enabled=False):
     """Apply pose data with the specified options"""
     armature = context.active_object
     current_frame = context.scene.frame_current
@@ -63,7 +64,15 @@ def apply_pose_with_options(context, pose_data_str, include_trans=True, mirrored
     if not pose_data_str:
         return {'CANCELLED'}, "No pose data available"
     
+    from . import ik_channels, create_animation_rig as rig
+    output_states = [(con, con.mute) for _, con, _ in ik_channels.outputs(armature)]
+    output_states.extend((con, con.mute) for _, con, _ in ik_channels.toe_outputs(armature))
+    paused = rig._IK_FK_MUTE_SYNC_PAUSED
+    rig.pause_ik_fk_mute_sync(True)
     try:
+        for con, _ in output_states:
+            con.mute = True
+        context.view_layer.update()
         reordered_bones = get_hierarchy_order(list(armature.pose.bones))
         
         # Get the stored pose data
@@ -78,6 +87,8 @@ def apply_pose_with_options(context, pose_data_str, include_trans=True, mirrored
         bone_to_node_data = {}
         for bone in armature.pose.bones:
             if bone.name in pose_data:
+                if getattr(context.scene.sub_scene_properties, "idle_pose_exclude_fixed_bones", True) and re.fullmatch(r"(?:LegC|ClavicleC)[LR]?(?:\.\d+)?", bone.name, re.IGNORECASE):
+                    continue
                 # Skip Trans bone if include_trans is False
                 if not include_trans and bone.name == "Trans":
                     continue
@@ -89,9 +100,10 @@ def apply_pose_with_options(context, pose_data_str, include_trans=True, mirrored
             if bone not in bone_to_node_data:
                 continue
             apply_smash_node_to_bone(bone, bone_to_node_data[bone])
+            context.view_layer.update()
         
         additive_layer = anim_layers_compat.is_non_base_anim_layer(armature)
-        bones_to_key = list(bone_to_node_data.keys()) if additive_layer else list(armature.pose.bones)
+        bones_to_key = list(bone_to_node_data.keys())
 
         # On upper Anim Layers, key absolute values under REPLACE first, then
         # convert to ADD offsets so the base animation still plays underneath.
@@ -142,6 +154,14 @@ def apply_pose_with_options(context, pose_data_str, include_trans=True, mirrored
                     context, armature, bones_to_key
                 )
         
+        if ik_enabled:
+            from . import ik_channels
+            from . import create_animation_rig as rig
+            if list(ik_channels.chains(armature)):
+                ik_channels.match(context, armature, entire=False, key=True)
+                rig._key_use_ik(armature, current_frame, limbs='BOTH', enabled=True)
+                rig._set_ik_enabled(context, armature, True, limbs='BOTH')
+
         # Update the view
         for area in context.screen.areas:
             area.tag_redraw()
@@ -150,6 +170,11 @@ def apply_pose_with_options(context, pose_data_str, include_trans=True, mirrored
         
     except Exception as e:
         return {'CANCELLED'}, f"Error applying idle pose: {str(e)}"
+    finally:
+        for con, mute in output_states:
+            con.mute = mute
+        rig.pause_ik_fk_mute_sync(paused)
+        context.view_layer.update()
 
 class SUB_OP_store_idle_pose(Operator):
     bl_idname = "sub.store_idle_pose"
@@ -295,7 +320,7 @@ class SUB_OP_apply_idle_pose(Operator):
         pose_data_str = context.scene["idle_pose_data"]
         
         # Apply the pose using the helper function
-        result, message = apply_pose_with_options(context, pose_data_str, include_trans, mirrored, rotate_180)
+        result, message = apply_pose_with_options(context, pose_data_str, include_trans, mirrored, rotate_180, ssp.idle_pose_ik_enabled)
         
         if result == {'FINISHED'}:
             self.report({'INFO'}, message)
@@ -405,7 +430,7 @@ class SUB_OP_apply_idle_pose_from_list(Operator):
         rotate_180 = ssp.idle_pose_180_rotate
         
         # Apply the pose using the helper function
-        result, message = apply_pose_with_options(context, pose_data_str, include_trans, mirrored, rotate_180)
+        result, message = apply_pose_with_options(context, pose_data_str, include_trans, mirrored, rotate_180, ssp.idle_pose_ik_enabled)
         
         if result == {'FINISHED'}:
             self.report({'INFO'}, f"Applied '{selected_pose.name}' pose - {message.split('-')[-1].strip()}")

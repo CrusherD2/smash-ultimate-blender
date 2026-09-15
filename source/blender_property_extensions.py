@@ -434,6 +434,16 @@ class SubSceneProperties(PropertyGroup):
         description="After creating the animation rig, remove keys that sit on baked interpolation so only the keys that change the pose remain",
         default=True,
     )
+    idle_pose_ik_enabled: BoolProperty(
+        name="IK Enabled",
+        description="Match and key existing IK controls to the idle pose at this frame",
+        default=False,
+    )
+    idle_pose_exclude_fixed_bones: BoolProperty(
+        name="Exclude LegC and ClavicleC",
+        description="Leave LegC and ClavicleC bones unchanged and do not key them when applying an idle pose",
+        default=True,
+    )
     idle_pose_include_trans: BoolProperty(
         name="Include Trans Bone",
         description="Include the Trans bone when applying idle pose",

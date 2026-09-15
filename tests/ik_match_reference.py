@@ -1,10 +1,18 @@
 # Frozen pre-strategy match loop for exact-output differential tests.
-def match(context, obj, limbs='BOTH', entire=True, key=True, clean=False, _batch=False):
+#
+# "Frozen" means the solve loop does not track ik_channels' optimisations --
+# that is the whole point of the comparison. It must still accept the same
+# call signature, because the harness substitutes it for the real match() and
+# the add-on's own callers run against it. create_controls passes _targets, so
+# this honours _targets exactly as ik_channels.match does; it takes no _fast,
+# because no caller in source/ passes one and this reference has no fast path.
+def match(context, obj, limbs='BOTH', entire=True, key=True, clean=False, _batch=False,
+          _targets=None):
     from . import create_animation_rig as rig, anim_layers_compat
     from ..anim.fcurve_compat import get_all_action_fcurves
     from ..anim import fcurve_bulk
     ensure(obj, context, limbs)
-    jobs = list(chains(obj, limbs))
+    jobs = [job for job in chains(obj, limbs) if _targets is None or job[2] in _targets]
     if not jobs:
         raise RuntimeError('No complete IK chains for the requested limbs')
     scene = context.scene

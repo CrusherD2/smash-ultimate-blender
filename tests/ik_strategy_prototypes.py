@@ -19,6 +19,12 @@ def isolated(context, obj, ik, jobs, sampled, minimal=False):
         needed = set() if minimal else set(sampled)
         for _, names, target, pole in jobs:
             needed.update(ik.PREFIX+n for n in ik.limb_path(obj,names))
+            # Correction bones are written by the solve and read by nothing the
+            # closure below walks, so they have to be named outright -- exactly
+            # as ik_match_fast.isolated does. Without them the solve silently
+            # skips the residual write and this variant's fingerprint diverges
+            # from baseline for a reason that has nothing to do with isolation.
+            needed.update(ik.CORRECTION_PREFIX+n for n in ik.limb_path(obj,names))
             needed.update((target,pole))
             foot = ik.foot_controls(names,obj) or ()
             articulation = ik.toe_articulation(obj,names) or ()

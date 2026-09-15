@@ -177,7 +177,9 @@ def _serialize_keyframe(keyframe: bpy.types.Keyframe) -> dict:
         "value": float(keyframe.co[1]),
         "interpolation": keyframe.interpolation,
     }
-    if keyframe.interpolation == "BEZIER":
+    for attr in ("handle_left_type", "handle_right_type", "easing", "type", "amplitude", "back", "period"):
+        data[attr] = getattr(keyframe, attr)
+    if True:
         data["handle_left"] = [float(keyframe.handle_left[0]), float(keyframe.handle_left[1])]
         data["handle_right"] = [float(keyframe.handle_right[0]), float(keyframe.handle_right[1])]
     return data
@@ -339,7 +341,9 @@ def _write_fcurve_keys(fcurve: bpy.types.FCurve, keys: list[dict]) -> int:
     for index, key_data in enumerate(keys):
         keyframe = points[index]
         keyframe.interpolation = key_data.get("interpolation", "BEZIER")
-        if keyframe.interpolation == "BEZIER":
+        for attr in ("handle_left_type", "handle_right_type", "easing", "type", "amplitude", "back", "period"):
+            if attr in key_data: setattr(keyframe, attr, key_data[attr])
+        if True:
             if "handle_left" in key_data:
                 keyframe.handle_left = key_data["handle_left"]
             if "handle_right" in key_data:
@@ -363,42 +367,33 @@ def export_raw_animation(
         return False
 
     # Prefer the channelbag actually driving this armature (Blender 5 slots).
-    source_fcurves = get_fcurves_for_assigned_slot(arma)
+    source_fcurves = get_fcurves_for_assigned_slot(arma) if arma.animation_data and arma.animation_data.action == action else []
     if not source_fcurves:
         source_fcurves = get_all_action_fcurves(action, id_type="OBJECT")
 
-    fcurve_entries: list[dict] = []
-    for fcurve in source_fcurves:
-        match = _BONE_FCURVE_REGEX.match(fcurve.data_path)
-        if match is None:
-            continue
-
-        keys = []
-        for keyframe in fcurve.keyframe_points:
-            frame = keyframe.co[0]
-            if frame < frame_start or frame > frame_end:
-                continue
-            keys.append(_serialize_keyframe(keyframe))
-
-        if not keys:
-            continue
-
-        bone_name, transform_property = match.groups()
-        fcurve_entries.append(
-            {
-                "bone": bone_name,
-                "property": transform_property,
-                "index": fcurve.array_index,
-                "keys": keys,
-            }
-        )
+    from . import raw_rig
+    def serialize_curves(curves):
+        entries=[]
+        for fc in curves:
+            keys=[_serialize_keyframe(k) for k in fc.keyframe_points if frame_start <= k.co.x <= frame_end]
+            if not keys and not fc.modifiers: continue
+            match=_BONE_FCURVE_REGEX.match(fc.data_path)
+            entry=dict(data_path=fc.data_path,index=fc.array_index,keys=keys,
+                       settings=raw_rig.scalar_rna(fc),
+                       modifiers=[dict(type=m.type,values=raw_rig.scalar_rna(m)) for m in fc.modifiers])
+            if match: entry.update(bone=match[1],property=match[2])
+            entries.append(entry)
+        return entries
+    fcurve_entries=serialize_curves(source_fcurves)
+    data_action=getattr(getattr(arma.data,'animation_data',None),'action',None)
+    data_entries=serialize_curves(get_fcurves_for_assigned_slot(arma.data)) if data_action else []
 
     visibility_tracks: list[dict] = []
     sap_action = _get_sap_action(arma, action)
     if sap_action is not None:
         visibility_tracks = _export_visibility_tracks(arma, sap_action, frame_start, frame_end)
 
-    if not fcurve_entries and not visibility_tracks:
+    if not fcurve_entries and not visibility_tracks and not data_entries:
         if operator is not None:
             operator.report({"ERROR"}, "No pose or visibility keyframes to export in the selected frame range.")
         return False
@@ -411,6 +406,8 @@ def export_raw_animation(
         "frame_start": int(frame_start),
         "frame_end": int(frame_end),
         "fcurves": fcurve_entries,
+        "data_fcurves": data_entries,
+        "rig": raw_rig.capture(arma),
         "visibility_tracks": visibility_tracks,
     }
 
@@ -586,9 +583,13 @@ def import_raw_animation(
             operator.report({"ERROR"}, "File is not a supported raw animation.")
         return False
 
+    from . import raw_rig
+    data_entries = data.get("data_fcurves", [])
+    snapshot = data.get("rig")
+    if snapshot: raw_rig.validate(snapshot)
     fcurve_entries = data.get("fcurves", [])
     visibility_tracks = data.get("visibility_tracks", [])
-    if not fcurve_entries and not visibility_tracks:
+    if not fcurve_entries and not visibility_tracks and not data_entries:
         if operator is not None:
             operator.report({"ERROR"}, "Raw animation file contains no keyframe data.")
         return False
@@ -596,7 +597,8 @@ def import_raw_animation(
     if arma.animation_data is None:
         arma.animation_data_create()
 
-    ik_setup = plan_ik_rig_setup(arma.data, fcurve_entries) if fcurve_entries else None
+    if snapshot: raw_rig.restore(context, arma, snapshot)
+    ik_setup = plan_ik_rig_setup(arma.data, fcurve_entries) if fcurve_entries and not snapshot else None
     if ik_setup and not ensure_ik_rig_for_raw_import(context, arma, ik_setup, operator):
         return False
 
@@ -619,10 +621,10 @@ def import_raw_animation(
     keyframe_count = 0
 
     for fcurve_data in fcurve_entries:
-        bone_name = fcurve_data["bone"]
-        transform_property = fcurve_data["property"]
+        bone_name = fcurve_data.get("bone", "Controls")
+        transform_property = fcurve_data.get("property", "")
         array_index = int(fcurve_data["index"])
-        data_path = f'pose.bones["{bone_name}"].{transform_property}'
+        data_path = fcurve_data.get("data_path") or f'pose.bones["{bone_name}"].{transform_property}'
         fcurve = ensure_fcurve_for_datablock(
             action,
             arma,
@@ -633,7 +635,10 @@ def import_raw_animation(
         )
         keyframe_count += _write_fcurve_keys(fcurve, fcurve_data.get("keys", []))
 
-        if transform_property == "rotation_quaternion":
+        raw_rig.set_rna(fcurve, fcurve_data.get("settings", {}))
+        for record in fcurve_data.get("modifiers", []):
+            raw_rig.set_rna(fcurve.modifiers.new(record["type"]), record["values"])
+        if transform_property == "rotation_quaternion" and not snapshot:
             quaternion_bones.add(bone_name)
 
     for bone_name in quaternion_bones:
@@ -648,6 +653,19 @@ def import_raw_animation(
         visibility_tracks,
     )
     keyframe_count += vis_keyframe_count
+    if data_entries:
+        if sap_action is None:
+            sap_action=bpy.data.actions.new(f"{arma.name} {action.name} SAP Data")
+            arma.data.animation_data_create()
+            ensure_action_slot(sap_action,arma.data)
+            assign_action(arma.data.animation_data,sap_action)
+        for entry in data_entries:
+            fc=ensure_fcurve_for_datablock(sap_action,arma.data,entry['data_path'],index=entry['index'],id_type='ARMATURE')
+            keyframe_count+=_write_fcurve_keys(fc,entry.get('keys',[]))
+            raw_rig.set_rna(fc,entry.get('settings',{}))
+            for record in entry.get('modifiers',[]):
+                raw_rig.set_rna(fc.modifiers.new(record['type']),record['values'])
+
 
     frame_start = int(data.get("frame_start", context.scene.frame_start))
     frame_end = int(data.get("frame_end", frame_start))

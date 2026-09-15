@@ -610,10 +610,25 @@ class SUB_OP_floor_contact(Operator):
                 limb = next((l for l in arm.sub_floor_contact.limbs if l.control == self.control), None)
                 if limb is None:
                     raise ValueError('Contact limb no longer exists; set up contact again')
+                if self.action in {'PLANT', 'RELEASE'}:
+                    from ..anim.fcurve_compat import get_all_action_fcurves
+                    action = arm.animation_data.action if arm.animation_data else None
+                    existing = get_all_action_fcurves(action, id_type='OBJECT') if action else []
+                    for prop in ('planted', 'pin_toe', 'auto_plant'):
+                        path = limb.path_from_id() + '.' + prop
+                        if not any(fc.data_path == path and any(k.co.x < context.scene.frame_current for k in fc.keyframe_points) for fc in existing):
+                            limb.keyframe_insert(prop, frame=context.scene.frame_current - 1, group='Floor Contact')
                 if self.action == 'MIRROR':
                     mirror(context, arm, limb)
                 elif self.action in {'PLANT', 'CAPTURE'}:
                     capture(context, arm, limb)
+                    for prop in ('location', 'rotation_euler', 'scale'):
+                        limb.anchor.keyframe_insert(prop, frame=context.scene.frame_current)
+                    from ..anim.fcurve_compat import get_all_action_fcurves
+                    for fc in get_all_action_fcurves(limb.anchor.animation_data.action, id_type='OBJECT'):
+                        if fc.data_path in {'location', 'rotation_euler', 'scale'}:
+                            for point in fc.keyframe_points:
+                                point.interpolation = 'CONSTANT'
                     if self.action == 'PLANT':
                         limb.planted = True
                 elif self.action == 'RELEASE':
@@ -631,6 +646,15 @@ class SUB_OP_floor_contact(Operator):
                         marker.hide_set(False)
                         marker.select_set(True)
                     context.view_layer.objects.active = limb.heel
+            if self.action in {'PLANT', 'RELEASE'}:
+                for prop in ('planted', 'pin_toe', 'auto_plant'):
+                    limb.keyframe_insert(prop, frame=context.scene.frame_current,
+                                         group='Floor Contact')
+                from ..anim.fcurve_compat import get_all_action_fcurves
+                for fc in get_all_action_fcurves(arm.animation_data.action, id_type='OBJECT'):
+                    if fc.data_path in {limb.path_from_id() + '.' + prop for prop in ('planted', 'pin_toe', 'auto_plant')}:
+                        for point in fc.keyframe_points:
+                            point.interpolation = 'CONSTANT'
             return {'FINISHED'}
         except (ValueError, RuntimeError) as error:
             self.report({'ERROR'}, str(error))
@@ -661,6 +685,7 @@ def draw(layout, context, arm):
         action, label = ('RELEASE', 'Release') if held else ('PLANT', 'Plant')
         op = actions.operator('sub.floor_contact', text=label, depress=held)
         op.action, op.control = action, limb.control
+        row.prop(limb, 'planted', text='')
         if props.calibrating:
             row = box.row(align=True)
             for action, label in (('SELECT', 'Edit Markers'), ('MIRROR', 'Mirror')):

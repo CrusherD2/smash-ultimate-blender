@@ -18,6 +18,7 @@ from . import pose_math
 
 PREFIX = 'BL_SUB_IK_'
 PULL_PREFIX = 'BL_SUB_IK_PULL_'
+CORRECTION_PREFIX = 'BL_SUB_IK_MATCH_'
 OUTPUT = 'SUB IK Blend'
 VERSION = 'sub_independent_ik'
 MATCH_KEY = 'sub_ik_channel_matches'
@@ -190,7 +191,7 @@ def solve_bone(obj, names):
     return obj.pose.bones[PREFIX + limb_path(obj, names)[-2]]
 
 
-def create_controls(context, obj, limbs='BOTH', custom_only=False):
+def create_controls(context, obj, limbs='BOTH', custom_only=False, custom_targets=None):
     """One idempotent creation path for IK Tools and the Animation Rig."""
     from . import create_animation_rig as rig, anim_layers_compat
     rig._activate_armature(context, obj)
@@ -207,7 +208,8 @@ def create_controls(context, obj, limbs='BOTH', custom_only=False):
         if all(n in obj.data.bones for n in names) and limb_path(obj, names):
             jobs.append((kind, names, ('FootIK' if kind == 'LEGS' else 'HandIK') + suffix,
                          ('KneeIK' if kind == 'LEGS' else 'ArmIK') + suffix))
-    jobs.extend(job for job in custom_jobs(obj) if limbs in (job[0], 'BOTH'))
+    jobs.extend(job for job in custom_jobs(obj) if limbs in (job[0], 'BOTH')
+                and (custom_targets is None or job[2] in custom_targets))
     # Existing controls may have user-authored dependencies or animation. Only
     # freshly generated controls are eligible for the independent fast path.
     fresh_controls = all(
@@ -244,15 +246,20 @@ def create_controls(context, obj, limbs='BOTH', custom_only=False):
                 obj.data.bones[n].color.palette = 'THEME01'
         if jobs:
             # Seed the new controls from the current FK pose before enabling IK.
-            match(context, obj, limbs, entire=False, key=True, _batch=fresh_controls)
+            match(context, obj, limbs, entire=False, key=True, _batch=fresh_controls, _targets={job[2] for job in jobs})
             rig._key_use_ik(obj, context.scene.frame_current, limbs=limbs, enabled=True)
             rig._set_ik_enabled(context, obj, True, limbs=limbs)
             context.view_layer.update()
+    # Animation-rig widgets stay on Create Animation Rig / Add IK. IK Tools
+    # keeps octahedral bones unless this armature already has that rig.
+    if rig.armature_has_animation_rig(obj):
+        from .control_appearance import style_ik_controls
+        style_ik_controls(context, obj)
     return len(jobs)
 
 
 def _signature(obj, kind):
-    return [obj.data.bones[PREFIX + names[0]].get('sub_ik_generation', '')
+    return [obj.data.bones[PREFIX + names[0]].get('sub_ik_generation', '') + ':4'
             for _, names, _, _ in chains(obj, kind) if PREFIX + names[0] in obj.data.bones]
 
 
@@ -514,7 +521,23 @@ def ensure(obj, context, limbs='BOTH'):
         collection.is_visible = False
         for name in missing_pull:
             collection.assign(obj.data.bones[PULL_PREFIX + name])
-    obj.data[VERSION] = 3
+    missing_corrections = [name for name in paths if CORRECTION_PREFIX + name not in obj.data.bones]
+    if missing_corrections:
+        bpy.ops.object.mode_set(mode='EDIT')
+        bones = obj.data.edit_bones
+        for name in missing_corrections:
+            src = bones[PREFIX + name]
+            dst = bones.new(CORRECTION_PREFIX + name)
+            dst.matrix, dst.length = src.matrix.copy(), src.length
+            dst.parent, dst.use_deform = src, False
+        bpy.ops.object.mode_set(mode='POSE')
+        collection = obj.data.collections.get('IK Internal') or obj.data.collections.new('IK Internal')
+        collection.is_visible = False
+        for name in missing_corrections:
+            pb = obj.pose.bones[CORRECTION_PREFIX + name]
+            pb.rotation_mode = 'QUATERNION'
+            collection.assign(pb.bone)
+    obj.data[VERSION] = 4
     wire(obj)
     from . import ik_floor_contact
     ik_floor_contact.restore_pending(context, obj)
@@ -547,7 +570,7 @@ def wire(obj):
                 continue
             base = pull.constraints.get('SUB IK Pull Base') or pull.constraints.new('COPY_TRANSFORMS')
             base.name = 'SUB IK Pull Base'
-            base.target, base.subtarget = obj, PREFIX + name
+            base.target, base.subtarget = obj, (CORRECTION_PREFIX + name if CORRECTION_PREFIX + name in obj.pose.bones else PREFIX + name)
             base.target_space = base.owner_space = 'POSE'
             blend.subtarget = pull.name
             _ensure_constraint_influence_driver(obj, source, blend, _limb_switch_prop(kind))
@@ -579,6 +602,30 @@ def wire(obj):
                 _stretch_chain_driver(obj, con, kind, index == len(path) - 1)
                 con.mute = False
     wire_arm_pulls(obj)
+    for kind, names, target, _pole in chains(obj):
+        path = limb_path(obj, names)
+        distances = [0.0]
+        for a, b in zip(path, path[1:]):
+            distances.append(distances[-1] + (obj.data.bones[b].head_local - obj.data.bones[a].head_local).length)
+        for index, name in enumerate(path[:-1]):
+            pull = obj.pose.bones.get(PULL_PREFIX + name)
+            if pull is None:
+                continue
+            con = pull.constraints.get('SUB IK Progressive Scale') or pull.constraints.new('COPY_SCALE')
+            con.name = 'SUB IK Progressive Scale'
+            con.target, con.subtarget = obj, endpoint_target(obj, names, target)
+            con.target_space = con.owner_space = 'POSE'
+            weight = distances[index] / distances[-1] if distances[-1] > 1e-8 else index / (len(path)-1)
+            driver = con.driver_add('influence').driver
+            driver.type = 'SCRIPTED'
+            for var in list(driver.variables):
+                driver.variables.remove(var)
+            var = driver.variables.new()
+            var.name, var.type = 'amount', 'SINGLE_PROP'
+            var.targets[0].id_type = 'ARMATURE'
+            var.targets[0].id = obj.data
+            var.targets[0].data_path = 'sub_ik_progressive_scale_' + kind.lower()
+            driver.expression = f'amount * {weight!r}'
     from . import ik_floor_contact
     ik_floor_contact.rewire(obj)
 
@@ -696,8 +743,9 @@ def wire_arm_pulls(obj):
 def upgrade_pull_controls(context, obj):
     """Add positional outputs to saved rigs without rematching their keys."""
     jobs = list(chains(obj))
-    if not any(PULL_PREFIX + name not in obj.data.bones
-               for _, names, _, _ in jobs for name in limb_path(obj, names)):
+    if not any(prefix + name not in obj.data.bones
+               for _, names, _, _ in jobs for name in limb_path(obj, names)
+               for prefix in (PULL_PREFIX, CORRECTION_PREFIX)):
         wire(obj)
         return
     from . import create_animation_rig as rig
@@ -883,7 +931,8 @@ def _dependency_audit(obj, jobs, separate):
             owners[bone.name] = owners[parent.name]
     props = {'sub_use_ik_arms', 'sub_use_ik_legs',
              'sub_ik_stretch_arms', 'sub_ik_stretch_legs',
-             'sub_ik_stretch_chain_arms', 'sub_ik_stretch_chain_legs'}
+             'sub_ik_stretch_chain_arms', 'sub_ik_stretch_chain_legs',
+             'sub_ik_progressive_scale_arms', 'sub_ik_progressive_scale_legs'}
     props.update(obj.data.bones[pole].path_from_id() + '.' + ARM_PULL_PROPERTY
                  for kind, _, _, pole in chains(obj, 'ARMS'))
     if obj.data.animation_data and obj.data.animation_data.drivers:
@@ -906,7 +955,16 @@ def _dependency_audit(obj, jobs, separate):
         # armature properties, so none can read another chain's evaluated pose.
         expressions = {driver.variables[0].name, 'stretch * chain',
                        'stretch * (1-chain)', 'pull * stretch * chain', '0'}
-        if driver.type != 'SCRIPTED' or driver.expression not in expressions:
+        # 'SUB IK Progressive Scale' bakes each link's fraction of the chain
+        # length into its own expression, so the text differs per bone and
+        # cannot be enumerated the way the others are. Match the shape instead:
+        # the driver variable scaled by one literal, nothing else. The input is
+        # still a single armature property, checked against `props` below.
+        progressive = re.fullmatch(re.escape(driver.variables[0].name)
+                                   + r' \* -?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?',
+                                   driver.expression)
+        if driver.type != 'SCRIPTED' or not (
+                driver.expression in expressions or progressive):
             return diag.reject(guard, 'foreign_driver_expression')
         for var in driver.variables:
             if (var.type != 'SINGLE_PROP' or var.targets[0].id != obj.data
@@ -1321,6 +1379,17 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
     entry['angle'] = angle
 
     con.pole_angle = math.atan2(math.sin(angle), math.cos(angle))
+    yield
+    # Keep the sampled match residual in an independent child of each solved
+    # bone. Pole IK cannot exactly reproduce arbitrary FK twist/offset chains.
+    # These keys retain that detail without reading the original FK at playback.
+    for name in path:
+        correction = obj.pose.bones.get(CORRECTION_PREFIX + name)
+        if correction is not None:
+            solved = obj.pose.bones[PREFIX + name].matrix.copy()
+            correction.matrix_basis = solved.inverted_safe() @ matrices[name]
+            if key:
+                writer.stash_pose_bone(correction, frame)
     if key:
         writer.stash_pose_bone(control, frame)
         writer.stash_pose_bone(pole_pb, frame)
@@ -1334,14 +1403,15 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
                              con.pole_angle, solver[-2].name)
 
 
-def match(context, obj, limbs='BOTH', entire=True, key=True, clean=False, _batch=False, _fast=True):
+def match(context, obj, limbs='BOTH', entire=True, key=True, clean=False, _batch=False,
+          _fast=True, _targets=None):
     from . import create_animation_rig as rig, anim_layers_compat
     from ..anim.fcurve_compat import get_all_action_fcurves
     from ..anim import fcurve_bulk
     ensure(obj, context, limbs)
     from . import ik_match_diag as diag
     diag.reset()
-    jobs = list(chains(obj, limbs))
+    jobs = [job for job in chains(obj, limbs) if _targets is None or job[2] in _targets]
     if not jobs:
         raise RuntimeError('No complete IK chains for the requested limbs')
     scene = context.scene
@@ -1404,7 +1474,8 @@ def match(context, obj, limbs='BOTH', entire=True, key=True, clean=False, _batch
                 if writer is not None:
                     writer.flush()
                 if key and obj.animation_data and obj.animation_data.action:
-                    owned = {PREFIX+n for _, _, target, _ in jobs for n in cache[target]['path']} | {n for _, _, target, pole in jobs for n in (target, pole)}
+                    owned = {prefix+n for _, _, target, _ in jobs for n in cache[target]['path']
+                             for prefix in (PREFIX, CORRECTION_PREFIX)} | {n for _, _, target, pole in jobs for n in (target, pole)}
                     owned.update(name for entry in cache.values() if entry['foot'] for name in entry['foot'][:3])
                     owned.update(name for entry in cache.values() if entry['articulation'] for name in entry['articulation'][:2])
                     paths = tuple(obj.pose.bones[n].path_from_id() + '.' for n in owned if n in obj.pose.bones)
@@ -1530,16 +1601,20 @@ def bake(context, obj, names, start, end, clear_constraints=True):
     return len(samples) * len(names)
 
 
-def remove(context, obj, limbs='BOTH'):
+def remove(context, obj, limbs='BOTH', targets=None):
     from . import create_animation_rig as rig
     from ..anim.fcurve_compat import get_all_action_fcurves, remove_fcurve
-    jobs = list(chains(obj, limbs))
+    jobs = [job for job in chains(obj, limbs) if targets is None or job[2] in targets]
+    affected = {n for _,group,_,_ in jobs for n in limb_path(obj,group)}
+    for _, group, _, _ in jobs:
+        for name in limb_path(obj, group):
+            obj.data.bones[name].hide = False
     from . import ik_floor_contact
     ik_floor_contact.remove(context, obj, controls={job[2] for job in jobs})
     names = {prefix + name
              for _, group, _, _ in jobs
              for name in limb_path(obj, group)
-             for prefix in (PREFIX, PULL_PREFIX)}
+             for prefix in (PREFIX, PULL_PREFIX, CORRECTION_PREFIX)}
     names.update(n for _, _, target, pole in jobs for n in (target, pole))
     for kind, group, _, _ in jobs:
         controls = foot_controls(group, obj) if kind == 'LEGS' else None
@@ -1555,6 +1630,8 @@ def remove(context, obj, limbs='BOTH'):
                     con.driver_remove('influence')
                     toe.constraints.remove(con)
     for pb, con, _ in list(outputs(obj, limbs)):
+        if pb.name not in affected:
+            continue
         con.driver_remove('influence')
         pb.constraints.remove(con)
     for name in names:
@@ -1572,7 +1649,8 @@ def remove(context, obj, limbs='BOTH'):
         for fc in list(get_all_action_fcurves(action, id_type='OBJECT')):
             if paths and fc.data_path.startswith(paths):
                 remove_fcurve(action, fc, id_type='OBJECT')
-    rig._remove_ik_fk_switch_keys(obj, limbs)
+    if targets is None:
+        rig._remove_ik_fk_switch_keys(obj, limbs)
     bpy.ops.object.mode_set(mode='EDIT')
     for n in names:
         if n in obj.data.edit_bones:
@@ -1581,7 +1659,9 @@ def remove(context, obj, limbs='BOTH'):
     rig._IK_FK_APPLYING = True
     try:
         for kind in ('ARMS', 'LEGS'):
-            if limbs in (kind, 'BOTH'):
+            if limbs in (kind, 'BOTH') and (targets is None or not list(chains(obj,kind))):
+                if targets is not None:
+                    rig._remove_ik_fk_switch_keys(obj,kind)
                 setattr(obj.data, rig._limb_switch_prop(kind), 0.0)
     finally:
         rig._IK_FK_APPLYING = False
@@ -1590,5 +1670,6 @@ def remove(context, obj, limbs='BOTH'):
     except (ValueError, TypeError):
         records = []
     obj['sub_custom_ik_chains'] = json.dumps(
-        [record for record in records if limbs not in (record.get('kind'), 'BOTH')])
+        [record for record in records if (record.get('target') not in targets if targets is not None
+                                        else limbs not in (record.get('kind'), 'BOTH'))])
     return list(names)

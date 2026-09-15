@@ -31,7 +31,7 @@ class SUB_PT_animation_tools(Panel):
     @classmethod
     def poll(cls, context):
         modes = ['POSE', 'OBJECT', 'EDIT_ARMATURE']  # Allow panel in all these modes
-        return context.mode in modes
+        return context.mode in modes or bool(context.scene.sub_shape_edit_object)
 
     def draw(self, context):
         self.layout.use_property_decorate = False
@@ -44,6 +44,14 @@ class SUB_PT_animation_tools(Panel):
         row.scale_y = 1.0
         row.operator("sub.create_animation_rig", text="Create Animation Rig", icon="OUTLINER_OB_ARMATURE")
         row.operator("sub.remove_animation_rig", text="", icon="X")
+        editor = context.scene.sub_component_editor
+        layout.operator("sub.custom_components", text="Custom Components" if editor.is_open else "Make Custom Components",
+                        icon="TRIA_DOWN" if editor.is_open else "TRIA_RIGHT")
+        if editor.is_open:
+            from .custom_components import draw_editor
+            draw_editor(layout.box(), context)
+            layout.operator("sub.custom_components", text="Back to Animation Tools", icon="BACK")
+            return
         layout.prop(ssp, "clean_keyframes_after_rig", text="Clean keyframes after creation")
 
         arm = find_anim_rig_armature(context)
@@ -54,14 +62,15 @@ class SUB_PT_animation_tools(Panel):
         if arm is not None and has_finger_sliders(arm):
             row = layout.row(align=True)
             row.label(text="Fingers")
-            if finger_sliders_are_enabled(arm):
-                op = row.operator("sub.toggle_finger_sliders", text="Switch to Circles", icon="MESH_CIRCLE")
+            both = bool(arm.data.get("sub_finger_show_both", False))
+            sliders = finger_sliders_are_enabled(arm)
+            row = layout.row(align=True)
+            for label, enabled, show_both in (("Circles", False, False), ("Sliders", True, False), ("Both", True, True)):
+                active = both if show_both else (not both and sliders == enabled)
+                op = row.operator("sub.toggle_finger_sliders", text=label, depress=active)
                 op.set_enabled = True
-                op.enable_sliders = False
-            else:
-                op = row.operator("sub.toggle_finger_sliders", text="Switch to Sliders", icon="DRIVER")
-                op.set_enabled = True
-                op.enable_sliders = True
+                op.enable_sliders = enabled
+                op.show_both = show_both
 
         if arm is not None and armature_has_animation_rig(arm):
             layout.operator("sub.bake_and_remove_rig", text="Bake and Remove Rig", icon="ACTION")
@@ -178,6 +187,8 @@ class SUB_PT_animation_tools(Panel):
             # Checkboxes
             row = box.row(align=True)
             row.prop(ssp, "idle_pose_include_trans", text="Include Trans Bone")
+            box.prop(ssp, "idle_pose_exclude_fixed_bones")
+            box.prop(ssp, "idle_pose_ik_enabled")
 
             row = box.row(align=True)
             row.prop(ssp, "idle_pose_mirrored", text="Mirrored")

@@ -116,28 +116,29 @@ class PoseKeyWriter:
         if pose_bone.rotation_mode == 'QUATERNION':
             self._quaternion_paths.add(rotation_path)
 
-    def stash_matrix_basis(self, pose_bone, frame, basis):
+    def stash_matrix_basis(self, pose_bone, frame, basis, rotation_mode=None):
         """Stash a basis matrix without assigning it to the bone first."""
         if basis is None:
             raise ValueError(
                 f'{pose_bone.name}: no basis to stash -- the caller should have '
                 'fallen back to setting pose_bone.matrix and evaluating')
+        mode = rotation_mode or pose_bone.rotation_mode
         translation, rotation, scale = basis.decompose()
         base = pose_bone.path_from_id()
         group = pose_bone.name
         self.stash_vector(f'{base}.location', frame, translation, group)
         self.stash_vector(f'{base}.scale', frame, scale, group)
 
-        if pose_bone.rotation_mode == 'QUATERNION':
+        if mode == 'QUATERNION':
             path = f'{base}.rotation_quaternion'
             self.stash_vector(path, frame, rotation, group)
             self._quaternion_paths.add(path)
-        elif pose_bone.rotation_mode == 'AXIS_ANGLE':
+        elif mode == 'AXIS_ANGLE':
             axis, angle = rotation.to_axis_angle()
             self.stash_vector(f'{base}.rotation_axis_angle', frame,
                               (angle, axis[0], axis[1], axis[2]), group)
         else:
-            euler = rotation.to_euler(pose_bone.rotation_mode)
+            euler = rotation.to_euler(mode)
             self.stash_vector(f'{base}.rotation_euler', frame, euler, group)
 
     def __bool__(self):

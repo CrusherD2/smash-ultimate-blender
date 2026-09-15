@@ -1,7 +1,16 @@
 import bpy
+from contextlib import contextmanager
 
 from ..anim.fcurve_compat import get_all_action_fcurves, remove_fcurve
 from ..blender_compat import set_pose_bone_select
+
+
+@contextmanager
+def temporary_export_bake(context, obj, start, end, include_transform=True, include_material=True):
+    """Backward-compatible entry point for the complete rig export bake."""
+    from .rig_export import temporary_rig_bake
+    with temporary_rig_bake(context, obj, start, end, include_transform, include_material):
+        yield
 
 
 def get_ik_bone_names(armature_data):
@@ -58,14 +67,12 @@ def _ik_constraint_chain_bone_names(armature_object, limbs="BOTH"):
 def collect_fk_bone_names(armature_object, leg_bone_map=None, limbs=None):
     """FK bones to bake/clear — only for limbs that actually have IK on the rig."""
     if armature_object.data.get("sub_independent_ik"):
-        from .ik_channels import chains
+        from .ik_channels import chains, limb_path, connected_toe_bones
         selected = list(chains(armature_object, limbs or present_ik_limbs(armature_object) or 'BOTH'))
-        names = [n for _, chain, _, _ in selected for n in chain]
+        names = [n for _, chain, _, _ in selected for n in limb_path(armature_object, chain)]
         for kind, chain, _, _ in selected:
             if kind == 'LEGS':
-                toe = 'Toe' + chain[2][4:]
-                if toe in armature_object.pose.bones:
-                    names.append(toe)
+                names.extend(connected_toe_bones(armature_object, chain))
         return list(dict.fromkeys(names))
     from .create_animation_rig import _ik_driven_fk_bone_names, _ik_limb_kind
 
@@ -283,7 +290,7 @@ def bake_ik_driven_fk_visual(
             anim = armature_object.animation_data
             keyed_action = getattr(anim, "action", None) if anim else None
             keyed_slot = getattr(anim, "action_slot", None) if anim else None
-            if keyed_action is not None and anim is not None:
+            if clear_constraints and keyed_action is not None and anim is not None:
                 for track in getattr(anim, "nla_tracks", []) or []:
                     if not track.strips:
                         continue

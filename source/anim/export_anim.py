@@ -289,6 +289,9 @@ class SUB_PT_export_anim(Panel):
                 ssp = context.scene.sub_scene_properties
                 row.operator(SUB_OP_anim_export.bl_idname, icon='EXPORT', text='Export Current Animation')
                 
+                if obj.type == 'ARMATURE':
+                    layout.prop(ssp, 'anim_include_raw_animation', text='Also Export Raw Animation')
+
                 # Add collapsible batch export section
                 box = layout.box()
                 header_row = box.row()
@@ -654,6 +657,9 @@ class SUB_OP_batch_export_anim(AnimationExport, Operator):
             
             try:
                 if obj.type == 'ARMATURE':
+                    if ssp.anim_include_raw_animation:
+                        raw_path = resolve_raw_anim_export_path(filepath, ssp)
+                        export_raw_animation_for_object(context, self, obj, raw_path, self.first_blender_frame, last_blender_frame)
                     yield from export_model_anim_fast_steps(
                         context, self, obj, filepath,
                         self.include_transform_track, self.include_material_track,
@@ -1283,8 +1289,18 @@ def export_model_anim_fast(*args, **kwargs):
 
 
 def export_model_anim_fast_steps(context, operator: bpy.types.Operator, arma: bpy.types.Object, filepath, include_transform_track, include_material_track, include_visibility_track, first_blender_frame, last_blender_frame, transform_compensate_scale: bool = False, transform_override_translation: bool = False, transform_override_rotation: bool = False, transform_override_scale: bool = False, transform_override_compensate_scale: bool = False, override_bone_names: list[str] | None = None, use_exclude_list: bool = True):
+    from contextlib import nullcontext
+    from ..extras.apply_ik_animation import temporary_export_bake
+    bake = temporary_export_bake(context, arma, first_blender_frame, last_blender_frame, include_transform_track, include_material_track) if include_transform_track or include_material_track else nullcontext()
+    with bake:
+        yield from _export_model_anim_fast_steps(context, operator, arma, filepath, include_transform_track, include_material_track, include_visibility_track, first_blender_frame, last_blender_frame, transform_compensate_scale, transform_override_translation, transform_override_rotation, transform_override_scale, transform_override_compensate_scale, override_bone_names, use_exclude_list)
+
+
+def _export_model_anim_fast_steps(context, operator: bpy.types.Operator, arma: bpy.types.Object, filepath, include_transform_track, include_material_track, include_visibility_track, first_blender_frame, last_blender_frame, transform_compensate_scale: bool = False, transform_override_translation: bool = False, transform_override_rotation: bool = False, transform_override_scale: bool = False, transform_override_compensate_scale: bool = False, override_bone_names: list[str] | None = None, use_exclude_list: bool = True):
     if last_blender_frame < first_blender_frame:
         raise ValueError('End frame must be greater than or equal to start frame')
+    from ..extras.rig_export import export_bone_names
+    export_names = set(export_bone_names(arma))
     # SSBH Anim Setup
     ssbh_anim_data =  ssbh_data_py.anim_data.AnimData()
     final_frame_index = last_blender_frame - first_blender_frame
@@ -1303,7 +1319,7 @@ def export_model_anim_fast_steps(context, operator: bpy.types.Operator, arma: bp
         bone_to_rel_matrix_local = {}
         reordered_pose_bones = [
             bone for bone in get_hierarchy_order(list(arma.pose.bones))
-            if not bone.name.startswith('BL_')
+            if bone.name in export_names
         ]
 
         # Fill value dicts with default values. Not every bone will be animated, so for these the default values of a matrix basis will be needed
@@ -1349,7 +1365,7 @@ def export_model_anim_fast_steps(context, operator: bpy.types.Operator, arma: bp
                 operator.report(type={'WARNING'}, message=f"The fcurve with data path {fcurve.data_path} will not be exported, its format only partially matched the expected pattern of a bone fcurve.")
                 continue
             bone_name = matches.groups()[0]
-            if bone_name.startswith('BL_'):
+            if bone_name not in export_names:
                 continue
             transform_subtype = matches.groups()[1]
             if transform_subtype == 'location':

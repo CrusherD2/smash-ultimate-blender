@@ -54,6 +54,13 @@ def connect_chains_from_roots(roots) -> int:
             child.use_connect = True
             connected += 1
             stack.append(child)
+        elif bone.parent is not None and bone.parent.name in visited and bone.use_connect:
+            # There is no next head to aim at. Continue the final connected
+            # segment using its direction and length instead of retaining the
+            # imported bone's short, upward-pointing tail.
+            segment = bone.head - bone.parent.head
+            if segment.length_squared > 1e-12:
+                bone.tail = bone.head + segment
         stack.extend(extras)
     return connected
 
@@ -63,7 +70,7 @@ class SUB_OT_connect_bone_chain(Operator):
     bl_label = "Connect Bone Chain"
     bl_description = (
         "Snap each selected bone's tail to the next bone in its child chain, "
-        "then keep connecting down the rest of that chain"
+        "then extend the last bone in the direction and length of the preceding segment"
     )
     bl_options = {"REGISTER", "UNDO"}
 
