@@ -1351,6 +1351,15 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
             # on the worst; see docs/benchmarks/native-default-2026-09-13.md.
             diag.add('native_declined', 0.0, 1)
     if found is not None:
+        # found[1] is the pose the native search settled on, and it is bit-identical
+        # to Blender's at this angle -- 632/632 chain-frames on both supported
+        # versions. It is still deliberately unused: the correction below needs
+        # path[-1] too, and the endpoint bone is outside the native model (Solver
+        # is built over solver[:-1]). Computing path[:-1] from here saves nothing,
+        # because the barrier is one per frame shared across chains and path[-1]
+        # still needs it -- and the endpoint is not the parent's tail, which is
+        # the derivation that looks right and is wrong by up to 0.34.
+        # See docs/benchmarks/correction-barrier-2026-09-15.md.
         angle = found[0]
     else:
         angle = yield from best(seeds)
