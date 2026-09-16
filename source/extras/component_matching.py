@@ -41,25 +41,21 @@ def _update(context, obj):
     return obj.evaluated_get(context.evaluated_depsgraph_get())
 
 
-def _pause_armature_meshes(obj):
-    """Skip mesh deform while matching pose; armature evaluation is unchanged."""
-    paused=[]
-    for ob in bpy.data.objects:
-        if ob.type!='MESH':
-            continue
-        for mod in ob.modifiers:
-            if mod.type=='ARMATURE' and mod.object==obj and mod.show_viewport:
-                mod.show_viewport=False
-                paused.append(mod)
-    return paused
+def _pause_armature_meshes(context, obj):
+    """Skip downstream mesh evaluation while matching pose.
+
+    Was muting each mesh's Armature modifier, which still evaluates the rest
+    of that mesh's stack every update. mesh_deferral hides the mesh instead,
+    dropping it out of the dependency graph, and refuses any mesh the armature
+    reads so hiding one cannot change the pose being matched.
+    """
+    from . import mesh_deferral
+    return mesh_deferral.defer(mesh_deferral.deferrable(context, obj))
 
 
 def _restore_armature_meshes(paused):
-    for mod in paused:
-        try:
-            mod.show_viewport=True
-        except ReferenceError:
-            pass
+    from . import mesh_deferral
+    mesh_deferral.restore(paused)
 
 
 def _helpers(context, obj, owners):
@@ -541,7 +537,7 @@ def match_animation_steps(context, obj, start, end, include_fingers=False, match
     paused=[]
     try:
         with ProgressCursor(context) as progress, _disable_autokey(context), defer_pose_tool_updates(), anim_layers_compat.anim_layers_paused(), anim_layers_compat.bind_driving_action_for_bake(obj,context):
-            paused=_pause_armature_meshes(obj)
+            paused=_pause_armature_meshes(context, obj)
             sample_names=set(all_owners)
             for name in list(sample_names):
                 pb=obj.pose.bones.get(name)
@@ -571,7 +567,7 @@ def match_animation_steps(context, obj, start, end, include_fingers=False, match
                     ik_channels.match(context,obj,entire=True,key=True,_targets=targets)
                 finally:
                     scene.frame_start,scene.frame_end=old_range
-                paused=_pause_armature_meshes(obj)
+                paused=_pause_armature_meshes(context, obj)
             yield ('progress',.2,'Matching components')
             # Isolated controls have a full transform: match them directly.
             # Old residual offsets must not move the foot away from its handle.

@@ -10,7 +10,7 @@ import re
 import os
 import sys
 import time
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 import bpy
 from mathutils import Matrix, Vector
 
@@ -1042,62 +1042,16 @@ def _evaluate_match_steps(context, steps, batch):
     evaluate_steps(context, steps, batch)
 
 
-@contextmanager
 def _defer_match_meshes(context, obj, enabled):
     """Defer downstream geometry only after proving the rig is independent.
 
-    hide_viewport removes mesh evaluation from the graph; disabling just the
-    Armature modifier still evaluates the rest of the mesh stack. Never mute
-    shared actions or user visibility animation. The caller restores the frame
-    and evaluates after this scope, including when a solve raises.
+    The mechanism is shared with component matching; see mesh_deferral. The
+    `enabled` flag is where this caller passes its proof -- _is_self_contained
+    having shown the rig is one closed dependency island -- so nothing outside
+    the rig can feed the solve through a mesh this hides.
     """
-    from ..anim.fcurve_compat import get_all_action_fcurves
-    hidden = []
-    drivers = []
-    try:
-        for mesh in context.scene.objects if enabled else ():
-            if (mesh.type != 'MESH' or mesh.library is not None
-                    or (mesh.parent != obj and not any(
-                        mod.type == 'ARMATURE' and mod.object == obj for mod in mesh.modifiers))):
-                continue
-            animation = mesh.animation_data
-            visibility = []
-            if animation:
-                if animation.nla_tracks or (animation.action and any(
-                    fc.data_path == 'hide_viewport'
-                    for fc in get_all_action_fcurves(animation.action, id_type='OBJECT')
-                )):
-                    continue
-                visibility = [fc for fc in animation.drivers if fc.data_path == 'hide_viewport']
-                # Imported Smash visibility is pure armature-property input.
-                # Leave custom visibility drivers entirely alone.
-                safe = True
-                for fc in visibility:
-                    driver = fc.driver
-                    if driver.type != 'SCRIPTED' or len(driver.variables) != 1:
-                        safe = False
-                        break
-                    var = driver.variables[0]
-                    target = var.targets[0]
-                    if (var.type != 'SINGLE_PROP' or target.id != obj.data
-                            or not target.data_path.startswith('sub_anim_properties.vis_track_entries[')
-                            or not target.data_path.endswith('].value')
-                            or driver.expression != '1 - ' + var.name):
-                        safe = False
-                        break
-                if not safe:
-                    continue
-            hidden.append((mesh, mesh.hide_viewport))
-            for fc in visibility:
-                drivers.append((fc, fc.mute))
-                fc.mute = True
-            mesh.hide_viewport = True
-        yield
-    finally:
-        for fc, mute in reversed(drivers):
-            fc.mute = mute
-        for mesh, value in reversed(hidden):
-            mesh.hide_viewport = value
+    from . import mesh_deferral
+    return mesh_deferral.deferred(context, obj, enabled)
 
 
 # Residual at or below which the solved chain is treated as matching the
