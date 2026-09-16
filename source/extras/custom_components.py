@@ -31,7 +31,7 @@ TYPES = [
     ('IK', 'Custom IK Chain', 'A target and bend control for a connected bone chain'),
     ('MOUTH', 'Mouth Expressions', 'Capture and blend any number of mouth poses'),
     ('JAW', 'Jaw', 'Open and close selected jaw bones'),
-    ('LIDS', 'Eyelids / Blink', 'One slider with independently signed lid weights'),
+    ('LIDS', 'Eyelids / Blink', 'One controller per saved eyelid pose'),
     ('CURL', 'Tail / Tentacle Curl', 'Distribute bending through a selected chain'),
     ('FAN', 'Wing / Feather Fan', 'Fan or fold selected bones with per-bone weights'),
     ('ROTATION', 'Rotation Slider', 'Drive any group of bones from one slider'),
@@ -66,6 +66,7 @@ EXTRA_DEFAULTS = {
     'shape_scale': 1.0,
     'face_data': '{}',
     'pose_name': 'Closed',
+    'pose_strength': 1.0,
     'pivot_at_cursor': False,
 }
 
@@ -135,6 +136,7 @@ class SUB_PG_rig_component(bpy.types.PropertyGroup):
     )
     face_data: bpy.props.StringProperty(default='{}')
     pose_name: bpy.props.StringProperty(name='Pose / Expression', default='Closed')
+    pose_strength: bpy.props.FloatProperty(name='Save at Strength',default=1.0,min=0.01,max=1.0)
     pivot_at_cursor: bpy.props.BoolProperty(
         name='Place Eye Pivot at 3D Cursor', default=False
     )

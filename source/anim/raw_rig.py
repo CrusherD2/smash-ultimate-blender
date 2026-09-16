@@ -51,6 +51,8 @@ def set_rna(owner, values):
         if prop is None or prop.is_readonly or prop.type not in {'BOOLEAN','INT','FLOAT','STRING','ENUM'}:
             continue
         try:
+            if key=='sub_face_expression' and isinstance(value,str):
+                value=int(value[5:]) if value.startswith('POSE_') else 0
             setattr(owner,key,set(value) if prop.type=='ENUM' and prop.is_enum_flag else value)
         except (AttributeError,TypeError,ValueError):
             pass

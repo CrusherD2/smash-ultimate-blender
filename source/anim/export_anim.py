@@ -1010,16 +1010,8 @@ class SUB_OP_anim_export(AnimationExport, Operator):
         layout.prop(self, "last_blender_frame")
 
     def export_steps(self, context):
-        from ..doctor import preflight
-        if not preflight(context, self, 'ANIM'):
-            return {'CANCELLED'}
-
-        # Save directory for future use
         ssp = context.scene.sub_scene_properties
-        ssp.last_anim_export_dir = os.path.dirname(self.filepath)
-        # Clear transient preset flags
-        ssp.anim_preset_force_override_translation = False
-        
+
         # Ensure filepath has exactly one .nuanmb extension
         filepath = ensure_nuanmb_filepath(self.filepath)
 
@@ -1034,6 +1026,25 @@ class SUB_OP_anim_export(AnimationExport, Operator):
             
         obj: bpy.types.Object = context.active_object
         
+        # Capture editable raw data before the regular exporter prepares a bake.
+        if ssp.anim_include_raw_animation and obj.type == 'ARMATURE':
+            raw_filepath = resolve_raw_anim_export_path(filepath, ssp)
+            if not export_raw_animation_for_object(
+                context,
+                self,
+                obj,
+                raw_filepath,
+                self.first_blender_frame,
+                self.last_blender_frame,
+            ):
+                return {'CANCELLED'}
+
+        from ..doctor import preflight
+        if not preflight(context, self, 'ANIM'):
+            return {'CANCELLED'}
+        ssp.last_anim_export_dir = os.path.dirname(self.filepath)
+        ssp.anim_preset_force_override_translation = False
+
         if obj.type == 'ARMATURE':
             yield from export_model_anim_fast_steps(
             context, self, obj, filepath,
@@ -1058,18 +1069,6 @@ class SUB_OP_anim_export(AnimationExport, Operator):
                 self.transform_override_compensate_scale)  
 
         self.report({'INFO'}, f"Successfully exported animation to {os.path.basename(filepath)}")
-
-        if ssp.anim_include_raw_animation and obj.type == 'ARMATURE':
-            raw_filepath = resolve_raw_anim_export_path(filepath, ssp)
-            if not export_raw_animation_for_object(
-                context,
-                self,
-                obj,
-                raw_filepath,
-                self.first_blender_frame,
-                self.last_blender_frame,
-            ):
-                return {'CANCELLED'}
 
         return {'FINISHED'}
            

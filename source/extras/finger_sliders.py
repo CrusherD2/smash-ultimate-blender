@@ -1057,7 +1057,11 @@ def _heal_finger_circle_disable(armature_obj):
         _set_named_bone_fcurves_muted(
             armature_obj, names, mute=False, held_key=_HELD_FINGER_MUTE_KEY
         )
-    _set_finger_constraint_mute(armature_obj, False)
+    # Recover legacy disabled slider contributions, but never revive retired
+    # Input/Match helpers. Those can override the circles after a rematch.
+    for pb, con in _iter_finger_slider_constraints(armature_obj):
+        if con.type == 'TRANSFORM':
+            con.mute = False
 
 
 def _isolate_bones_in_collection(armature_obj, collection_name, predicate):

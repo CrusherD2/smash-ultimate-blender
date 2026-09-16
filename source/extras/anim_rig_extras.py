@@ -187,6 +187,8 @@ def draw_anim_rig_extras(layout, context, arm):
         row.operator('sub.components_bake_remove', text='', icon='X').bake = False
     else:
         row.operator('sub.custom_components', text='Add Components')
+    from .face_components import draw_rig_expressions
+    draw_rig_expressions(box,arm)
 
 
 class SUB_OP_match_ik_to_animation(Operator):

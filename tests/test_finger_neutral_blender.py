@@ -41,3 +41,19 @@ fingers.set_finger_slider_mode(obj,False,bpy.context)
 assert not obj.data.collections[fingers.SLIDER_COLLECTION].is_visible
 assert obj.data.collections[fingers.CIRCLE_COLLECTION].is_visible
 print('BOTH FINGER DISPLAY MODE PASSED')
+
+# An older rig may retain disabled match helpers after transfer to circles.
+pb=obj.pose.bones['FingerL11']
+con=pb.constraints.new('COPY_TRANSFORMS')
+con.name=fingers.FINGER_CON_PREFIX+' Input'
+con.target=obj
+con.subtarget='Trans'
+con.mute=True
+bpy.context.view_layer.update()
+expected=pb.matrix.copy()
+for enabled,both in ((True,False),(False,False),(True,True)):
+    fingers.set_finger_slider_mode(obj,enabled,bpy.context,show_both=both)
+    assert con.mute, 'Display switch revived retired matching helper'
+    actual=pb.matrix
+    assert max(abs(actual[i][j]-expected[i][j]) for i in range(4) for j in range(4))<1e-5
+print('FINGER DISPLAY MODES PRESERVE RETIRED MATCH CONSTRAINTS PASSED')
