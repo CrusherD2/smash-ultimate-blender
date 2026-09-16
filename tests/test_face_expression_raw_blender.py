@@ -14,6 +14,17 @@ for f,choice in ((1,1),(3,2)):
     main.location.y=1
     main.keyframe_insert('sub_face_expression',frame=f)
     main.keyframe_insert('location',frame=f)
+# Key the dropdown the way the add-on keys it. component_matching writes this
+# channel through PoseKeyWriter(obj, interpolation='CONSTANT') because the
+# value is a discrete choice; keyframe_insert defaults to interpolating, which
+# left frame 2 holding choice 1.5, matching neither pose. Both rigs then showed
+# whatever their leftover unkeyed pose happened to be, so the comparison was
+# measuring test setup rather than the round trip.
+for fc in curves.get_all_action_fcurves(obj.animation_data.action,id_type='OBJECT'):
+    if fc.data_path.endswith('.sub_face_expression'):
+        for k in fc.keyframe_points:
+            k.interpolation='CONSTANT'
+        fc.update()
 expected={}
 for f in (1,2,3):
     bpy.context.scene.frame_set(f)
