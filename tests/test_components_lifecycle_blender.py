@@ -21,8 +21,18 @@ component('EYES', 'Authored Eye', ['EyeR'])
 components = list(editor.components)
 assert bpy.ops.sub.component_build() == {'FINISHED'}
 iso = components[0]
-controllers = [p for p in face.owned(obj, iso) if not p.bone.get('sub_face_helper')]
-assert len(controllers) == 2
+# d4cf27f gave isolated components foot roll / toe handles, so each controlled
+# bone now carries a ROOT control plus _Heel and _Toe children and an _Output
+# helper -- six controllers and two helpers for these two bones, where this
+# asserted two. The intent is the top-level control per controlled bone, which
+# component_workflow marks sub_isolated_role == 'ROOT' (the handles are tagged
+# with the role they play and a sub_isolated_target instead). Selecting on that
+# marker rather than on parentage keeps the assertion below meaningful, and
+# keeps controllers[0] the same bone the rest of this test poses and keys.
+controllers = [p for p in face.owned(obj, iso)
+               if not p.bone.get('sub_face_helper')
+               and p.bone.get('sub_isolated_role') == 'ROOT']
+assert len(controllers) == 2, [p.name for p in controllers]
 assert all(p.parent is None for p in controllers)
 
 

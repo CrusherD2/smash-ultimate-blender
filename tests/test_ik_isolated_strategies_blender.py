@@ -69,4 +69,29 @@ for scenario in ('normal','object_scale','parent_scale','inheritance','stretch',
 out = root/'.tests/benchmarks'/f'isolated_cases_{bpy.app.version[0]}.{bpy.app.version[1]}.json'
 out.write_text(json.dumps(results,indent=2))
 print('ISOLATED_CASES',results)
-assert all(all(r['exact']) for r in results),results
+
+# One combination is expected to diverge, and it is the reason a guard exists in
+# production. ik_match_fast.sample_fk refuses a transformed object outright
+# ('transformed_object', see the note there about Blender's object-space round
+# trips) and falls back to evaluated sampling, so the shipped fast path stays
+# exact under object_scale. ik_direct_exact_prototype is forty lines with no
+# such guard, so under a non-uniformly scaled and rotated object it samples
+# directly and drifts. That is a property of the prototype, not a regression.
+#
+# Asserted in both directions on purpose: a NEW divergence fails, and so does
+# this one going away, because the prototype being fixed -- or the production
+# guard being relaxed -- is worth hearing about rather than silently passing.
+KNOWN_DIVERGENCE = {('object_scale', 'isolate_minimal_direct_exact')}
+unexpected, no_longer = [], []
+for r in results:
+    for variant, exact in zip(variants, r['exact']):
+        pair = (r['scenario'], variant)
+        if not exact and pair not in KNOWN_DIVERGENCE:
+            unexpected.append(pair)
+        if exact and pair in KNOWN_DIVERGENCE:
+            no_longer.append(pair)
+assert not unexpected, f'new strategy divergence: {unexpected}'
+assert not no_longer, (f'{no_longer} no longer diverges -- the prototype or the '
+                       'transformed-object guard changed; update KNOWN_DIVERGENCE')
+print(f'ISOLATED_STRATEGIES_OK scenarios={len(results)} '
+      f'variants={len(variants)} known={sorted(KNOWN_DIVERGENCE)}')

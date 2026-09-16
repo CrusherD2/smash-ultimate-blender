@@ -14,8 +14,25 @@ spec.loader.exec_module(help_ui)
 
 
 class PanelHelpTests(unittest.TestCase):
-    def test_all_help_panels_are_in_ultimate_and_have_real_targets(self):
-        count = 0
+    def test_help_panels_point_somewhere_real_and_respect_the_tab_guard(self):
+        """Every panel offering help must resolve to a real doc target.
+
+        This used to require each such class to be a VIEW_3D / UI / 'Ultimate'
+        panel. Twelve violate that by design: draw_panel_help returns early
+        outside the Ultimate sidebar tab, so SUB_PT_motion_list and the
+        material, render and properties panels legitimately call it and draw
+        nothing. The test was therefore permanently red -- and worse, those
+        twelve subtests aborted on the tab assertion before reaching the
+        doc-target check below, so the panels least likely to be looked at were
+        the ones never validated.
+
+        Assert what the design actually promises: the doc target resolves for
+        every panel, the URL is emitted for panels in the tab, and nothing is
+        drawn for panels outside it. test_other_editors_tabs_and_regions_do_not
+        _draw_help covers the guard itself with synthetic panels; this pins it
+        against the real panel set.
+        """
+        checked = in_tab_count = 0
         for path in (ROOT / 'source').rglob('*.py'):
             tree = ast.parse(path.read_text(encoding='utf-8-sig'))
             for cls in ast.walk(tree):
@@ -31,9 +48,6 @@ class PanelHelpTests(unittest.TestCase):
                         and isinstance(s.targets[0], ast.Name)
                         and isinstance(s.value, ast.Constant)
                     }
-                    self.assertEqual(attrs.get('bl_space_type'), 'VIEW_3D')
-                    self.assertEqual(attrs.get('bl_region_type'), 'UI')
-                    self.assertEqual(attrs.get('bl_category'), 'Ultimate')
                     attrs['__module__'] = '.'.join(path.relative_to(ROOT).with_suffix('').parts)
                     panel = type(cls.name, (), attrs)()
                     target, _, anchor = help_ui.panel_doc_path(panel).partition('#')
@@ -46,10 +60,18 @@ class PanelHelpTests(unittest.TestCase):
                         self.assertIn(anchor, slugs, target)
                     layout = Mock()
                     help_ui.draw_panel_help(layout, panel)
-                    self.assertEqual(layout.row.return_value.operator.return_value.url,
-                                     help_ui.DOCS_ROOT + help_ui.panel_doc_path(panel))
-                    count += 1
-        self.assertGreater(count, 0)
+                    in_tab = (attrs.get('bl_space_type') == 'VIEW_3D'
+                              and attrs.get('bl_region_type') == 'UI'
+                              and attrs.get('bl_category') == 'Ultimate')
+                    if in_tab:
+                        self.assertEqual(layout.row.return_value.operator.return_value.url,
+                                         help_ui.DOCS_ROOT + help_ui.panel_doc_path(panel))
+                        in_tab_count += 1
+                    else:
+                        layout.row.assert_not_called()
+                    checked += 1
+        self.assertGreater(checked, 0)
+        self.assertGreater(in_tab_count, 0)
 
     def test_other_editors_tabs_and_regions_do_not_draw_help(self):
         for space, region, category in [('PROPERTIES', 'WINDOW', 'Ultimate'),
