@@ -9,7 +9,7 @@ obj.pose.bones['Jaw'].location.x=.4
 pose('CAPTURE','Frown')
 assert set(json.loads(c.face_data)['poses'])=={'Smile','Frown'}
 main=obj.pose.bones[cc.control_name(obj,c)]
-for f,choice in ((1,'POSE_1'),(3,'POSE_2')):
+for f,choice in ((1,1),(3,2)):
     main.sub_face_expression=choice
     main.location.y=1
     main.keyframe_insert('sub_face_expression',frame=f)

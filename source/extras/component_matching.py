@@ -9,7 +9,7 @@ import json
 import math
 import bpy
 import numpy as np
-from mathutils import Matrix, Vector, Euler
+from mathutils import Matrix, Vector, Euler, Quaternion
 
 
 FINGER_MATCH_ID = 'f'*32
@@ -227,6 +227,65 @@ def _fit_finger_sliders(context,obj,poses,plan,control_names):
         pb.location[axis]=float(value)
 
 
+def _match_expression(context,obj,component,poses):
+    from .custom_components import control_name
+    from .face_components import expression_set
+    data=json.loads(component.face_data)
+    main=obj.pose.bones.get(control_name(obj,component))
+    if main is None or 'sub_expression_labels' not in main:
+        return None
+    names=[entry.bone for entry in component.bones]
+    ev=_update(context,obj)
+    base=[]
+    target=[]
+    references={}
+    weights=[]
+    for name in names:
+        pb=obj.pose.bones[name]
+        neutral=data['neutral'][name]
+        ref=Quaternion(neutral[3:7]).to_euler('XYZ')
+        references[name]=ref
+        base.extend(list(neutral[:3])+list(ref)+list(neutral[7:]))
+        parent=poses.get(pb.parent.name,ev.pose.bones[pb.parent.name].matrix) if pb.parent else Matrix.Identity(4)
+        rest=pb.parent.bone.matrix_local if pb.parent else Matrix.Identity(4)
+        local=pb.bone.convert_local_to_pose(poses[name],pb.bone.matrix_local,
+            parent_matrix=parent,parent_matrix_local=rest,invert=True)
+        location,rotation,scale=local.decompose()
+        target.extend(list(location)+list(rotation.to_euler('XYZ',ref))+list(scale))
+        # Normalize translations by bone size so model units don't dominate.
+        weights.extend([1/max(pb.bone.length,.01)]*3+[1]*6)
+    base=np.asarray(base)
+    weights=np.asarray(weights)
+    desired=(np.asarray(target)-base)*weights
+    best=(float(desired@desired),0,0.0)
+    labels=json.loads(main['sub_expression_labels'])
+    from .face_components import expression_checkpoints
+    for label in data.get('poses',{}):
+        previous=np.zeros_like(desired)
+        low=0.0
+        for high,pose in expression_checkpoints(data,label)[1:]:
+            values=[]
+            for name in names:
+                v=pose.get(name,data['neutral'][name])
+                values.extend(list(v[:3])+list(Quaternion(v[3:7]).to_euler('XYZ',references[name]))+list(v[7:]))
+            endpoint=(np.asarray(values)-base)*weights
+            delta=endpoint-previous
+            denominator=float(delta@delta)
+            fraction=float(np.clip(((desired-previous)@delta)/denominator,0,1)) if denominator>1e-12 else 0.0
+            residual=desired-previous-delta*fraction
+            error=float(residual@residual)
+            if error<best[0]-1e-12:
+                best=(error,labels.index(label)+1,low+(high-low)*fraction)
+            previous,low=endpoint,high
+    # Retired individual pose tracks must not add a second expression.
+    for pb in obj.pose.bones:
+        if pb.bone.get('sub_face_owner')==component.uid and pb.bone.get('sub_component_control'):
+            pb.location=(0,0,0)
+    expression_set(main,best[1])
+    main.location.y=best[2]
+    return main.name,best[1],best[2]
+
+
 def match_animation(context, obj, start, end, include_fingers=False, match_ik=True, fingers_only=False):
     from .component_workflow import definitions
     from . import ik_channels, anim_layers_compat
@@ -312,7 +371,18 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
             finger_plan=_finger_slider_plan(obj,finger_names) if finger_names else None
             fit_controls=[n for n in fit_controls if n not in finger_controls]
             helpers=_helpers(context,obj,owners)
+            expressions=[c for c in non_ik if c.kind in {'LIDS','MOUTH'}]
+            expression_ids={c.uid for c in expressions}
+            expression_names={b.bone for c in expressions for b in c.bones}
+            fit_controls=[n for n in fit_controls if obj.data.bones[n].get('sub_face_owner') not in expression_ids]
+            selector_curves=[]
+            for fc in get_all_action_fcurves(obj.animation_data.action,id_type='OBJECT'):
+                if any(fc.data_path.startswith(obj.pose.bones[n].path_from_id()+'.') for n in controls
+                       if obj.data.bones[n].get('sub_face_owner') in expression_ids):
+                    selector_curves.append((fc,fc.mute))
+                    fc.mute=True
             writer=PoseKeyWriter(obj)
+            choices=PoseKeyWriter(obj,interpolation='CONSTANT')
             # Parent-first offsets: child targets must see the corrected parent.
             ordered=sorted(owners,key=lambda n:len(obj.pose.bones[n].parent_recursive))
             for f,poses in samples.items():
@@ -322,8 +392,16 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
                         obj.pose.bones[name].matrix_basis=Matrix.Identity(4)
                 for n in finger_names:
                     obj.pose.bones[n].matrix_basis=Matrix.Identity(4)
-                if owners:
-                    _fit(context,obj,fit_controls,{n:poses[n] for n in owners})
+                for component in expressions:
+                    choice=_match_expression(context,obj,component,poses)
+                    if choice:
+                        name,index,strength=choice
+                        path=obj.pose.bones[name].path_from_id()
+                        choices.stash_channel(path+'.sub_face_expression',0,f,index,name)
+                        writer.stash_channel(path+'.location',1,f,strength,name)
+                fit_names=set(owners)-expression_names
+                if fit_names:
+                    _fit(context,obj,fit_controls,{n:poses[n] for n in fit_names})
                 if finger_plan:
                     _fit_finger_sliders(context,obj,poses,finger_plan,finger_controls)
                 # Evaluate the neutral circles with the fitted sliders once.
@@ -399,6 +477,7 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
                     for mod in list(fc.modifiers):
                         fc.modifiers.remove(mod)
             writer.flush()
+            choices.flush()
             progress.update(1)
             success=True
     except Exception:
@@ -422,6 +501,9 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
         assign_action(obj.animation_data,backup)
         raise
     finally:
+        for fc,state in locals().get('selector_curves',[]):
+            try: fc.mute=state
+            except ReferenceError: pass
         if success:
             bpy.data.actions.remove(backup)
         for con,state in muted:

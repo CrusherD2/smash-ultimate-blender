@@ -4,13 +4,13 @@ exec(compile(fixture.read_text(encoding='utf-8-sig').split("component('MOUTH'")[
 c=editor.components[0]
 main=obj.pose.bones[cc.control_name(obj,c)]
 main.location.y=1
-main.sub_face_expression='POSE_1'
+main.sub_face_expression=1
 close(matrix('LidUpper'),left,'selected left')
 close(matrix('LidLower'),neutral['LidLower'],'right neutral')
-main.sub_face_expression='POSE_2'
+main.sub_face_expression=2
 close(matrix('LidLower'),right,'selected right')
 close(matrix('LidUpper'),neutral['LidUpper'],'left neutral')
-for frame,choice in ((1,'POSE_1'),(4,'POSE_2')):
+for frame,choice in ((1,1),(4,2)):
     main.sub_face_expression=choice
     main.keyframe_insert('sub_face_expression',frame=frame)
     main.keyframe_insert('location',index=1,frame=frame)

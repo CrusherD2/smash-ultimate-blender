@@ -389,12 +389,14 @@ class SUB_OP_components_bake_remove(bpy.types.Operator):
 
 
 def register():
-    from . import component_matching
+    from . import component_matching, component_selection
     component_matching.register()
+    component_selection.register()
     bpy.utils.register_class(SUB_OP_components_bake_remove)
 
 
 def unregister():
-    from . import component_matching
+    from . import component_matching, component_selection
+    component_selection.unregister()
     component_matching.unregister()
     bpy.utils.unregister_class(SUB_OP_components_bake_remove)

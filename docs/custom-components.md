@@ -203,8 +203,15 @@ and keyframe handle types. Import restores that setup without FK-to-IK matching.
 Older raw files cannot recover rig settings that were never stored in them.
 
 Mouth and Eyelids / Blink use one visible controller with an Expression dropdown
-and Strength slider in Rig Extras and Preview & Animate. Both properties can be
-keyframed (right-click, Insert Keyframe). Expression changes select a pose; use
+and Strength slider in Rig Extras and Preview & Animate. Use the diamond beside Expression to key its selection (Auto Key also works).
+Strength is a 0-1 slider (the controller's Y location) and can be keyed from the diamond next to it or on the bone. Expression changes select a pose; use
 Strength to fade it in or out. New Expression chooses an unused name. To replace
 a saved pose, use its edit button under Manage Saved Poses. Older individual
 expression tracks remain hidden internally to preserve existing animation.
+
+
+Expression checkpoints: save the final pose at Strength 1. Under Manage Saved
+Poses, choose Add Checkpoint for that expression, pose the assigned bones, and
+save at a strength such as 0.5. Strength interpolates from neutral through each
+checkpoint to the final pose. Checkpoints can be edited or deleted individually.
+Matching searches every segment and keys the best expression and strength.

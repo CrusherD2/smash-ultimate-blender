@@ -66,6 +66,7 @@ EXTRA_DEFAULTS = {
     'shape_scale': 1.0,
     'face_data': '{}',
     'pose_name': 'Closed',
+    'pose_strength': 1.0,
     'pivot_at_cursor': False,
 }
 
@@ -135,6 +136,7 @@ class SUB_PG_rig_component(bpy.types.PropertyGroup):
     )
     face_data: bpy.props.StringProperty(default='{}')
     pose_name: bpy.props.StringProperty(name='Pose / Expression', default='Closed')
+    pose_strength: bpy.props.FloatProperty(name='Save at Strength',default=1.0,min=0.01,max=1.0)
     pivot_at_cursor: bpy.props.BoolProperty(
         name='Place Eye Pivot at 3D Cursor', default=False
     )
