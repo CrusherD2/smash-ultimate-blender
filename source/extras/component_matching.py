@@ -7,6 +7,8 @@ cannot be represented by a one-dimensional slider or authored face poses.
 import hashlib
 import json
 import math
+import os
+import time
 import bpy
 import numpy as np
 from mathutils import Matrix, Vector, Euler, Quaternion
@@ -37,6 +39,27 @@ def _update(context, obj):
     obj.update_tag()
     context.view_layer.update()
     return obj.evaluated_get(context.evaluated_depsgraph_get())
+
+
+def _pause_armature_meshes(obj):
+    """Skip mesh deform while matching pose; armature evaluation is unchanged."""
+    paused=[]
+    for ob in bpy.data.objects:
+        if ob.type!='MESH':
+            continue
+        for mod in ob.modifiers:
+            if mod.type=='ARMATURE' and mod.object==obj and mod.show_viewport:
+                mod.show_viewport=False
+                paused.append(mod)
+    return paused
+
+
+def _restore_armature_meshes(paused):
+    for mod in paused:
+        try:
+            mod.show_viewport=True
+        except ReferenceError:
+            pass
 
 
 def _helpers(context, obj, owners):
@@ -104,12 +127,11 @@ def _split_affine(matrix):
     return first,Matrix(v.tolist()).to_4x4()
 
 
-def _parameters(obj, control_names):
-    values, dofs, bounds, bases = [], [], [], {}
+def _parameter_spec(obj, control_names):
+    dofs, bounds, names = [], [], []
     for name in control_names:
         pb = obj.pose.bones[name]
-        loc, rot, scale = pb.matrix_basis.decompose()
-        bases[name] = list(loc) + list(rot.to_euler('XYZ')) + list(scale)
+        names.append(name)
         for group, locks in enumerate((pb.lock_location, pb.lock_rotation, pb.lock_scale)):
             for axis, locked in enumerate(locks):
                 if locked:
@@ -125,15 +147,28 @@ def _parameters(obj, control_names):
                             if getattr(con, 'use_max_'+key):
                                 high = getattr(con, 'max_'+key)
                 dofs.append((name,index))
-                values.append(bases[name][index])
                 bounds.append((low,high))
-    return np.array(values), dofs, np.array(bounds).reshape((-1,2)), bases
+    return names, dofs, np.array(bounds).reshape((-1,2))
 
 
-def _fit(context, obj, control_names, targets):
-    values, dofs, bounds, bases = _parameters(obj, control_names)
+def _current_bases(obj, names):
+    bases={}
+    for name in names:
+        loc, rot, scale = obj.pose.bones[name].matrix_basis.decompose()
+        bases[name] = list(loc) + list(rot.to_euler('XYZ')) + list(scale)
+    return bases
+
+
+def _fit(context, obj, control_names, targets, spec=None, iterations=8):
+    if not control_names or not targets:
+        return
+    spec_names, dofs, bounds = spec if spec is not None else _parameter_spec(obj, control_names)
+    bases = _current_bases(obj, spec_names)
     names = sorted(targets)
     goal = np.array([v for n in names for row in targets[n] for v in row])
+    values = np.array([bases[name][index] for name,index in dofs], dtype=float)
+    if not len(values):
+        return
     def evaluate(x):
         transforms = {n:list(v) for n,v in bases.items()}
         for value,(name,index) in zip(x,dofs):
@@ -144,23 +179,27 @@ def _fit(context, obj, control_names, targets):
         return np.array([v for n in names for row in ev.pose.bones[n].matrix for v in row])
     values = np.clip(values,bounds[:,0],bounds[:,1])
     current = evaluate(values)
-    for _ in range(16):
+    zero = np.zeros_like(goal)
+    for _ in range(iterations):
         residual = goal-current
-        if not len(values) or np.max(np.abs(residual)) < 2e-6:
-            break
+        if np.max(np.abs(residual)) < 2e-6:
+            return
         jacobian = []
         for i in range(len(values)):
-            plus,minus = values.copy(),values.copy()
+            plus = values.copy()
             plus[i] = min(values[i]+1e-3,bounds[i,1])
+            width = plus[i]-values[i]
+            if width:
+                jacobian.append((evaluate(plus)-current)/width)
+                continue
+            minus = values.copy()
             minus[i] = max(values[i]-1e-3,bounds[i,0])
-            width = plus[i]-minus[i]
-            jacobian.append((evaluate(plus)-evaluate(minus))/width if width else np.zeros_like(goal))
+            width = values[i]-minus[i]
+            jacobian.append((current-evaluate(minus))/width if width else zero)
         jacobian = np.array(jacobian).T
-        step = np.linalg.lstsq(jacobian, residual, rcond=1e-5)[0]
-        # Large jumps make rotation fitting oscillate around equivalent poses.
-        step = np.clip(step,-1,1)
+        step = np.clip(np.linalg.lstsq(jacobian, residual, rcond=1e-5)[0],-1,1)
         improved = False
-        for factor in (1,.5,.25,.125):
+        for factor in (1,.5,.25):
             trial = np.clip(values+step*factor,bounds[:,0],bounds[:,1])
             output = evaluate(trial)
             if np.linalg.norm(goal-output) < np.linalg.norm(residual)-1e-8:
@@ -168,49 +207,66 @@ def _fit(context, obj, control_names, targets):
                 improved=True
                 break
         if not improved:
-            break
+            evaluate(values)
+            return
     evaluate(values)
 
 
-def _finger_slider_plan(obj, names):
-    """Precompute the linear curl/spread mapping once, without scene probes."""
+def _transform_slider_plan(obj, names, allowed_controls=None):
+    """Linear map from TRANSFORM-constraint slider channels to local eulers.
+
+    Built once from constraint ranges; per-frame solve needs no depsgraph.
+    Cascade finger windows are skipped (piecewise); residuals absorb them.
+    """
     from . import finger_sliders as fingers
     names=sorted(names)
     channels={}
     entries=[]
     for row,name in enumerate(names):
         for con in obj.pose.bones[name].constraints:
-            if con.type!='TRANSFORM' or not con.name.startswith(fingers.FINGER_CON_PREFIX) or con.target!=obj:
+            if con.type!='TRANSFORM' or con.target!=obj or not con.subtarget:
                 continue
-            # A neutral cascade avoids its piecewise discontinuities. Shared
-            # curl, per-finger offset, spread and thumb side are fitted together.
-            if 'Cascade' in con.name: continue
+            if 'Cascade' in con.name:
+                continue
+            if allowed_controls is not None and con.subtarget not in allowed_controls:
+                continue
             axis=fingers._slider_loc_axis(con)
             low,high=fingers._constraint_from_range(con,axis)
-            if abs(high-low)<1e-8: continue
+            if abs(high-low)<1e-8:
+                continue
             channel=(con.subtarget,axis)
             channels.setdefault(channel,len(channels))
             for out,key in enumerate('xyz'):
                 lo=getattr(con,'to_min_'+key+'_rot')
                 hi=getattr(con,'to_max_'+key+'_rot')
                 coefficient=(hi-lo)/(high-low)*con.influence
-                if coefficient: entries.append((row*3+out,channels[channel],coefficient))
+                if coefficient:
+                    entries.append((row*3+out,channels[channel],coefficient))
     matrix=np.zeros((len(names)*3,len(channels)))
-    for row,col,value in entries: matrix[row,col]+=value
+    for row,col,value in entries:
+        matrix[row,col]+=value
     inverse=np.linalg.pinv(matrix,rcond=1e-5) if channels else None
     return names,list(channels),matrix,inverse
 
 
-def _fit_finger_sliders(context,obj,poses,plan,control_names):
+def _finger_slider_plan(obj, names):
+    from . import finger_sliders as fingers
+    controls={con.subtarget for pb in obj.pose.bones for con in pb.constraints
+              if con.type=='TRANSFORM' and con.target==obj
+              and con.name.startswith(fingers.FINGER_CON_PREFIX) and con.subtarget}
+    return _transform_slider_plan(obj, names, allowed_controls=controls or None)
+
+
+def _fit_transform_sliders(obj, poses, plan, control_names):
     names,channels,matrix,inverse=plan
-    if inverse is None: return
-    ev=_update(context,obj)
+    if inverse is None:
+        return
+    identity=Matrix.Identity(4)
     goal=[]
     for name in names:
         pb=obj.pose.bones[name]
-        parent=(poses.get(pb.parent.name,ev.pose.bones[pb.parent.name].matrix)
-                if pb.parent else Matrix.Identity(4))
-        rest=pb.parent.bone.matrix_local if pb.parent else Matrix.Identity(4)
+        parent=poses.get(pb.parent.name,identity) if pb.parent else identity
+        rest=pb.parent.bone.matrix_local if pb.parent else identity
         local=pb.bone.convert_local_to_pose(poses[name],pb.bone.matrix_local,
             parent_matrix=parent,parent_matrix_local=rest,invert=True)
         goal.extend(local.to_euler('XYZ'))
@@ -222,23 +278,30 @@ def _fit_finger_sliders(context,obj,poses,plan,control_names):
         for con in pb.constraints:
             if con.type=='LIMIT_LOCATION' and con.owner_space=='LOCAL':
                 key='xyz'[axis]
-                if getattr(con,'use_min_'+key): value=max(value,getattr(con,'min_'+key))
-                if getattr(con,'use_max_'+key): value=min(value,getattr(con,'max_'+key))
+                if getattr(con,'use_min_'+key):
+                    value=max(value,getattr(con,'min_'+key))
+                if getattr(con,'use_max_'+key):
+                    value=min(value,getattr(con,'max_'+key))
         pb.location[axis]=float(value)
 
 
-def _match_expression(context,obj,component,poses):
+def _fit_finger_sliders(context,obj,poses,plan,control_names):
+    _fit_transform_sliders(obj,poses,plan,control_names)
+
+
+def _eyes_plan(obj, component):
     from .custom_components import control_name
-    from .face_components import expression_set
     data=json.loads(component.face_data)
-    main=obj.pose.bones.get(control_name(obj,component))
-    if main is None or 'sub_expression_labels' not in main:
+    poses=data.get('poses',{})
+    if not poses:
+        return None
+    main=control_name(obj,component)
+    look=obj.pose.bones.get(main+'_Look') or obj.pose.bones.get(main)
+    if look is None:
         return None
     names=[entry.bone for entry in component.bones]
-    ev=_update(context,obj)
-    base=[]
-    target=[]
     references={}
+    base=[]
     weights=[]
     for name in names:
         pb=obj.pose.bones[name]
@@ -246,47 +309,191 @@ def _match_expression(context,obj,component,poses):
         ref=Quaternion(neutral[3:7]).to_euler('XYZ')
         references[name]=ref
         base.extend(list(neutral[:3])+list(ref)+list(neutral[7:]))
-        parent=poses.get(pb.parent.name,ev.pose.bones[pb.parent.name].matrix) if pb.parent else Matrix.Identity(4)
-        rest=pb.parent.bone.matrix_local if pb.parent else Matrix.Identity(4)
+        weights.extend([1/max(pb.bone.length,.01)]*3+[1]*6)
+    base=np.asarray(base,dtype=float)
+    weights=np.asarray(weights,dtype=float)
+    columns=[]
+    for label in ('Right','Left','Up','Down'):
+        pose=poses.get(label)
+        if not pose:
+            columns.append(np.zeros(len(base)))
+            continue
+        values=[]
+        for name in names:
+            v=pose.get(name,data['neutral'][name])
+            values.extend(list(v[:3])+list(Quaternion(v[3:7]).to_euler('XYZ',references[name]))+list(v[7:]))
+        columns.append((np.asarray(values,dtype=float)-base)*weights)
+    matrix=np.column_stack(columns)
+    orbit=obj.pose.bones.get(main) if look.name!=main else None
+    return look,orbit,names,references,base,weights,matrix
+
+
+def _match_eyes(obj, poses, plan):
+    look,orbit,names,references,base,weights,matrix=plan
+    identity=Matrix.Identity(4)
+    target=[]
+    for name in names:
+        pb=obj.pose.bones[name]
+        parent=poses.get(pb.parent.name,identity) if pb.parent else identity
+        rest=pb.parent.bone.matrix_local if pb.parent else identity
         local=pb.bone.convert_local_to_pose(poses[name],pb.bone.matrix_local,
             parent_matrix=parent,parent_matrix_local=rest,invert=True)
         location,rotation,scale=local.decompose()
-        target.extend(list(location)+list(rotation.to_euler('XYZ',ref))+list(scale))
-        # Normalize translations by bone size so model units don't dominate.
-        weights.extend([1/max(pb.bone.length,.01)]*3+[1]*6)
-    base=np.asarray(base)
-    weights=np.asarray(weights)
-    desired=(np.asarray(target)-base)*weights
-    best=(float(desired@desired),0,0.0)
-    labels=json.loads(main['sub_expression_labels'])
+        target.extend(list(location)+list(rotation.to_euler('XYZ',references[name]))+list(scale))
+    desired=(np.asarray(target,dtype=float)-base)*weights
+    best=(float(desired@desired),0.0,0.0)
+    for sx,col_x in ((1,0),(-1,1)):
+        for sy,col_y in ((1,2),(-1,3)):
+            A=np.column_stack((matrix[:,col_x],matrix[:,col_y]))
+            if float(np.linalg.norm(A))<1e-12:
+                continue
+            sol=np.clip(np.linalg.lstsq(A,desired,rcond=1e-5)[0],0,1)
+            residual=desired-A@sol
+            error=float(residual@residual)
+            if error<best[0]-1e-12:
+                best=(error,sx*float(sol[0]),sy*float(sol[1]))
+    if orbit is not None and orbit.name!=look.name:
+        orbit.location=(0,0,0)
+    look.location=(best[1],best[2],0.0)
+    for con in look.constraints:
+        if con.type!='LIMIT_LOCATION' or con.owner_space!='LOCAL':
+            continue
+        for axis,key in enumerate('xyz'):
+            value=look.location[axis]
+            if getattr(con,'use_min_'+key):
+                value=max(value,getattr(con,'min_'+key))
+            if getattr(con,'use_max_'+key):
+                value=min(value,getattr(con,'max_'+key))
+            look.location[axis]=value
+    return look.name
+
+
+def _look_target_jobs(obj, components):
+    from .custom_components import control_name
+    jobs=[]
+    for c in components:
+        if c.kind!='LOOK_TARGET':
+            continue
+        name=control_name(obj,c)
+        if name not in obj.pose.bones:
+            continue
+        bones=[(b.bone,abs(getattr(b,'weight',1.0) or 1.0)) for b in c.bones if b.bone in obj.pose.bones]
+        if bones:
+            jobs.append((name,bones,c.aim_axis))
+    return jobs
+
+
+def _match_look_target(obj, control_name, bones, aim_axis, poses):
+    axis=Vector((0.0,0.0,0.0))
+    axis['XYZ'.index(aim_axis[-1])]=-1.0 if aim_axis.startswith('NEG_') else 1.0
+    points=[]
+    weights=[]
+    for bone_name,weight in bones:
+        if weight<1e-8 or bone_name not in poses:
+            continue
+        matrix=poses[bone_name]
+        direction=(matrix.to_3x3()@axis)
+        if direction.length<1e-12:
+            continue
+        direction.normalize()
+        rest=max((obj.data.bones[control_name].head_local-obj.data.bones[bone_name].head_local).length,
+                 obj.data.bones[bone_name].length,1e-3)
+        points.append(matrix.translation+direction*rest)
+        weights.append(weight)
+    if not points:
+        return
+    target=sum((point*weight for point,weight in zip(points,weights)),Vector())/sum(weights)
+    pb=obj.pose.bones[control_name]
+    orient=(pb.bone.matrix_local.to_3x3()).to_quaternion()
+    pb.matrix=Matrix.LocRotScale(target,orient,Vector((1.0,1.0,1.0)))
+
+
+def _expression_plan(obj,component):
+    from .custom_components import control_name
     from .face_components import expression_checkpoints
+    data=json.loads(component.face_data)
+    main=obj.pose.bones.get(control_name(obj,component))
+    if main is None or 'sub_expression_labels' not in main:
+        return None
+    names=[entry.bone for entry in component.bones]
+    references={}
+    base=[]
+    weights=[]
+    for name in names:
+        pb=obj.pose.bones[name]
+        neutral=data['neutral'][name]
+        ref=Quaternion(neutral[3:7]).to_euler('XYZ')
+        references[name]=ref
+        base.extend(list(neutral[:3])+list(ref)+list(neutral[7:]))
+        weights.extend([1/max(pb.bone.length,.01)]*3+[1]*6)
+    labels=json.loads(main['sub_expression_labels'])
+    segments=[]
     for label in data.get('poses',{}):
-        previous=np.zeros_like(desired)
+        previous=np.zeros(len(base))
         low=0.0
+        index=labels.index(label)+1
         for high,pose in expression_checkpoints(data,label)[1:]:
             values=[]
             for name in names:
                 v=pose.get(name,data['neutral'][name])
                 values.extend(list(v[:3])+list(Quaternion(v[3:7]).to_euler('XYZ',references[name]))+list(v[7:]))
-            endpoint=(np.asarray(values)-base)*weights
-            delta=endpoint-previous
-            denominator=float(delta@delta)
-            fraction=float(np.clip(((desired-previous)@delta)/denominator,0,1)) if denominator>1e-12 else 0.0
-            residual=desired-previous-delta*fraction
-            error=float(residual@residual)
-            if error<best[0]-1e-12:
-                best=(error,labels.index(label)+1,low+(high-low)*fraction)
+            endpoint=(np.asarray(values)-np.asarray(base))*np.asarray(weights)
+            segments.append((index,low,high,previous.copy(),endpoint.copy()))
             previous,low=endpoint,high
-    # Retired individual pose tracks must not add a second expression.
-    for pb in obj.pose.bones:
-        if pb.bone.get('sub_face_owner')==component.uid and pb.bone.get('sub_component_control'):
-            pb.location=(0,0,0)
+    controls=[p for p in obj.pose.bones
+              if p.bone.get('sub_face_owner')==component.uid and p.bone.get('sub_component_control')]
+    return main,names,references,np.asarray(base),np.asarray(weights),segments,controls
+
+
+def _match_expression(context,obj,component,poses,plan=None):
+    from .face_components import expression_set
+    plan=_expression_plan(obj,component) if plan is None else plan
+    if plan is None:
+        return None
+    main,names,references,base,weights,segments,controls=plan
+    identity=Matrix.Identity(4)
+    target=[]
+    for name in names:
+        pb=obj.pose.bones[name]
+        parent=poses.get(pb.parent.name,identity) if pb.parent else identity
+        rest=pb.parent.bone.matrix_local if pb.parent else identity
+        local=pb.bone.convert_local_to_pose(poses[name],pb.bone.matrix_local,
+            parent_matrix=parent,parent_matrix_local=rest,invert=True)
+        location,rotation,scale=local.decompose()
+        target.extend(list(location)+list(rotation.to_euler('XYZ',references[name]))+list(scale))
+    desired=(np.asarray(target)-base)*weights
+    best=(float(desired@desired),0,0.0)
+    for index,low,high,previous,endpoint in segments:
+        delta=endpoint-previous
+        denominator=float(delta@delta)
+        fraction=float(np.clip(((desired-previous)@delta)/denominator,0,1)) if denominator>1e-12 else 0.0
+        residual=desired-previous-delta*fraction
+        error=float(residual@residual)
+        if error<best[0]-1e-12:
+            best=(error,index,low+(high-low)*fraction)
+    for pb in controls:
+        pb.location=(0,0,0)
     expression_set(main,best[1])
     main.location.y=best[2]
     return main.name,best[1],best[2]
 
 
+def _match_slice_seconds():
+    # bpy and the depsgraph are not thread-safe. Yield often enough that
+    # Windows still pumps the UI, without starving the match of CPU.
+    cores=os.cpu_count() or 4
+    return 0.04 if cores>=8 else 0.05
+
+
 def match_animation(context, obj, start, end, include_fingers=False, match_ik=True, fingers_only=False):
+    result=None
+    for event in match_animation_steps(context,obj,start,end,include_fingers,match_ik,fingers_only):
+        if event[0]=='done':
+            result=event[1]
+    return result
+
+
+def match_animation_steps(context, obj, start, end, include_fingers=False, match_ik=True, fingers_only=False):
     from .component_workflow import definitions
     from . import ik_channels, anim_layers_compat
     from .create_animation_rig import _activate_armature, _disable_autokey, defer_pose_tool_updates, ProgressCursor
@@ -331,8 +538,16 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
     source_action=anim_layers_compat.viewport_driving_action(obj)[0]
     backup=source_action.copy()
     success=False
+    paused=[]
     try:
         with ProgressCursor(context) as progress, _disable_autokey(context), defer_pose_tool_updates(), anim_layers_compat.anim_layers_paused(), anim_layers_compat.bind_driving_action_for_bake(obj,context):
+            paused=_pause_armature_meshes(obj)
+            sample_names=set(all_owners)
+            for name in list(sample_names):
+                pb=obj.pose.bones.get(name)
+                while pb and pb.parent:
+                    sample_names.add(pb.parent.name)
+                    pb=pb.parent
             samples={}
             for con,_ in muted:
                 con.mute=True
@@ -340,19 +555,24 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
                 for f in range(start,end+1):
                     scene.frame_set(f)
                     ev=_update(context,obj)
-                    samples[f]={n:ev.pose.bones[n].matrix.copy() for n in all_owners}
+                    samples[f]={n:ev.pose.bones[n].matrix.copy() for n in sample_names}
                     progress.update(.15*(f-start+1)/max(1,end-start+1))
+                    yield ('progress',.15*(f-start+1)/max(1,end-start+1),f'Sampling frame {f}')
             finally:
                 for con,state in muted:
                     con.mute=state
             targets={r['target'] for r in json.loads(obj.get('sub_custom_ik_chains','[]')) if r.get('component_id') in {c.uid for c in components if c.kind=='IK'}}
             if targets and match_ik:
+                _restore_armature_meshes(paused)
+                paused=[]
                 old_range=(scene.frame_start,scene.frame_end)
                 try:
                     scene.frame_start,scene.frame_end=start,end
                     ik_channels.match(context,obj,entire=True,key=True,_targets=targets)
                 finally:
                     scene.frame_start,scene.frame_end=old_range
+                paused=_pause_armature_meshes(obj)
+            yield ('progress',.2,'Matching components')
             # Isolated controls have a full transform: match them directly.
             # Old residual offsets must not move the foot away from its handle.
             obsolete=set()
@@ -361,7 +581,6 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
                     if con.name.startswith(_prefix(uid)) and con.name != _prefix(uid):
                         con.mute=True
                         obsolete.add(con.as_pointer())
-            fit_controls=[n for n in controls if obj.data.bones[n].get('sub_face_owner') not in isolated_ids]
             for n in finger_names:
                 for con in obj.pose.bones[n].constraints:
                     if con.name in {_prefix(FINGER_MATCH_ID)+' '+label for label in ('Input','Match','Match2')}:
@@ -369,22 +588,70 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
                         obsolete.add(con.as_pointer())
             finger_controls={name for c in non_ik if c.uid==FINGER_MATCH_ID for name in c.controls}
             finger_plan=_finger_slider_plan(obj,finger_names) if finger_names else None
-            fit_controls=[n for n in fit_controls if n not in finger_controls]
             helpers=_helpers(context,obj,owners)
             expressions=[c for c in non_ik if c.kind in {'LIDS','MOUTH'}]
+            eyes=[c for c in non_ik if c.kind=='EYES']
             expression_ids={c.uid for c in expressions}
+            eyes_ids={c.uid for c in eyes}
             expression_names={b.bone for c in expressions for b in c.bones}
-            fit_controls=[n for n in fit_controls if obj.data.bones[n].get('sub_face_owner') not in expression_ids]
+            eyes_names={b.bone for c in eyes for b in c.bones}
+            look_ids={c.uid for c in non_ik if c.kind=='LOOK_TARGET'}
+            look_names={b.bone for c in non_ik if c.kind=='LOOK_TARGET' for b in c.bones}
+            look_jobs=_look_target_jobs(obj,non_ik)
+            look_controls={name for name,_,_ in look_jobs}
+            expression_plans=[_expression_plan(obj,c) for c in expressions]
+            eyes_plans=[plan for plan in (_eyes_plan(obj,c) for c in eyes) if plan]
+            # TRANSFORM sliders (jaw/rotation/etc): same closed-form path as fingers.
+            transform_names=(set(owners)-expression_names-eyes_names-look_names-finger_names)
+            transform_controls=[n for n in controls
+                if n not in finger_controls and n not in look_controls
+                and obj.data.bones[n].get('sub_face_owner') not in isolated_ids
+                and obj.data.bones[n].get('sub_face_owner') not in expression_ids
+                and obj.data.bones[n].get('sub_face_owner') not in eyes_ids
+                and obj.data.bones[n].get('sub_component_id') not in look_ids]
+            transform_plan=_transform_slider_plan(obj,transform_names,allowed_controls=set(transform_controls)) if transform_names and transform_controls else None
+            covered={name for name,_ in (transform_plan[1] if transform_plan and transform_plan[3] is not None else [])}
+            # Jacobian only for controls the linear TRANSFORM map cannot drive.
+            fit_controls=[n for n in transform_controls if n not in covered]
+            fit_names_fallback=set(transform_names) if fit_controls else set()
+            fit_spec=_parameter_spec(obj,fit_controls) if fit_controls else None
             selector_curves=[]
+            face_control_ids=expression_ids|eyes_ids
             for fc in get_all_action_fcurves(obj.animation_data.action,id_type='OBJECT'):
                 if any(fc.data_path.startswith(obj.pose.bones[n].path_from_id()+'.') for n in controls
-                       if obj.data.bones[n].get('sub_face_owner') in expression_ids):
+                       if obj.data.bones[n].get('sub_face_owner') in face_control_ids):
                     selector_curves.append((fc,fc.mute))
                     fc.mute=True
+            isolated_jobs=[]
+            for n,uid in isolated.items():
+                con=obj.pose.bones[n].constraints.get(_prefix(uid))
+                if not con or con.type!='COPY_TRANSFORMS':
+                    raise ValueError('Rebuild the isolated component before matching')
+                output=obj.pose.bones[con.subtarget]
+                root=output
+                while root.parent and root.bone.get('sub_face_owner')==uid:
+                    root=root.parent
+                chain=[]
+                child=output
+                while child!=root:
+                    chain.append(child)
+                    child=child.parent
+                isolated_jobs.append((n,output,root,chain))
+            for n,output,root,chain in isolated_jobs:
+                for child in chain:
+                    child.matrix_basis=Matrix.Identity(4)
+            isolated_offsets={}
+            if isolated_jobs:
+                ev=_update(context,obj)
+                for n,output,root,chain in isolated_jobs:
+                    isolated_offsets[n]=ev.pose.bones[root.name].matrix.inverted_safe() @ ev.pose.bones[output.name].matrix
             writer=PoseKeyWriter(obj)
             choices=PoseKeyWriter(obj,interpolation='CONSTANT')
             # Parent-first offsets: child targets must see the corrected parent.
             ordered=sorted(owners,key=lambda n:len(obj.pose.bones[n].parent_recursive))
+            levels={}
+            for n in ordered:
+                levels.setdefault(len(obj.pose.bones[n].parent_recursive),[]).append(n)
             for f,poses in samples.items():
                 scene.frame_set(f)
                 for pair in helpers.values():
@@ -392,18 +659,23 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
                         obj.pose.bones[name].matrix_basis=Matrix.Identity(4)
                 for n in finger_names:
                     obj.pose.bones[n].matrix_basis=Matrix.Identity(4)
-                for component in expressions:
-                    choice=_match_expression(context,obj,component,poses)
+                for component,plan in zip(expressions,expression_plans):
+                    choice=_match_expression(context,obj,component,poses,plan)
                     if choice:
                         name,index,strength=choice
                         path=obj.pose.bones[name].path_from_id()
                         choices.stash_channel(path+'.sub_face_expression',0,f,index,name)
                         writer.stash_channel(path+'.location',1,f,strength,name)
-                fit_names=set(owners)-expression_names
-                if fit_names:
-                    _fit(context,obj,fit_controls,{n:poses[n] for n in fit_names})
+                for plan in eyes_plans:
+                    _match_eyes(obj,poses,plan)
+                if transform_plan:
+                    _fit_transform_sliders(obj,poses,transform_plan,transform_controls)
+                for control,bones,aim in look_jobs:
+                    _match_look_target(obj,control,bones,aim,poses)
+                if fit_controls and fit_names_fallback:
+                    _fit(context,obj,fit_controls,{n:poses[n] for n in fit_names_fallback},spec=fit_spec)
                 if finger_plan:
-                    _fit_finger_sliders(context,obj,poses,finger_plan,finger_controls)
+                    _fit_transform_sliders(obj,poses,finger_plan,finger_controls)
                 # Evaluate the neutral circles with the fitted sliders once.
                 # Desired parent matrices are already sampled, so every joint's
                 # local correction can be calculated before changing the scene.
@@ -436,39 +708,58 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
                             ev=_update(context,obj)
                         finally:
                             pb.lock_location,pb.lock_rotation,pb.lock_scale=locks
-                for n,uid in isolated.items():
-                    con=obj.pose.bones[n].constraints.get(_prefix(uid))
-                    if not con or con.type!='COPY_TRANSFORMS':
-                        raise ValueError('Rebuild the isolated component before matching')
-                    output=obj.pose.bones[con.subtarget]
-                    root=output
-                    while root.parent and root.bone.get('sub_face_owner')==uid:
-                        root=root.parent
-                    # Roll and toe handles start neutral for an FK transfer.
-                    child=output
-                    while child!=root:
+                for n,output,root,chain in isolated_jobs:
+                    for child in chain:
                         child.matrix_basis=Matrix.Identity(4)
-                        child=child.parent
-                    ev=_update(context,obj)
-                    offset=ev.pose.bones[root.name].matrix.inverted_safe() @ ev.pose.bones[output.name].matrix
-                    root.matrix=poses[n] @ offset.inverted_safe()
-                    _update(context,obj)
+                    root.matrix=poses[n] @ isolated_offsets[n].inverted_safe()
                 extra=False
-                for name in ordered:
-                    ev=_update(context,obj)
-                    delta=ev.pose.bones[name].matrix.inverted_safe() @ poses[name]
-                    first,second=_split_affine(delta)
-                    obj.pose.bones[helpers[name][1]].matrix_basis=first
-                    obj.pose.bones[helpers[name][2]].matrix_basis=second
-                    extra |= max(abs(delta[i][j]-(1 if i==j else 0)) for i in range(4) for j in range(4))>1e-4
+                # One eval after analytic controls. Parent residuals are applied in
+                # math so children see corrected parents without per-level updates.
+                ev=_update(context,obj)
+                corrected={}
+                for depth in sorted(levels):
+                    for name in levels[depth]:
+                        pb=obj.pose.bones[name]
+                        if pb.parent and pb.parent.name in corrected:
+                            rest_parent=pb.parent.bone.matrix_local
+                            parent_ev=ev.pose.bones[pb.parent.name].matrix
+                            def _local(matrix,parent_matrix,bone=pb,rest=rest_parent):
+                                return bone.bone.convert_local_to_pose(matrix,bone.bone.matrix_local,
+                                    parent_matrix=parent_matrix,parent_matrix_local=rest,invert=True)
+                            contribution=_local(ev.pose.bones[name].matrix,parent_ev)
+                            current=pb.bone.convert_local_to_pose(contribution,pb.bone.matrix_local,
+                                parent_matrix=corrected[pb.parent.name],parent_matrix_local=rest_parent,invert=False)
+                            delta=current.inverted_safe()@poses[name]
+                        else:
+                            delta=ev.pose.bones[name].matrix.inverted_safe()@poses[name]
+                        first,second=_split_affine(delta)
+                        obj.pose.bones[helpers[name][1]].matrix_basis=first
+                        obj.pose.bones[helpers[name][2]].matrix_basis=second
+                        corrected[name]=poses[name]
+                        extra |= max(abs(delta[i][j]-(1 if i==j else 0)) for i in range(4) for j in range(4))>1e-4
                 ev=_update(context,obj)
                 error=max((abs(ev.pose.bones[n].matrix[i][j]-poses[n][i][j]) for n in all_owners for i in range(4) for j in range(4)),default=0)
                 if error>2e-4:
-                    raise ValueError(f'Matching cannot preserve the pose at frame {f} (error {error:.5g}, bone {max(all_owners,key=lambda n:max(abs(ev.pose.bones[n].matrix[i][j]-poses[n][i][j]) for i in range(4) for j in range(4)))})')
+                    # Parent-propagated residuals missed a constraint coupling; fall back.
+                    for pair in helpers.values():
+                        for name in pair[1:]:
+                            obj.pose.bones[name].matrix_basis=Matrix.Identity(4)
+                    for depth in sorted(levels):
+                        ev=_update(context,obj)
+                        for name in levels[depth]:
+                            delta=ev.pose.bones[name].matrix.inverted_safe()@poses[name]
+                            first,second=_split_affine(delta)
+                            obj.pose.bones[helpers[name][1]].matrix_basis=first
+                            obj.pose.bones[helpers[name][2]].matrix_basis=second
+                    ev=_update(context,obj)
+                    error=max((abs(ev.pose.bones[n].matrix[i][j]-poses[n][i][j]) for n in all_owners for i in range(4) for j in range(4)),default=0)
+                    if error>2e-4:
+                        raise ValueError(f'Matching cannot preserve the pose at frame {f} (error {error:.5g}, bone {max(all_owners,key=lambda n:max(abs(ev.pose.bones[n].matrix[i][j]-poses[n][i][j]) for i in range(4) for j in range(4)))})')
                 residual_frames += int(extra)
                 progress.update(.2+.75*(f-start+1)/max(1,end-start+1))
                 for name in controls+sorted(finger_names)+[n for pair in helpers.values() for n in pair]:
                     writer.stash_pose_bone(obj.pose.bones[name],f)
+                yield ('progress',.2+.75*(f-start+1)/max(1,end-start+1),f'Matching frame {f}')
             # Existing control modifiers must not be applied again to sampled keys.
             paths={obj.pose.bones[n].path_from_id()+'.' for n in controls+sorted(finger_names)+[n for pair in helpers.values() for n in pair]}
             action=obj.animation_data.action
@@ -480,6 +771,28 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
             choices.flush()
             progress.update(1)
             success=True
+            yield ('done',(len(components),residual_frames))
+    except GeneratorExit:
+        from ..blender_compat import assign_action
+        for pb in obj.pose.bones:
+            old=constraints.get(pb.name,set())
+            for con in list(pb.constraints):
+                if con.as_pointer() not in old:
+                    pb.constraints.remove(con)
+        try:
+            bpy.ops.object.mode_set(mode='EDIT')
+            for n in set(obj.data.edit_bones.keys())-bone_names:
+                obj.data.edit_bones.remove(obj.data.edit_bones[n])
+            for n,matrix in old_helpers.items():
+                obj.data.edit_bones[n].matrix=matrix
+            bpy.ops.object.mode_set(mode='POSE')
+            for n,matrix in old_bases.items():
+                obj.pose.bones[n].matrix_basis=matrix
+            backup.name=source_action.name+'_Recovered'
+            assign_action(obj.animation_data,backup)
+        except Exception:
+            pass
+        raise
     except Exception:
         # A failed fit must not leave an unkeyed input override on the skeleton.
         from ..blender_compat import assign_action
@@ -501,6 +814,7 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
         assign_action(obj.animation_data,backup)
         raise
     finally:
+        _restore_armature_meshes(paused)
         for fc,state in locals().get('selector_curves',[]):
             try: fc.mute=state
             except ReferenceError: pass
@@ -512,13 +826,12 @@ def match_animation(context, obj, start, end, include_fingers=False, match_ik=Tr
             except ReferenceError:
                 pass
         scene.frame_set(frame)
-    return len(components),residual_frames
 
 
 class SUB_OP_components_match(bpy.types.Operator):
     bl_idname='sub.components_match'
     bl_label='Match Custom Components to Animation'
-    bl_description='Transfer the original bone animation to custom controls; preserve extra motion in hidden keyed offsets'
+    bl_description='Transfer the original bone animation to custom controls; preserve extra motion in hidden keyed offsets. Esc cancels.'
     bl_options={'REGISTER','UNDO'}
     start: bpy.props.IntProperty(name='Start Frame')
     end: bpy.props.IntProperty(name='End Frame')
@@ -532,6 +845,7 @@ class SUB_OP_components_match(bpy.types.Operator):
         self.layout.prop(self,'start')
         self.layout.prop(self,'end')
         self.layout.label(text='Original bone keyframes are kept.')
+        self.layout.label(text='Esc cancels. The UI stays responsive while matching.')
 
     def execute(self,context):
         from .create_animation_rig import find_target_armature
@@ -539,13 +853,78 @@ class SUB_OP_components_match(bpy.types.Operator):
         if not obj or self.end<self.start:
             self.report({'ERROR'},'Select a rig and a valid frame range')
             return {'CANCELLED'}
+        self._steps=match_animation_steps(context,obj,self.start,self.end,include_fingers=True)
+        wm=context.window_manager
+        self._timer=wm.event_timer_add(0.0,window=context.window)
+        wm.modal_handler_add(self)
         try:
-            count,extra=match_animation(context,obj,self.start,self.end,include_fingers=True)
+            context.window.cursor_modal_set('WAIT')
+        except Exception:
+            pass
+        return {'RUNNING_MODAL'}
+
+    def modal(self,context,event):
+        if event.type in {'ESC','RIGHTMOUSE'}:
+            self._cancel(context)
+            self.report({'WARNING'},'Component matching cancelled')
+            return {'CANCELLED'}
+        if event.type!='TIMER':
+            return {'RUNNING_MODAL'}
+        deadline=time.perf_counter()+_match_slice_seconds()
+        try:
+            while time.perf_counter()<deadline:
+                item=next(self._steps)
+                if item[0]=='progress':
+                    try:
+                        context.workspace.status_text_set(item[2])
+                    except Exception:
+                        pass
+                elif item[0]=='done':
+                    count,extra=item[1]
+                    try:
+                        while True:
+                            next(self._steps)
+                    except StopIteration:
+                        pass
+                    self._finish(context,close=False)
+                    self.report({'INFO'},f'Matched {count} components. Extra motion preserved on {extra} frames.')
+                    return {'FINISHED'}
+        except StopIteration:
+            self._finish(context,close=False)
+            return {'FINISHED'}
         except (ValueError,RuntimeError) as exc:
+            self._finish(context,close=False)
             self.report({'ERROR'},str(exc))
             return {'CANCELLED'}
-        self.report({'INFO'},f'Matched {count} components. Extra motion preserved on {extra} frames.')
-        return {'FINISHED'}
+        return {'RUNNING_MODAL'}
+
+    def _cancel(self,context):
+        steps=getattr(self,'_steps',None)
+        if steps is not None:
+            try:
+                steps.close()
+            except Exception:
+                pass
+        self._finish(context,close=False)
+
+    def _finish(self,context,close=True):
+        wm=context.window_manager
+        if getattr(self,'_timer',None) is not None:
+            wm.event_timer_remove(self._timer)
+            self._timer=None
+        if close:
+            steps=getattr(self,'_steps',None)
+            if steps is not None:
+                try:
+                    steps.close()
+                except Exception:
+                    pass
+        self._steps=None
+        try:
+            context.window.cursor_modal_restore()
+            context.workspace.status_text_set(None)
+        except Exception:
+            pass
 
 
 def register():
