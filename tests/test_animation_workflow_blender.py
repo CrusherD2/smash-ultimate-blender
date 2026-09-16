@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import importlib
 import tempfile
+import time
 
 # Reuse the isolated profile and actual add-on registration fixture.
 fixture = Path(__file__).with_name('test_addon_registration_blender.py')
@@ -74,6 +75,17 @@ with tempfile.TemporaryDirectory() as folder:
     assert bpy.context.scene.frame_current == 7
     assert bpy.context.scene.tool_settings.use_keyframe_insert_auto
 
+# Freshly listed animations and actions start with nothing selected.
+import_anim = importlib.import_module(MODULE + '.source.anim.import_anim')
+ssp = bpy.context.scene.sub_scene_properties
+with tempfile.TemporaryDirectory() as folder:
+    for name in ('a00defaulteyelid.nuanmb', 'a00wait1.nuanmb'):
+        (Path(folder) / name).touch()
+    assert import_anim.fill_animation_import_list(ssp, folder) == 2
+    assert not any(item.selected for item in ssp.animation_import_files)
+ssp.animation_import_files.clear()
+assert export.SUB_PG_anim_action_item.bl_rna.properties['export'].default is False
+
 # Real armature and batch exports, including SAP action restoration.
 bpy.ops.object.armature_add()
 obj = bpy.context.object
@@ -104,8 +116,37 @@ with tempfile.TemporaryDirectory() as folder:
     assert bpy.context.scene.frame_current == 4
     assert bpy.context.scene.frame_subframe == 0.5
 
-# The exporter runs synchronously. Generator cancellation and temporary IK
-# action restoration are covered by test_ik_workflow_regressions_blender.py.
+# Export must not use any UI, timer, or progress API, even in a GUI context.
+class NoExportUI:
+    def __getattr__(self, name):
+        raise AssertionError(f'Export accessed UI API: {name}')
+
+class SynchronousExport(export.AnimationExport):
+    def report(self, *args): pass
+    def export_steps(self, context):
+        yield from export.export_camera_anim_steps(context, self, context.active_object,
+            self.filepath, 1, 30)
+
+bpy.ops.object.camera_add()
+obj = bpy.context.object
+for frame in (1, 30):
+    obj.location.x = frame / 10
+    obj.keyframe_insert('location', frame=frame)
+context_without_ui = SimpleNamespace(active_object=obj, scene=bpy.context.scene,
+    window_manager=NoExportUI(), workspace=NoExportUI())
+with tempfile.TemporaryDirectory() as folder:
+    for number in range(2):
+        operator = SynchronousExport()
+        operator.filepath = str(Path(folder) / f'no_progress_{number}.nuanmb')
+        assert operator.execute(context_without_ui) == {'FINISHED'}
+        assert Path(operator.filepath).is_file()
+# Generator cancellation and temporary IK action restoration are covered by
+# test_ik_workflow_regressions_blender.py.
+
+# The batch exporter's refresh leaves every listed action unchecked.
+bpy.context.view_layer.objects.active = obj
+assert bpy.ops.sub.refresh_actions() == {'FINISHED'}
+assert ssp.action_export_list and not any(item.export for item in ssp.action_export_list)
 
 addon_utils.disable(MODULE, default_set=False, handle_error=on_error)
 assert not errors, errors

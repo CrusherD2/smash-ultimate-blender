@@ -192,7 +192,7 @@ class SUB_OP_apply_override_preset_thrown(Operator):
 class SUB_PG_anim_action_item(bpy.types.PropertyGroup):
     name: StringProperty(name="Name", description='Animation filename used for this batch export entry')
     action: PointerProperty(type=bpy.types.Action, description='Blender action to sample for this animation')
-    export: BoolProperty(name="Export", default=True, description='Include this animation in the next batch export')
+    export: BoolProperty(name="Export", default=False, description='Include this animation in the next batch export')
 
 # UI List for displaying available actions
 class SUB_UL_action_export_list(UIList):
@@ -360,7 +360,7 @@ class SUB_OP_refresh_actions(Operator):
             item = ssp.action_export_list.add()
             item.name = action.name
             item.action = action
-            item.export = True
+            item.export = False
             
         return {'FINISHED'}
 
@@ -1025,8 +1025,19 @@ class SUB_OP_anim_export(AnimationExport, Operator):
             filepath = os.path.join(os.path.dirname(filepath), safe_filename)
             
         obj: bpy.types.Object = context.active_object
-        
-        # Capture editable raw data before the regular exporter prepares a bake.
+
+        # Preflight gates the whole operation, so it has to clear before
+        # anything is written. The raw capture below cannot be undone -- it is
+        # a second file on disk -- so a preflight that runs after it would
+        # leave that file behind on a cancelled export.
+        from ..doctor import preflight
+        if not preflight(context, self, 'ANIM'):
+            return {'CANCELLED'}
+
+        # ...but only then capture the raw data, and still before the regular
+        # exporter prepares its bake: export_model_anim_fast_steps wraps the
+        # rig in temporary_rig_bake, and capturing inside that would record the
+        # baked result instead of the editable animation.
         if ssp.anim_include_raw_animation and obj.type == 'ARMATURE':
             raw_filepath = resolve_raw_anim_export_path(filepath, ssp)
             if not export_raw_animation_for_object(
@@ -1039,9 +1050,6 @@ class SUB_OP_anim_export(AnimationExport, Operator):
             ):
                 return {'CANCELLED'}
 
-        from ..doctor import preflight
-        if not preflight(context, self, 'ANIM'):
-            return {'CANCELLED'}
         ssp.last_anim_export_dir = os.path.dirname(self.filepath)
         ssp.anim_preset_force_override_translation = False
 

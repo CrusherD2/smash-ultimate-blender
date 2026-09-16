@@ -14,6 +14,10 @@ native/bin/*.dll
 native/bin/*.so
 native/bin/*.dylib
 !native/bin/ssbh_blender_preview.dll
+!native/bin/sub_ik_match_native.dll
 !native/bin/libssbh_blender_preview.so
 !native/bin/libssbh_blender_preview.dylib
 .tests/
+
+# Eigen headers are located at build time via SUB_IK_EIGEN_DIR, not vendored.
+native/ik_match/vendor/

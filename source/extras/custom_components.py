@@ -1245,6 +1245,10 @@ class SUB_PT_component_window(bpy.types.Panel):
     def draw(self, context):
         draw_editor(self.layout, context)
 
+    def draw_header_preset(self, context):
+        from ..ui_help import draw_panel_help
+        draw_panel_help(self.layout, self)
+
 
 CLASSES = (
     SUB_PG_component_bone,

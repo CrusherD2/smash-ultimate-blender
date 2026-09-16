@@ -12,7 +12,9 @@ bpy.ops.object.mode_set(mode='POSE')
 scene=bpy.context.scene
 scene.frame_set(1)
 pose={n:{'translation':[.3,.7,.2],'rotation':[0,0,0,1],'scale':[1,1,1]} for n in obj.pose.bones.keys()}
-assert ssp.idle_pose_exclude_fixed_bones
+# LegC / ClavicleC are skipped unconditionally: the engine rejects keys there.
+assert all(idle.is_engine_fixed_bone(n) for n in ('LegC', 'ClavicleC', 'LegCL', 'ClavicleCR'))
+assert not idle.is_engine_fixed_bone('LegL')
 result,message=idle.apply_pose_with_options(bpy.context,json.dumps(pose))
 assert result=={'FINISHED'},message
 curves=importlib.import_module(MODULE+'.source.anim.fcurve_compat')
@@ -31,9 +33,10 @@ mirror.mirror_action_smash_y(action,context=bpy.context,only_active_frame=True,i
 bpy.context.view_layer.update()
 actual=obj.pose.bones['Trans'].matrix
 assert max(abs(actual[i][j]-wanted[i][j]) for i in range(4) for j in range(4))<1e-5
-ssp.idle_pose_exclude_fixed_bones=False
+# There is no opt-out any more: re-applying still leaves the fixed bones alone.
+assert not hasattr(ssp,'idle_pose_exclude_fixed_bones')
 result,message=idle.apply_pose_with_options(bpy.context,json.dumps(pose))
 assert result=={'FINISHED'},message
-assert any('LegCL' in fc.data_path for fc in curves.get_all_action_fcurves(action))
-assert any('ClavicleCR' in fc.data_path for fc in curves.get_all_action_fcurves(action))
+assert not any('LegC' in fc.data_path or 'ClavicleC' in fc.data_path
+               for fc in curves.get_all_action_fcurves(action))
 print('LIVE EDIT MIRROR AND IDLE FIXED-BONE EXCLUSION PASSED')

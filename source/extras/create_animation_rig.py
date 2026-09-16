@@ -1449,7 +1449,56 @@ def _ensure_extra_arm_ik(armature_obj):
     return created
 
 
-def _set_ik_bone_visibility(armature_obj, visible, limbs='BOTH'):
+OFF_MODE_HIDE_KEY = 'sub_hide_off_mode_bones'
+
+
+def off_mode_hiding_enabled(armature_obj):
+    """Hiding the half of a limb you are not posing is the long-standing default."""
+    if armature_obj is None or armature_obj.type != 'ARMATURE':
+        return True
+    return bool(armature_obj.data.get(OFF_MODE_HIDE_KEY, True))
+
+
+def _off_mode_bone_names(armature_obj, limbs):
+    """(FK bones, IK controls) for one limb kind, for either rig style."""
+    from .apply_ik_animation import collect_fk_bone_names
+
+    return (collect_fk_bone_names(armature_obj, limbs=limbs),
+            _ik_control_bone_names(armature_obj, limbs))
+
+
+def _reveal_limb_bones(armature_obj, limbs):
+    fk_names, ik_names = _off_mode_bone_names(armature_obj, limbs)
+    for name in (*fk_names, *ik_names):
+        bone = armature_obj.data.bones.get(name)
+        # Bones a component hid on purpose are not this toggle's business.
+        if bone is None or bone.get('sub_component_hidden'):
+            continue
+        if bone.hide:
+            bone.hide = False
+    _set_collection_visible(armature_obj.data, 'IK Bones', True)
+
+
+def set_off_mode_bones_hidden(armature_obj, hidden, limbs='BOTH'):
+    """Hide FK bones on IK limbs and IK controls on FK limbs, or show both."""
+    armature_obj.data[OFF_MODE_HIDE_KEY] = bool(hidden)
+    _IK_VIS_CACHE.pop(armature_obj.name, None)
+    for kind in ('ARMS', 'LEGS'):
+        if limbs not in (kind, 'BOTH') or not armature_has_ik(armature_obj, kind):
+            continue
+        if hidden:
+            _set_ik_bone_visibility(
+                armature_obj, _effective_limb_ik_factor(armature_obj, kind) > _FK_ON_EPSILON, kind)
+        else:
+            _reveal_limb_bones(armature_obj, kind)
+    armature_obj.update_tag()
+
+
+def _set_ik_bone_visibility(armature_obj, visible, limbs='BOTH', respect_override=True):
+    # The automatic mode sync must not undo an explicit "show every bone".
+    if respect_override and not off_mode_hiding_enabled(armature_obj):
+        _reveal_limb_bones(armature_obj, limbs)
+        return
     from ..blender_compat import is_pose_bone_selected, set_pose_bone_select
     if armature_obj.data.get('sub_independent_ik'):
         from . import ik_channels
@@ -2690,7 +2739,7 @@ def bake_ik_visual_keys(context, armature_obj):
             constraint.mute = True
             constraint.influence = 0.0
         unmute_all_ik_fk_fcurves(armature_obj)
-        _set_ik_bone_visibility(armature_obj, False, limbs=limbs)
+        _set_ik_bone_visibility(armature_obj, False, limbs=limbs, respect_override=False)
         return keyed
     finally:
         pause_ik_fk_mute_sync(False)
@@ -3280,6 +3329,35 @@ class SUB_OP_key_ik_stretch(Operator):
         obj = find_target_armature(context)
         path = 'sub_ik_stretch_' + self.limbs.lower()
         key_ik_stretch(context, obj, self.limbs, not getattr(obj.data, path))
+        return {'FINISHED'}
+
+
+class SUB_OP_toggle_off_mode_bones(Operator):
+    bl_idname = "sub.toggle_off_mode_bones"
+    bl_label = "Hide Off-Mode Bones"
+    bl_description = (
+        "Hide the FK bones of limbs posed in IK and the IK controls of limbs posed in FK. "
+        "Toggle off to show every limb bone again"
+    )
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        armature_obj = find_target_armature(context)
+        return armature_obj is not None and armature_has_ik(armature_obj)
+
+    def execute(self, context):
+        armature_obj = find_target_armature(context)
+        if armature_obj is None:
+            self.report({'ERROR'}, "Select an armature with IK controls.")
+            return {'CANCELLED'}
+        hidden = not off_mode_hiding_enabled(armature_obj)
+        set_off_mode_bones_hidden(armature_obj, hidden)
+        self.report(
+            {'INFO'},
+            "Hiding the bones of the mode you are not posing."
+            if hidden else "Showing every FK and IK limb bone.",
+        )
         return {'FINISHED'}
 
 

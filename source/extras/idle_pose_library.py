@@ -12,6 +12,15 @@ from .mirror_animation import rotate_hip_180
 from . import anim_layers_compat
 
 
+# LegC and ClavicleC are fixed in the SSBU engine: keys written there are
+# rejected, so the idle poses never touch them.
+_ENGINE_FIXED_BONES = re.compile(r"(?:LegC|ClavicleC)[LR]?(?:\.\d+)?", re.IGNORECASE)
+
+
+def is_engine_fixed_bone(name):
+    return bool(_ENGINE_FIXED_BONES.fullmatch(name))
+
+
 def get_predefined_poses():
     """Get list of predefined pose names"""
     return [
@@ -87,7 +96,8 @@ def apply_pose_with_options(context, pose_data_str, include_trans=True, mirrored
         bone_to_node_data = {}
         for bone in armature.pose.bones:
             if bone.name in pose_data:
-                if getattr(context.scene.sub_scene_properties, "idle_pose_exclude_fixed_bones", True) and re.fullmatch(r"(?:LegC|ClavicleC)[LR]?(?:\.\d+)?", bone.name, re.IGNORECASE):
+                if is_engine_fixed_bone(bone.name):
+                    # SSBU rejects keys on these, so never pose or key them.
                     continue
                 # Skip Trans bone if include_trans is False
                 if not include_trans and bone.name == "Trans":

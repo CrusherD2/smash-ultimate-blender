@@ -41,6 +41,8 @@ def panel_doc_path(panel):
         return 'README.md#raw-animations'
     if 'motion_list' in module:
         return 'docs/motion-list.md'
+    if 'custom_components' in module or 'component_' in module:
+        return 'docs/custom-components.md'
     if '.retargeting' in module:
         anchor = 'retargeting'
     elif '.doctor' in module:
@@ -84,11 +86,22 @@ def panel_doc_path(panel):
     return 'README.md#' + anchor
 
 
+def help_buttons_enabled():
+    # Loaded standalone by the tests, where the add-on package is unavailable.
+    try:
+        from .addon_preferences import show_panel_help_buttons
+    except ImportError:
+        return True
+    return show_panel_help_buttons()
+
+
 def draw_panel_help(layout, panel):
     # Also guard inherited callbacks and panels moved to another editor/tab.
     if (getattr(panel, 'bl_space_type', None) != 'VIEW_3D'
             or getattr(panel, 'bl_region_type', None) != 'UI'
             or getattr(panel, 'bl_category', None) != 'Ultimate'):
+        return
+    if not help_buttons_enabled():
         return
     row = layout.row(align=True)
     row.scale_x = 1.0

@@ -26,16 +26,22 @@ BASELINE = Path(os.environ.get(
     'SUB_BASELINE_BLEND',
     ROOT / '.tests' / 'benchmarks' / 'ik_apply' / 'out' / 'baseline.blend'))
 
-# Reference values measured on this rig before the IK performance work, so
-# this asserts "no worse than it was" rather than an aspirational bound.
+# These bounds assert exactness, not "no worse than it was".
 #
-# Two-bone IK cannot reproduce every FK arm pose exactly -- the shoulder is
-# solved, not copied -- so agreement on the Smash arm chains is approximate,
-# worst around 0.42 on a hard frame with a median near 0.039. That is
-# pre-existing and unrelated to the speedups; see the note in
-# docs/superpowers/specs/2026-09-10-ik-performance-design.md.
-TOLERANCE = float(os.environ.get('SUB_FIDELITY_TOLERANCE', '0.45'))
-MEDIAN_TOLERANCE = float(os.environ.get('SUB_FIDELITY_MEDIAN', '0.05'))
+# Pole IK still cannot reproduce every FK arm pose on its own -- the shoulder
+# is solved, not copied, and this rig was worst around 0.42 with a median near
+# 0.039 while that was all the rig could do. The BL_SUB_IK_MATCH_ correction
+# bones remove that gap entirely: each one keys the residual between the
+# solved pose and the sampled FK pose, and the pull chain reads the correction
+# rather than the solver, so the deform bones land on FK to float precision.
+#
+# Measured on this rig with corrections active: worst 7.6e-06, median 9.5e-07,
+# p99 4.6e-06. The bounds below leave ~100x headroom over that and are
+# deliberately far below the drift a pole-only solve produces, because the
+# failure mode they exist to catch is a correction channel that quietly stops
+# being written -- which no other assertion in the suite notices.
+TOLERANCE = float(os.environ.get('SUB_FIDELITY_TOLERANCE', '1e-3'))
+MEDIAN_TOLERANCE = float(os.environ.get('SUB_FIDELITY_MEDIAN', '1e-4'))
 
 if not BASELINE.exists():
     print(f'SKIP ik match fidelity, no baseline at {BASELINE}')

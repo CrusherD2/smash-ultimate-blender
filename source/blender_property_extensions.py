@@ -19,6 +19,15 @@ def _update_idle_pose_folder(self, context):
     refresh_idle_poses(self)
 
 
+def _update_model_import_selection(self, context):
+    """Re-derive the eyelid default for the newly selected model."""
+    try:
+        from .model.import_model import sync_auto_import_default_eyelid
+        sync_auto_import_default_eyelid(self)
+    except Exception:
+        pass
+
+
 def _update_smash_viewport(self, context):
     try:
         from .extras.smash_viewport import update_smash_viewport
@@ -269,7 +278,8 @@ class SubSceneProperties(PropertyGroup):
     )
     model_import_models_index: IntProperty(
         name="Model Import Models Index",
-        default=0
+        default=0,
+        update=_update_model_import_selection,
     )
     model_export_arma: PointerProperty(
         name='Armature',
@@ -438,11 +448,6 @@ class SubSceneProperties(PropertyGroup):
         name="IK Enabled",
         description="Match and key existing IK controls to the idle pose at this frame",
         default=False,
-    )
-    idle_pose_exclude_fixed_bones: BoolProperty(
-        name="Exclude LegC and ClavicleC",
-        description="Leave LegC and ClavicleC bones unchanged and do not key them when applying an idle pose",
-        default=True,
     )
     idle_pose_include_trans: BoolProperty(
         name="Include Trans Bone",

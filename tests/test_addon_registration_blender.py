@@ -68,6 +68,32 @@ for name in required:
 assert bpy.types.Panel.bl_rna_get_subclass_py('SUB_PT_animation_tools').poll(bpy.context)
 assert bpy.types.Panel.bl_rna_get_subclass_py('SUB_PT_panel_presets') is not None
 
+# The '?' help header is on by default and drops out when the preference is off.
+# This test profile has no installed add-on entry, so stand in for its preferences.
+from types import SimpleNamespace
+from unittest.mock import Mock
+help_ui = importlib.import_module(MODULE + '.source.ui_help')
+prefs_module = importlib.import_module(MODULE + '.source.addon_preferences')
+assert prefs_module.SUB_AddonPreferences.bl_rna.properties['show_panel_help_buttons'].default is True
+panel_cls = bpy.types.Panel.bl_rna_get_subclass_py('SUB_PT_import_model')
+panel = type(panel_cls.__name__, (), {
+    '__module__': panel_cls.__module__,
+    'bl_space_type': panel_cls.bl_space_type,
+    'bl_region_type': panel_cls.bl_region_type,
+    'bl_category': panel_cls.bl_category,
+})()
+layout = Mock()
+help_ui.draw_panel_help(layout, panel)
+layout.row.assert_called_once()
+original_prefs = prefs_module.get_addon_preferences
+prefs_module.get_addon_preferences = lambda context=None: SimpleNamespace(show_panel_help_buttons=False)
+try:
+    layout = Mock()
+    help_ui.draw_panel_help(layout, panel)
+    layout.row.assert_not_called()
+finally:
+    prefs_module.get_addon_preferences = original_prefs
+
 addon_utils.disable(MODULE, default_set=False, handle_error=on_error)
 assert not errors, '\n'.join(errors)
 assert not bpy.app.timers.is_registered(floor._restore_contacts)

@@ -258,12 +258,16 @@ def check_missing_materials(scene):
                     check_id='missing_materials',
                     severity=ERROR,
                     message=f'"{material.name}" has no Smash shader label.',
-                    detail=f'Used by "{mesh.name}". Convert it with Material Tools, or set a '
+                    detail=f'Used by "{mesh.name}". Convert it to a Smash material, or set a '
                            'shader label so a .numatb entry can be written.',
                     target_type=TARGET_MATERIAL,
                     target_name=mesh.name,
                     sub_target=material.name,
                     blocking=True,
+                    fix_id='convert_blender_material',
+                    fix_label='Convert to a Smash material',
+                    fix_is_safe=True,
+                    payload={'object': mesh.name, 'material': material.name},
                 ))
     return results
 
@@ -1323,6 +1327,50 @@ def _object_from(result, key='object'):
     if obj is None:
         raise LookupError(f'"{name}" is no longer in the file.')
     return obj
+
+
+class _FixReporter:
+    """Stand in for the Operator the material tools report through."""
+
+    def __init__(self):
+        self.messages = []
+
+    def report(self, _level, message):
+        self.messages.append(message)
+
+
+@fixer('convert_blender_material')
+def fix_convert_blender_material(context, result):
+    """Give a plain Blender material the Smash shader the exporter needs.
+
+    This is the diffuse-only conversion, not the PRM-baking one: a preflight
+    fix must not start a Cycles bake behind the user's back.
+    """
+    from ..model.material.convert_blender_material_original import (
+        convert_blender_material_original,
+        rename_mesh_attributes_of_meshes_using_material,
+    )
+
+    name = result.payload.get('material', result.sub_target)
+    material = bpy.data.materials.get(name)
+    if material is None:
+        return False, f'"{name}" is no longer in the file.'
+    sub_matl_data = getattr(material, 'sub_matl_data', None)
+    if getattr(sub_matl_data, 'shader_label', ''):
+        return True, f'"{material.name}" already has a Smash shader label.'
+
+    reporter = _FixReporter()
+    # The exporter rejects Blender's own attribute names, so rename first.
+    rename_mesh_attributes_of_meshes_using_material(reporter, material)
+    convert_blender_material_original(reporter, material)
+
+    sub_matl_data = getattr(material, 'sub_matl_data', None)
+    label = getattr(sub_matl_data, 'shader_label', '')
+    if not label:
+        detail = reporter.messages[0] if reporter.messages else 'no shader label was assigned.'
+        return False, f'Could not convert "{material.name}": {detail}'
+    suffix = f' ({reporter.messages[0]})' if reporter.messages else ''
+    return True, f'Converted "{material.name}" to the Smash shader {label}.{suffix}'
 
 
 @fixer('add_uv_map')

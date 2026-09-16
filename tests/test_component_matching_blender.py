@@ -39,18 +39,27 @@ assert not obj.data.bones['LidUpper'].hide
 c.hide_controlled=True
 original_curves=[(fc.data_path,fc.array_index,[(tuple(k.co)) for k in fc.keyframe_points]) for fc in curves.get_all_action_fcurves(obj.animation_data.action)]
 # Failure rolls back temporary input overrides and helper bones.
+#
+# Injected into _match_look_target rather than _fit. The iterative _fit is now
+# only reached when `fit_controls and fit_names_fallback`, and the analytic
+# paths added alongside it (_fit_transform_sliders, _match_eyes,
+# _match_look_target) cover every component kind this test builds -- so
+# patching _fit stopped injecting anything and this block silently verified
+# nothing but its own assertion. _match_look_target runs for the LOOK_TARGET
+# component below, and runs after _helpers has installed the temporary input
+# overrides, which is what the rollback being checked has to undo.
 names_before=set(obj.pose.bones.keys())
-original_fit=matching._fit
+original_fit=matching._match_look_target
 def fail(*args, **kwargs):
     raise RuntimeError('Injected fitting failure')
-matching._fit=fail
+matching._match_look_target=fail
 try:
     matching.match_animation(bpy.context,obj,1,4)
     raise AssertionError('Failure injection did not run')
 except RuntimeError as exc:
     assert 'Injected' in str(exc)
 finally:
-    matching._fit=original_fit
+    matching._match_look_target=original_fit
 assert set(obj.pose.bones.keys())==names_before
 assert not any(con.name.endswith(' Input') for p in obj.pose.bones for con in p.constraints)
 count,extra=matching.match_animation(bpy.context,obj,1,4)

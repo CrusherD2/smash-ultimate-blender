@@ -1,0 +1,256 @@
+{
+  "before": {
+    "blender": "5.2.1 LTS",
+    "source_sha256": "9725c5294afa68a763b0f005dee52caaa3560fb759932118ecef06ceab91983c",
+    "baseline": "C:\\Users\\notja\\Documents\\Coding\\SSBU Modding\\CrusherD2\\smash-ultimate-blender\\.tests\\benchmarks\\ik_apply\\out\\baseline.blend",
+    "rows": [
+      {
+        "phase": "BOTH",
+        "repeat": 0,
+        "seconds": 14.952001099998597,
+        "frames": 157,
+        "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+        "poses": "58ff9eaf74fa1aeef63b7f6e18d337b85951e69a32b7741b403d095e5185b8a1"
+      },
+      {
+        "phase": "ARMS",
+        "repeat": 0,
+        "seconds": 7.675470000016503,
+        "frames": 157,
+        "keys": "aec73b73cf201a1df82d29b6a8880146e0d44e12633bf8ab330aeb83272110ae",
+        "poses": "29bfa301a518c438bdb089ac5bb41062ec9d10ae649a238f0548ce89d35a9022"
+      },
+      {
+        "phase": "LEGS",
+        "repeat": 0,
+        "seconds": 8.014067700016312,
+        "frames": 157,
+        "keys": "d3f22217f9a591ce48d73a8d2c13320958336a804f13e2159e8ad22f8ef49c00",
+        "poses": "b2896efced57ea015f17ff5381779cef961ac012c904a7a1535216ad95f5a54f"
+      },
+      {
+        "phase": "CURRENT",
+        "repeat": 0,
+        "seconds": 0.14107069998863153,
+        "frames": 157,
+        "keys": "f9b4b5c342b7dd370d863192eb3311812be657ba218628d5c7bb92b6793d7e30",
+        "poses": "3c04fa5e2fa03f700568231f2c25ccf0034b5ecc249f973e44f95d6c1c13bc5a"
+      },
+      {
+        "phase": "IMPORT",
+        "repeat": 0,
+        "seconds": 37.76771780001582,
+        "frames": 372,
+        "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+        "poses": "29f6b42354026a59fd3c16d3569e529a6909a5a4a29f199fea0888da70f82848"
+      },
+      {
+        "phase": "BOTH",
+        "repeat": 1,
+        "seconds": 15.367490900011035,
+        "frames": 157,
+        "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+        "poses": "58ff9eaf74fa1aeef63b7f6e18d337b85951e69a32b7741b403d095e5185b8a1"
+      },
+      {
+        "phase": "ARMS",
+        "repeat": 1,
+        "seconds": 7.303203100018436,
+        "frames": 157,
+        "keys": "aec73b73cf201a1df82d29b6a8880146e0d44e12633bf8ab330aeb83272110ae",
+        "poses": "29bfa301a518c438bdb089ac5bb41062ec9d10ae649a238f0548ce89d35a9022"
+      },
+      {
+        "phase": "LEGS",
+        "repeat": 1,
+        "seconds": 6.72760269997525,
+        "frames": 157,
+        "keys": "d3f22217f9a591ce48d73a8d2c13320958336a804f13e2159e8ad22f8ef49c00",
+        "poses": "b2896efced57ea015f17ff5381779cef961ac012c904a7a1535216ad95f5a54f"
+      },
+      {
+        "phase": "CURRENT",
+        "repeat": 1,
+        "seconds": 0.1093500999850221,
+        "frames": 157,
+        "keys": "f9b4b5c342b7dd370d863192eb3311812be657ba218628d5c7bb92b6793d7e30",
+        "poses": "3c04fa5e2fa03f700568231f2c25ccf0034b5ecc249f973e44f95d6c1c13bc5a"
+      },
+      {
+        "phase": "IMPORT",
+        "repeat": 1,
+        "seconds": 31.45139560001553,
+        "frames": 372,
+        "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+        "poses": "29f6b42354026a59fd3c16d3569e529a6909a5a4a29f199fea0888da70f82848"
+      },
+      {
+        "phase": "BOTH",
+        "repeat": 2,
+        "seconds": 11.978540099982638,
+        "frames": 157,
+        "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+        "poses": "58ff9eaf74fa1aeef63b7f6e18d337b85951e69a32b7741b403d095e5185b8a1"
+      },
+      {
+        "phase": "ARMS",
+        "repeat": 2,
+        "seconds": 6.159662900026888,
+        "frames": 157,
+        "keys": "aec73b73cf201a1df82d29b6a8880146e0d44e12633bf8ab330aeb83272110ae",
+        "poses": "29bfa301a518c438bdb089ac5bb41062ec9d10ae649a238f0548ce89d35a9022"
+      },
+      {
+        "phase": "LEGS",
+        "repeat": 2,
+        "seconds": 6.129795200016815,
+        "frames": 157,
+        "keys": "d3f22217f9a591ce48d73a8d2c13320958336a804f13e2159e8ad22f8ef49c00",
+        "poses": "b2896efced57ea015f17ff5381779cef961ac012c904a7a1535216ad95f5a54f"
+      },
+      {
+        "phase": "CURRENT",
+        "repeat": 2,
+        "seconds": 0.09981349998270161,
+        "frames": 157,
+        "keys": "f9b4b5c342b7dd370d863192eb3311812be657ba218628d5c7bb92b6793d7e30",
+        "poses": "3c04fa5e2fa03f700568231f2c25ccf0034b5ecc249f973e44f95d6c1c13bc5a"
+      },
+      {
+        "phase": "IMPORT",
+        "repeat": 2,
+        "seconds": 35.26541769999312,
+        "frames": 372,
+        "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+        "poses": "29f6b42354026a59fd3c16d3569e529a6909a5a4a29f199fea0888da70f82848"
+      }
+    ]
+  },
+  "after": {
+    "blender": "5.2.1 LTS",
+    "source_sha256": "5f25d3060fb88d4671660979aaff431ed8e58a5bbdc036da6b3b04b6122779d5",
+    "baseline": "C:\\Users\\notja\\Documents\\Coding\\SSBU Modding\\CrusherD2\\smash-ultimate-blender\\.tests\\benchmarks\\ik_apply\\out\\baseline.blend",
+    "rows": [
+      {
+        "phase": "BOTH",
+        "repeat": 0,
+        "seconds": 3.812085899990052,
+        "frames": 157,
+        "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+        "poses": "a834a15d0257a18e98afd2580093f0891da20961ca5e7ae0a09803606463506e"
+      },
+      {
+        "phase": "ARMS",
+        "repeat": 0,
+        "seconds": 3.5923720999853685,
+        "frames": 157,
+        "keys": "aec73b73cf201a1df82d29b6a8880146e0d44e12633bf8ab330aeb83272110ae",
+        "poses": "2b3e19a20af635695de700b502a86240738493e0fe0adba95fefd7f774b0339e"
+      },
+      {
+        "phase": "LEGS",
+        "repeat": 0,
+        "seconds": 5.37968440001714,
+        "frames": 157,
+        "keys": "d3f22217f9a591ce48d73a8d2c13320958336a804f13e2159e8ad22f8ef49c00",
+        "poses": "594c4a6ea319730cacca69619f160624bac4bef35926b1dc2e3af87ace09bb04"
+      },
+      {
+        "phase": "CURRENT",
+        "repeat": 0,
+        "seconds": 0.06342740001855418,
+        "frames": 157,
+        "keys": "f9b4b5c342b7dd370d863192eb3311812be657ba218628d5c7bb92b6793d7e30",
+        "poses": "1fbe0a346dcb94c50e1f38e956d22d55712fc95ab02d5ed8ed125638938bfa25"
+      },
+      {
+        "phase": "IMPORT",
+        "repeat": 0,
+        "seconds": 11.266129199997522,
+        "frames": 372,
+        "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+        "poses": "ac62c7a95eb16b386c78aca0095152f4c136888aa79606f9171e057cd514bb56"
+      },
+      {
+        "phase": "BOTH",
+        "repeat": 1,
+        "seconds": 4.728982500004349,
+        "frames": 157,
+        "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+        "poses": "a834a15d0257a18e98afd2580093f0891da20961ca5e7ae0a09803606463506e"
+      },
+      {
+        "phase": "ARMS",
+        "repeat": 1,
+        "seconds": 4.685999400011497,
+        "frames": 157,
+        "keys": "aec73b73cf201a1df82d29b6a8880146e0d44e12633bf8ab330aeb83272110ae",
+        "poses": "2b3e19a20af635695de700b502a86240738493e0fe0adba95fefd7f774b0339e"
+      },
+      {
+        "phase": "LEGS",
+        "repeat": 1,
+        "seconds": 4.654991399991559,
+        "frames": 157,
+        "keys": "d3f22217f9a591ce48d73a8d2c13320958336a804f13e2159e8ad22f8ef49c00",
+        "poses": "594c4a6ea319730cacca69619f160624bac4bef35926b1dc2e3af87ace09bb04"
+      },
+      {
+        "phase": "CURRENT",
+        "repeat": 1,
+        "seconds": 0.06002920001628809,
+        "frames": 157,
+        "keys": "f9b4b5c342b7dd370d863192eb3311812be657ba218628d5c7bb92b6793d7e30",
+        "poses": "1fbe0a346dcb94c50e1f38e956d22d55712fc95ab02d5ed8ed125638938bfa25"
+      },
+      {
+        "phase": "IMPORT",
+        "repeat": 1,
+        "seconds": 12.19167520001065,
+        "frames": 372,
+        "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+        "poses": "ac62c7a95eb16b386c78aca0095152f4c136888aa79606f9171e057cd514bb56"
+      },
+      {
+        "phase": "BOTH",
+        "repeat": 2,
+        "seconds": 4.910948900011135,
+        "frames": 157,
+        "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+        "poses": "a834a15d0257a18e98afd2580093f0891da20961ca5e7ae0a09803606463506e"
+      },
+      {
+        "phase": "ARMS",
+        "repeat": 2,
+        "seconds": 4.83498509999481,
+        "frames": 157,
+        "keys": "aec73b73cf201a1df82d29b6a8880146e0d44e12633bf8ab330aeb83272110ae",
+        "poses": "2b3e19a20af635695de700b502a86240738493e0fe0adba95fefd7f774b0339e"
+      },
+      {
+        "phase": "LEGS",
+        "repeat": 2,
+        "seconds": 4.750262099987594,
+        "frames": 157,
+        "keys": "d3f22217f9a591ce48d73a8d2c13320958336a804f13e2159e8ad22f8ef49c00",
+        "poses": "594c4a6ea319730cacca69619f160624bac4bef35926b1dc2e3af87ace09bb04"
+      },
+      {
+        "phase": "CURRENT",
+        "repeat": 2,
+        "seconds": 0.07427820001612417,
+        "frames": 157,
+        "keys": "f9b4b5c342b7dd370d863192eb3311812be657ba218628d5c7bb92b6793d7e30",
+        "poses": "1fbe0a346dcb94c50e1f38e956d22d55712fc95ab02d5ed8ed125638938bfa25"
+      },
+      {
+        "phase": "IMPORT",
+        "repeat": 2,
+        "seconds": 12.11887679999927,
+        "frames": 372,
+        "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+        "poses": "ac62c7a95eb16b386c78aca0095152f4c136888aa79606f9171e057cd514bb56"
+      }
+    ]
+  }
+}

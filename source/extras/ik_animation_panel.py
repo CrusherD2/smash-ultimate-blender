@@ -36,8 +36,16 @@ class SUB_PT_ik_animation_tools(Panel):
 
         row = box.row(align=True)
         row.operator("sub.toggle_ik_influence", text="Toggle IK Influence", icon="MODIFIER")
-        from .create_animation_rig import find_target_armature
+        from .create_animation_rig import find_target_armature, off_mode_hiding_enabled
         arm = find_target_armature(context)
+        hiding = off_mode_hiding_enabled(arm)
+        row = box.row(align=True)
+        row.operator(
+            "sub.toggle_off_mode_bones",
+            text="Hide Off-Mode Bones" if hiding else "Show All Limb Bones",
+            icon="HIDE_ON" if hiding else "HIDE_OFF",
+            depress=hiding,
+        )
         if arm and arm.data.get('sub_independent_ik'):
             from .anim_rig_extras import _draw_ik_stretch_rows
             stretch_box = box.box()

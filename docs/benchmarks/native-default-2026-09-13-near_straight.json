@@ -1,0 +1,129 @@
+{
+  "corpus_selection": "near_straight",
+  "partial": "Narrowed run: SUB_IK_CORPUS was set, so this is not the corpus the default flip rests on. See native-default-2026-09-13.json for that.",
+  "generated": "2026-09-13",
+  "tolerance": {
+    "relative": 1e-05,
+    "pose": 0.0001,
+    "absolute": 1e-09
+  },
+  "baseline_variant": "blender",
+  "candidate_variant": "native",
+  "sources": [
+    "near_straight"
+  ],
+  "versions": {
+    "5.2": {
+      "blender": "5.2.1 LTS",
+      "run_count": 3,
+      "native_engaged": 3,
+      "guards_declined": [],
+      "failing_rows": [],
+      "max_pose_difference": 0.0,
+      "native_solves": 480,
+      "native_declined": 72,
+      "total_seconds_blender": 1.1819596000004822,
+      "total_seconds_native": 0.9497341000001143,
+      "speedup": 1.2445163335720386,
+      "elapsed": 5.247210300000006,
+      "runs": [
+        {
+          "source": "near_straight",
+          "blend": ".tests\\benchmarks\\ik_corpus\\near_straight.blend",
+          "scenario": "normal",
+          "limbs": "BOTH",
+          "frame_count": 40,
+          "bone_count": 12,
+          "native_solves": 160,
+          "native_declined": 19,
+          "decline_rate": 0.11875,
+          "engaged": true,
+          "guards_declined": false,
+          "declined_reason": null,
+          "candidates_blender": 2720,
+          "candidates_native": 323,
+          "total_residual_blender": 25999.26316217476,
+          "total_residual_native": 25999.26316217476,
+          "seconds_blender": 0.36376519999976153,
+          "seconds_native": 0.28419450000001234,
+          "verdict": {
+            "frames_worse": 0,
+            "frames_better": 0,
+            "frames_identical": 40,
+            "worst_relative_delta": 0.0,
+            "worst_relative_frame": null,
+            "median_delta": 0.0,
+            "total_delta": 0.0,
+            "max_pose_difference": 0.0,
+            "max_pose_difference_at": null,
+            "passed": true
+          }
+        },
+        {
+          "source": "near_straight",
+          "blend": ".tests\\benchmarks\\ik_corpus\\near_straight.blend",
+          "scenario": "parent_scale",
+          "limbs": "BOTH",
+          "frame_count": 40,
+          "bone_count": 12,
+          "native_solves": 160,
+          "native_declined": 34,
+          "decline_rate": 0.2125,
+          "engaged": true,
+          "guards_declined": false,
+          "declined_reason": null,
+          "candidates_blender": 2720,
+          "candidates_native": 578,
+          "total_residual_blender": 26638.57646152317,
+          "total_residual_native": 26638.57646152317,
+          "seconds_blender": 0.43254730000035124,
+          "seconds_native": 0.3879504999999881,
+          "verdict": {
+            "frames_worse": 0,
+            "frames_better": 0,
+            "frames_identical": 40,
+            "worst_relative_delta": 0.0,
+            "worst_relative_frame": null,
+            "median_delta": 0.0,
+            "total_delta": 0.0,
+            "max_pose_difference": 0.0,
+            "max_pose_difference_at": null,
+            "passed": true
+          }
+        },
+        {
+          "source": "near_straight",
+          "blend": ".tests\\benchmarks\\ik_corpus\\near_straight.blend",
+          "scenario": "stretch",
+          "limbs": "BOTH",
+          "frame_count": 40,
+          "bone_count": 12,
+          "native_solves": 160,
+          "native_declined": 19,
+          "decline_rate": 0.11875,
+          "engaged": true,
+          "guards_declined": false,
+          "declined_reason": null,
+          "candidates_blender": 2720,
+          "candidates_native": 323,
+          "total_residual_blender": 142629.4029759935,
+          "total_residual_native": 142629.4029759935,
+          "seconds_blender": 0.3856471000003694,
+          "seconds_native": 0.27758910000011383,
+          "verdict": {
+            "frames_worse": 0,
+            "frames_better": 0,
+            "frames_identical": 40,
+            "worst_relative_delta": 0.0,
+            "worst_relative_frame": null,
+            "median_delta": 0.0,
+            "total_delta": 0.0,
+            "max_pose_difference": 0.0,
+            "max_pose_difference_at": null,
+            "passed": true
+          }
+        }
+      ]
+    }
+  }
+}

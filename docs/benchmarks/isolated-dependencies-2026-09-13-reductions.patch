@@ -1,0 +1,229 @@
+# Removed: isolated-clone dependency reductions (SUB_IK_REDUCE)
+#
+# What this was: three candidate reductions to the isolated IK clone's
+# dependency graph (`action`, `pin`, `bbone`), gated behind the
+# `SUB_IK_REDUCE` environment variable, plus the harness code in `isolated()`
+# and `match()` that wired them in. Written and measured in Task 5.
+#
+# What happened to it: measured against the exact baseline on the 170-bone,
+# 240-frame Shy Guy fixture and rejected. `action` was exact but did not move
+# the dominant `search` stage (1.01x). `pin` was exact only via total
+# fallback -- it trips the existing rest-data guard and runs 2x SLOWER
+# (0.49x). `bbone` fired on zero bones on this fixture (untested, not
+# neutral). None qualified as both exact and faster, so Task 6 removed all
+# of it rather than default it on or leave it behind a flag. Full numbers
+# and reasoning: docs/benchmarks/isolated-dependencies-2026-09-13.md.
+#
+# This file is NOT applied by any script. It is a record of the exact code
+# that existed before Task 6's removal, in case the experiment needs to be
+# reproduced or re-run against a different fixture. Re-create each block
+# below at its call site to restore the removed behaviour; the surrounding
+# code (as of Task 6) is unchanged apart from these excisions, so each block
+# can be pasted back in with only the noted call-site edits.
+#
+# ============================================================================
+# 1) source/extras/ik_match_fast.py -- new module-level helpers
+#    (declared just below the `from . import pose_math, ik_match_diag as
+#    diag` import, and requires `import os` restored alongside the other
+#    imports at the top of the file)
+# ============================================================================
+
+# Experimental reductions to the isolated clone's dependency graph, measured by
+# tests/benchmark_isolated_dependencies_blender.py. Empty by default: each one
+# must be shown both exact and faster before it becomes a default.
+def _reductions():
+    return frozenset(f for f in os.environ.get('SUB_IK_REDUCE', '').split(',') if f)
+
+
+def _prune_action(clone, needed):
+    """Give the clone its own action with only the retained bones' channels.
+
+    obj.copy() shares the action datablock, so the copy must happen before any
+    curve is touched -- editing the user's own action would be data loss. The
+    returned action is removed by the caller's cleanup.
+    """
+    anim = clone.animation_data
+    if not anim or not anim.action:
+        return None
+    identifier = getattr(getattr(anim, 'action_slot', None), 'identifier', None)
+    action = anim.action.copy()
+    anim.action = action
+    if identifier is not None:
+        for slot in getattr(action, 'slots', ()):
+            if slot.identifier == identifier:
+                anim.action_slot = slot
+                break
+    keep = tuple(clone.pose.bones[n].path_from_id() + '.' for n in needed
+                 if n in clone.pose.bones)
+    from ..anim.fcurve_compat import get_all_action_fcurves, remove_fcurve
+    for fc in list(get_all_action_fcurves(action, id_type='OBJECT')):
+        if fc.data_path.startswith('pose.bones[') and not fc.data_path.startswith(keep):
+            remove_fcurve(action, fc, id_type='OBJECT')
+    return action
+
+
+def _collapse_bbones(data, needed):
+    """Drop B-Bone subdivision on retained bones.
+
+    Segment evaluation runs on every graph update. It should not be able to
+    move pb.matrix, which is the only thing the search reads -- but that is a
+    claim for the exactness gate to confirm, not an assumption to build on.
+    """
+    for bone in data.bones:
+        if bone.name in needed and bone.bbone_segments > 1:
+            bone.bbone_segments = 1
+
+
+def _pin_ancestors(context, scene, view, clone, data, needed, direct, sampled):
+    """Unparent retained bones that exist only to carry an ancestor pose.
+
+    A bone may be unparented only when its own world matrix is in the sampled
+    set, because the caller re-places it from that sample on every frame. Bones
+    without a sample keep their parent, and therefore keep their ancestors.
+
+    Parents that are themselves solve-relevant (``direct``) are left alone: the
+    win is cutting the link to ancestors that exist *only* as ancestors, and
+    those bones' poses move during the solve, so they must not be pinned away.
+
+    Rest data is untouched -- ``matrix_local`` is armature space and does not
+    depend on the parent -- and the caller's existing rest verification
+    re-checks that claim rather than trusting it.
+    """
+    candidates = []
+    for name in sorted(needed):
+        if name not in sampled:
+            continue
+        pose_bone = clone.pose.bones.get(name)
+        if pose_bone is None or pose_bone.parent is None:
+            continue
+        if pose_bone.parent.name in direct:
+            continue
+        # The caller places pinned bones with pose_math.apply_world, which
+        # declines bones outside the modeled inheritance case and would then
+        # leave them silently at rest.
+        if not pose_math.supports(pose_bone):
+            continue
+        candidates.append(name)
+    if not candidates:
+        return []
+    pinned = []
+    with context.temp_override(scene=scene, view_layer=view,
+                               object=clone, active_object=clone):
+        bpy.ops.object.mode_set(mode='EDIT')
+        for name in candidates:
+            bone = data.edit_bones.get(name)
+            if bone is None or bone.parent is None:
+                continue
+            # Clear the connection first so Blender cannot shift the head.
+            bone.use_connect = False
+            bone.parent = None
+            pinned.append(name)
+        bpy.ops.object.mode_set(mode='OBJECT')
+    return pinned
+
+# ============================================================================
+# 2) source/extras/ik_match_fast.py -- inside `isolated()`, between building
+#    `needed = _closure(clone, obj, direct)` / retargeting constraint
+#    targets, and the driver-prune block (`if clone.animation_data:`).
+#    Also requires `pinned = []` and `action = None` initialised before the
+#    outer `try:`, and the two yields widened from 3-tuples back to 4-tuples:
+#    `yield context, clone, scene, pinned` and
+#    `yield context, obj, context.scene, []`.
+# ============================================================================
+
+            # Reductions run before the driver prune so that a set `needed`
+            # shrunk by `pin` still drops the drivers of the bones it orphaned.
+            # With SUB_IK_REDUCE unset `needed` is untouched here and the prune
+            # sees exactly what it saw before.
+            reductions = _reductions()
+            if 'pin' in reductions:
+                sampled = set(ik._sample_names(obj, jobs, ik._chain_cache(obj, jobs)))
+                pinned = _pin_ancestors(context, scene, view, clone, data,
+                                        needed, direct, sampled)
+                if pinned:
+                    # Recompute from scratch so the now-orphaned ancestors drop
+                    # out before the edit-bone prune runs.
+                    needed = _closure(clone, obj, direct, pinned)
+                diag.note('pin', 'pinned_%d_kept_%d_of_%d'
+                          % (len(pinned), len(needed), len(obj.data.bones)))
+            if 'action' in reductions:
+                action = _prune_action(clone, needed)
+            if 'bbone' in reductions:
+                _collapse_bbones(data, needed)
+
+# ...and in the `finally:` cleanup block, after the scene/armature/object
+# removal:
+
+        if action is not None:
+            bpy.data.actions.remove(action)
+
+# ============================================================================
+# 3) source/extras/ik_match_diag.py -- module-level function, sat between
+#    `accept()` and `add()`
+# ============================================================================
+
+def note(guard, code):
+    """Record a free-form observation under `guard`, neither pass nor fail."""
+    _RECORD['reasons'][guard] = code
+
+# ============================================================================
+# 4) source/extras/ik_channels.py -- extension appended to `_sample_names()`,
+#    just before its final `return names` (which was `return
+#    list(dict.fromkeys(names))` before this extension existed, and is again
+#    after Task 6)
+# ============================================================================
+
+    names = list(dict.fromkeys(names))
+    # Also sample each of those bones' parents. Purely additive: an extra
+    # sampled bone costs sampling time and changes no output, and the
+    # isolated clone's `pin` reduction can only unparent a bone whose own
+    # world matrix is available to re-place it from.
+    for name in list(names):
+        pose_bone = obj.pose.bones.get(name)
+        parent = pose_bone.parent if pose_bone is not None else None
+        if parent is not None and parent.name not in names:
+            names.append(parent.name)
+    return names
+
+# ============================================================================
+# 5) source/extras/ik_channels.py -- inside `match()`, the isolation
+#    call site. Restores the 4-tuple unpack and the `pin` placement loop.
+#    Task 6's version reads:
+#
+#        solve_context = (ik_match_fast.isolated(context, obj, jobs, sys.modules[__name__])
+#                         if fast and ik_match_fast.can_isolate(obj, jobs, sys.modules[__name__])
+#                         else nullcontext((context, obj, scene)))
+#        with solve_context as (work_context, work_obj, work_scene):
+#            for frame, matrices in samples.items():
+#                work_scene.frame_set(frame)
+#                with diag.stage('place'):
+#                    ...
+#
+#    Restore it to:
+# ============================================================================
+
+                solve_context = (ik_match_fast.isolated(context, obj, jobs, sys.modules[__name__])
+                                 if fast and ik_match_fast.can_isolate(obj, jobs, sys.modules[__name__])
+                                 else nullcontext((context, obj, scene, [])))
+                with solve_context as (work_context, work_obj, work_scene, pinned):
+                    for frame, matrices in samples.items():
+                        work_scene.frame_set(frame)
+                        # Unparented by the clone's `pin` reduction: re-place
+                        # each from its sample. matrices[name] is indexed
+                        # unguarded on purpose -- a missing sample means `pin`
+                        # is unsound for this rig and must fail loudly.
+                        for name in pinned:
+                            pose_math.apply_world(work_obj.pose.bones[name],
+                                                  matrices[name], None)
+                        with diag.stage('place'):
+                            ...
+
+# ============================================================================
+# 6) tests/test_ik_match_fast_blender.py -- the `isolate` test stub's
+#    short-circuit yield, restored from the Task 6 3-tuple back to the
+#    4-tuple the harness above expects:
+# ============================================================================
+
+    if os.environ.get('SUB_FAST_TEST_MODE')=='sample':
+        yield context,obj,context.scene,[]
+        return

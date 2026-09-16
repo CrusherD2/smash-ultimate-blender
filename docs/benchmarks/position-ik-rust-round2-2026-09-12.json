@@ -1,0 +1,1770 @@
+{
+  "date": "2026-09-12",
+  "default_native_threads": 1,
+  "production_enabled": false,
+  "platforms": [
+    "Windows x64"
+  ],
+  "blender_series": [
+    "4.5",
+    "5.2"
+  ],
+  "exact_pairs": 48,
+  "benchmarks": {
+    "rust_final_one_4.5": {
+      "blender": "4.5.7 LTS",
+      "source_sha256": "e610e9460656880378dfda2d4dbb83df7f64f0ac4ba43bf0b1f797cfcd093495",
+      "source_hashes": {
+        "after": "e610e9460656880378dfda2d4dbb83df7f64f0ac4ba43bf0b1f797cfcd093495",
+        "before": "169aa978bd6649592a0b8aa3524dda124c380bb67b9227e3375b1cd44c307991"
+      },
+      "subdivision": 0,
+      "baseline": "C:\\Users\\notja\\Documents\\Coding\\SSBU Modding\\CrusherD2\\smash-ultimate-blender\\.tests\\benchmarks\\ik_apply\\out\\baseline.blend",
+      "rows": [
+        {
+          "phase": "BOTH",
+          "repeat": 0,
+          "variant": "before",
+          "seconds": 2.5153312000329606,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "cb32b5b49345a7ad96be3c8c33e2c7cf3efeeb0153202d496bb0be30700ce52a"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 0,
+          "variant": "after",
+          "seconds": 1.273283899994567,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "cb32b5b49345a7ad96be3c8c33e2c7cf3efeeb0153202d496bb0be30700ce52a"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 0,
+          "variant": "before",
+          "seconds": 7.347836400032975,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "008f549a8ae08874ebbaa3d0f241a3fa68a0997ef61f77cbae01fa0c113284c9"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 0,
+          "variant": "after",
+          "seconds": 4.242604699975345,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "008f549a8ae08874ebbaa3d0f241a3fa68a0997ef61f77cbae01fa0c113284c9"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 1,
+          "variant": "after",
+          "seconds": 1.2208112999796867,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "cb32b5b49345a7ad96be3c8c33e2c7cf3efeeb0153202d496bb0be30700ce52a"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 1,
+          "variant": "before",
+          "seconds": 2.5458660000003874,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "cb32b5b49345a7ad96be3c8c33e2c7cf3efeeb0153202d496bb0be30700ce52a"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 1,
+          "variant": "after",
+          "seconds": 4.208297400036827,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "008f549a8ae08874ebbaa3d0f241a3fa68a0997ef61f77cbae01fa0c113284c9"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 1,
+          "variant": "before",
+          "seconds": 6.966869599942584,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "008f549a8ae08874ebbaa3d0f241a3fa68a0997ef61f77cbae01fa0c113284c9"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 2,
+          "variant": "before",
+          "seconds": 2.5440917999949306,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "cb32b5b49345a7ad96be3c8c33e2c7cf3efeeb0153202d496bb0be30700ce52a"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 2,
+          "variant": "after",
+          "seconds": 1.2026642999844626,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "cb32b5b49345a7ad96be3c8c33e2c7cf3efeeb0153202d496bb0be30700ce52a"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 2,
+          "variant": "before",
+          "seconds": 6.968051099975128,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "008f549a8ae08874ebbaa3d0f241a3fa68a0997ef61f77cbae01fa0c113284c9"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 2,
+          "variant": "after",
+          "seconds": 4.110754899971653,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "008f549a8ae08874ebbaa3d0f241a3fa68a0997ef61f77cbae01fa0c113284c9"
+        }
+      ],
+      "native_sha256": {
+        "source\\extras\\ik_channels.py": "c0466d09ff6bf365d3204dab00cb53f650fbb30fa7de88cbecd03040e7ea5a0e",
+        "source\\extras\\ik_native.py": "baea917105a91f742c594f91988c28bab32e6681ffa6e7a039684f0a462edb77",
+        "native\\ik_match\\Cargo.lock": "aeba452fd4e39727bdfbe339a7e63a9df06141a547fde1008d22002f65d07a66",
+        "native\\bin\\sub_ik_match_native.dll": "5bf2e6ddc70229da942cd8b19844db9a613932103dd0000965d4fcc5697503d4",
+        "native\\ik_match\\src\\capture.rs": "5d64a7dd1ff665aab7d38cfc9c01390ef496b1da8bb05be9127e77a5d22915d5",
+        "native\\ik_match\\src\\ffi.rs": "cb73988c705f09a2936a2ff145d4a5ea023d2c9382a222b0c87a461bea950f4a",
+        "native\\ik_match\\src\\inverse4.rs": "40b4801025a7e96a933418ad7f24f01721c181c588b9a80f55a190747b8f09c1",
+        "native\\ik_match\\src\\lib.rs": "621f3b08040e5b22c9a4f76a62a729a787b7a0d9f86a5202be3cfc3001681f20",
+        "native\\ik_match\\src\\main.rs": "42e572b50fd84b6bca983d087be8ad4c1c499273a7fa0cb89f1e921a953a7dfd",
+        "native\\ik_match\\src\\math.rs": "fc491d10431948689a518f62269afa64691040b9ece0c8f1ac0c7a9fcc64688a",
+        "native\\ik_match\\src\\pose.rs": "14f7782ae1996caa46c5d59d5d7b3a2936e100a2eec140afb7eacc97a082ee06",
+        "native\\ik_match\\src\\solver.rs": "a1de3a573edf336c8fdd129e17c0472c98aba1ea8f0142903dfe82085f9afaae"
+      },
+      "native_threads": 1,
+      "exact_pairs": 6
+    },
+    "rust_final_four_4.5": {
+      "blender": "4.5.7 LTS",
+      "source_sha256": "e610e9460656880378dfda2d4dbb83df7f64f0ac4ba43bf0b1f797cfcd093495",
+      "source_hashes": {
+        "after": "e610e9460656880378dfda2d4dbb83df7f64f0ac4ba43bf0b1f797cfcd093495",
+        "before": "169aa978bd6649592a0b8aa3524dda124c380bb67b9227e3375b1cd44c307991"
+      },
+      "subdivision": 0,
+      "baseline": "C:\\Users\\notja\\Documents\\Coding\\SSBU Modding\\CrusherD2\\smash-ultimate-blender\\.tests\\benchmarks\\ik_apply\\out\\baseline.blend",
+      "rows": [
+        {
+          "phase": "BOTH",
+          "repeat": 0,
+          "variant": "before",
+          "seconds": 2.624519499950111,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "b7a85ab5912f7df1633609458c454c62ac2b1ef43d4eb2c7e7e765500d0cfb21"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 0,
+          "variant": "after",
+          "seconds": 1.4400257999659516,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "b7a85ab5912f7df1633609458c454c62ac2b1ef43d4eb2c7e7e765500d0cfb21"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 0,
+          "variant": "before",
+          "seconds": 7.02611189999152,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "806a83ad3c4f58cfba5759374154325750e9cd47885f3cb69e0c4b98ead074ec"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 0,
+          "variant": "after",
+          "seconds": 4.435139999957755,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "806a83ad3c4f58cfba5759374154325750e9cd47885f3cb69e0c4b98ead074ec"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 1,
+          "variant": "after",
+          "seconds": 1.3362406000378542,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "b7a85ab5912f7df1633609458c454c62ac2b1ef43d4eb2c7e7e765500d0cfb21"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 1,
+          "variant": "before",
+          "seconds": 2.559997199976351,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "b7a85ab5912f7df1633609458c454c62ac2b1ef43d4eb2c7e7e765500d0cfb21"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 1,
+          "variant": "after",
+          "seconds": 4.470049299998209,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "806a83ad3c4f58cfba5759374154325750e9cd47885f3cb69e0c4b98ead074ec"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 1,
+          "variant": "before",
+          "seconds": 7.010077100014314,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "806a83ad3c4f58cfba5759374154325750e9cd47885f3cb69e0c4b98ead074ec"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 2,
+          "variant": "before",
+          "seconds": 2.565870199992787,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "b7a85ab5912f7df1633609458c454c62ac2b1ef43d4eb2c7e7e765500d0cfb21"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 2,
+          "variant": "after",
+          "seconds": 1.3279656000086106,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "b7a85ab5912f7df1633609458c454c62ac2b1ef43d4eb2c7e7e765500d0cfb21"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 2,
+          "variant": "before",
+          "seconds": 7.122122999979183,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "806a83ad3c4f58cfba5759374154325750e9cd47885f3cb69e0c4b98ead074ec"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 2,
+          "variant": "after",
+          "seconds": 4.946782000013627,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "806a83ad3c4f58cfba5759374154325750e9cd47885f3cb69e0c4b98ead074ec"
+        }
+      ],
+      "native_sha256": {
+        "source\\extras\\ik_channels.py": "c0466d09ff6bf365d3204dab00cb53f650fbb30fa7de88cbecd03040e7ea5a0e",
+        "source\\extras\\ik_native.py": "baea917105a91f742c594f91988c28bab32e6681ffa6e7a039684f0a462edb77",
+        "native\\ik_match\\Cargo.lock": "aeba452fd4e39727bdfbe339a7e63a9df06141a547fde1008d22002f65d07a66",
+        "native\\bin\\sub_ik_match_native.dll": "5bf2e6ddc70229da942cd8b19844db9a613932103dd0000965d4fcc5697503d4",
+        "native\\ik_match\\src\\capture.rs": "5d64a7dd1ff665aab7d38cfc9c01390ef496b1da8bb05be9127e77a5d22915d5",
+        "native\\ik_match\\src\\ffi.rs": "cb73988c705f09a2936a2ff145d4a5ea023d2c9382a222b0c87a461bea950f4a",
+        "native\\ik_match\\src\\inverse4.rs": "40b4801025a7e96a933418ad7f24f01721c181c588b9a80f55a190747b8f09c1",
+        "native\\ik_match\\src\\lib.rs": "621f3b08040e5b22c9a4f76a62a729a787b7a0d9f86a5202be3cfc3001681f20",
+        "native\\ik_match\\src\\main.rs": "42e572b50fd84b6bca983d087be8ad4c1c499273a7fa0cb89f1e921a953a7dfd",
+        "native\\ik_match\\src\\math.rs": "fc491d10431948689a518f62269afa64691040b9ece0c8f1ac0c7a9fcc64688a",
+        "native\\ik_match\\src\\pose.rs": "14f7782ae1996caa46c5d59d5d7b3a2936e100a2eec140afb7eacc97a082ee06",
+        "native\\ik_match\\src\\solver.rs": "a1de3a573edf336c8fdd129e17c0472c98aba1ea8f0142903dfe82085f9afaae"
+      },
+      "native_threads": 4,
+      "exact_pairs": 6
+    },
+    "rust_final_5.2": {
+      "blender": "5.2.1 LTS",
+      "source_sha256": "e610e9460656880378dfda2d4dbb83df7f64f0ac4ba43bf0b1f797cfcd093495",
+      "source_hashes": {
+        "after": "e610e9460656880378dfda2d4dbb83df7f64f0ac4ba43bf0b1f797cfcd093495",
+        "before": "169aa978bd6649592a0b8aa3524dda124c380bb67b9227e3375b1cd44c307991"
+      },
+      "subdivision": 0,
+      "baseline": "C:\\Users\\notja\\Documents\\Coding\\SSBU Modding\\CrusherD2\\smash-ultimate-blender\\.tests\\benchmarks\\ik_apply\\out\\baseline.blend",
+      "rows": [
+        {
+          "phase": "BOTH",
+          "repeat": 0,
+          "variant": "before",
+          "seconds": 2.497031799983233,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "55a30e4ce1caa396e8e5093a1f7c0b1ccdb454a8e88603cd6b503eee47e631b6"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 0,
+          "variant": "after",
+          "seconds": 1.096262699982617,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "55a30e4ce1caa396e8e5093a1f7c0b1ccdb454a8e88603cd6b503eee47e631b6"
+        },
+        {
+          "phase": "ARMS",
+          "repeat": 0,
+          "variant": "before",
+          "seconds": 2.421844399999827,
+          "frames": 157,
+          "keys": "aec73b73cf201a1df82d29b6a8880146e0d44e12633bf8ab330aeb83272110ae",
+          "poses": "e3518230c9a20a40c5f4d521a0466ad684ee37596adc58ab010eeead40a2adeb"
+        },
+        {
+          "phase": "ARMS",
+          "repeat": 0,
+          "variant": "after",
+          "seconds": 0.800701099971775,
+          "frames": 157,
+          "keys": "aec73b73cf201a1df82d29b6a8880146e0d44e12633bf8ab330aeb83272110ae",
+          "poses": "e3518230c9a20a40c5f4d521a0466ad684ee37596adc58ab010eeead40a2adeb"
+        },
+        {
+          "phase": "LEGS",
+          "repeat": 0,
+          "variant": "before",
+          "seconds": 2.514922000002116,
+          "frames": 157,
+          "keys": "d3f22217f9a591ce48d73a8d2c13320958336a804f13e2159e8ad22f8ef49c00",
+          "poses": "6291893e26544aba764e9832bc95477940d317a9f8874b606edb9e3f06b17d34"
+        },
+        {
+          "phase": "LEGS",
+          "repeat": 0,
+          "variant": "after",
+          "seconds": 0.8582154999603517,
+          "frames": 157,
+          "keys": "d3f22217f9a591ce48d73a8d2c13320958336a804f13e2159e8ad22f8ef49c00",
+          "poses": "6291893e26544aba764e9832bc95477940d317a9f8874b606edb9e3f06b17d34"
+        },
+        {
+          "phase": "CURRENT",
+          "repeat": 0,
+          "variant": "before",
+          "seconds": 0.054536799958441406,
+          "frames": 157,
+          "keys": "f9b4b5c342b7dd370d863192eb3311812be657ba218628d5c7bb92b6793d7e30",
+          "poses": "3341cc5770cfd51069e839edd918851a036664f49af439c35ab9e8d03127247a"
+        },
+        {
+          "phase": "CURRENT",
+          "repeat": 0,
+          "variant": "after",
+          "seconds": 0.047936399991158396,
+          "frames": 157,
+          "keys": "f9b4b5c342b7dd370d863192eb3311812be657ba218628d5c7bb92b6793d7e30",
+          "poses": "3341cc5770cfd51069e839edd918851a036664f49af439c35ab9e8d03127247a"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 0,
+          "variant": "before",
+          "seconds": 7.0829718000022694,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "cc1d943a01eb8e3feca0fc7f2923da520cd9e8e96b00261094605602d80608f7"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 0,
+          "variant": "after",
+          "seconds": 3.8037458000471815,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "cc1d943a01eb8e3feca0fc7f2923da520cd9e8e96b00261094605602d80608f7"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 1,
+          "variant": "after",
+          "seconds": 1.4019229999976233,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "55a30e4ce1caa396e8e5093a1f7c0b1ccdb454a8e88603cd6b503eee47e631b6"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 1,
+          "variant": "before",
+          "seconds": 2.999790200032294,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "55a30e4ce1caa396e8e5093a1f7c0b1ccdb454a8e88603cd6b503eee47e631b6"
+        },
+        {
+          "phase": "ARMS",
+          "repeat": 1,
+          "variant": "after",
+          "seconds": 0.9347488000057638,
+          "frames": 157,
+          "keys": "aec73b73cf201a1df82d29b6a8880146e0d44e12633bf8ab330aeb83272110ae",
+          "poses": "e3518230c9a20a40c5f4d521a0466ad684ee37596adc58ab010eeead40a2adeb"
+        },
+        {
+          "phase": "ARMS",
+          "repeat": 1,
+          "variant": "before",
+          "seconds": 2.8437108999933116,
+          "frames": 157,
+          "keys": "aec73b73cf201a1df82d29b6a8880146e0d44e12633bf8ab330aeb83272110ae",
+          "poses": "e3518230c9a20a40c5f4d521a0466ad684ee37596adc58ab010eeead40a2adeb"
+        },
+        {
+          "phase": "LEGS",
+          "repeat": 1,
+          "variant": "after",
+          "seconds": 0.9540571999968961,
+          "frames": 157,
+          "keys": "d3f22217f9a591ce48d73a8d2c13320958336a804f13e2159e8ad22f8ef49c00",
+          "poses": "6291893e26544aba764e9832bc95477940d317a9f8874b606edb9e3f06b17d34"
+        },
+        {
+          "phase": "LEGS",
+          "repeat": 1,
+          "variant": "before",
+          "seconds": 2.9964218999957666,
+          "frames": 157,
+          "keys": "d3f22217f9a591ce48d73a8d2c13320958336a804f13e2159e8ad22f8ef49c00",
+          "poses": "6291893e26544aba764e9832bc95477940d317a9f8874b606edb9e3f06b17d34"
+        },
+        {
+          "phase": "CURRENT",
+          "repeat": 1,
+          "variant": "after",
+          "seconds": 0.05522779998136684,
+          "frames": 157,
+          "keys": "f9b4b5c342b7dd370d863192eb3311812be657ba218628d5c7bb92b6793d7e30",
+          "poses": "3341cc5770cfd51069e839edd918851a036664f49af439c35ab9e8d03127247a"
+        },
+        {
+          "phase": "CURRENT",
+          "repeat": 1,
+          "variant": "before",
+          "seconds": 0.05677189998095855,
+          "frames": 157,
+          "keys": "f9b4b5c342b7dd370d863192eb3311812be657ba218628d5c7bb92b6793d7e30",
+          "poses": "3341cc5770cfd51069e839edd918851a036664f49af439c35ab9e8d03127247a"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 1,
+          "variant": "after",
+          "seconds": 4.227685599995311,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "cc1d943a01eb8e3feca0fc7f2923da520cd9e8e96b00261094605602d80608f7"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 1,
+          "variant": "before",
+          "seconds": 7.830936300044414,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "cc1d943a01eb8e3feca0fc7f2923da520cd9e8e96b00261094605602d80608f7"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 2,
+          "variant": "before",
+          "seconds": 3.131518700043671,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "55a30e4ce1caa396e8e5093a1f7c0b1ccdb454a8e88603cd6b503eee47e631b6"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 2,
+          "variant": "after",
+          "seconds": 1.2125727999955416,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "55a30e4ce1caa396e8e5093a1f7c0b1ccdb454a8e88603cd6b503eee47e631b6"
+        },
+        {
+          "phase": "ARMS",
+          "repeat": 2,
+          "variant": "before",
+          "seconds": 2.7576179999741726,
+          "frames": 157,
+          "keys": "aec73b73cf201a1df82d29b6a8880146e0d44e12633bf8ab330aeb83272110ae",
+          "poses": "e3518230c9a20a40c5f4d521a0466ad684ee37596adc58ab010eeead40a2adeb"
+        },
+        {
+          "phase": "ARMS",
+          "repeat": 2,
+          "variant": "after",
+          "seconds": 0.8914500999962911,
+          "frames": 157,
+          "keys": "aec73b73cf201a1df82d29b6a8880146e0d44e12633bf8ab330aeb83272110ae",
+          "poses": "e3518230c9a20a40c5f4d521a0466ad684ee37596adc58ab010eeead40a2adeb"
+        },
+        {
+          "phase": "LEGS",
+          "repeat": 2,
+          "variant": "before",
+          "seconds": 2.87110930000199,
+          "frames": 157,
+          "keys": "d3f22217f9a591ce48d73a8d2c13320958336a804f13e2159e8ad22f8ef49c00",
+          "poses": "6291893e26544aba764e9832bc95477940d317a9f8874b606edb9e3f06b17d34"
+        },
+        {
+          "phase": "LEGS",
+          "repeat": 2,
+          "variant": "after",
+          "seconds": 0.9904161000158638,
+          "frames": 157,
+          "keys": "d3f22217f9a591ce48d73a8d2c13320958336a804f13e2159e8ad22f8ef49c00",
+          "poses": "6291893e26544aba764e9832bc95477940d317a9f8874b606edb9e3f06b17d34"
+        },
+        {
+          "phase": "CURRENT",
+          "repeat": 2,
+          "variant": "before",
+          "seconds": 0.05939330003457144,
+          "frames": 157,
+          "keys": "f9b4b5c342b7dd370d863192eb3311812be657ba218628d5c7bb92b6793d7e30",
+          "poses": "3341cc5770cfd51069e839edd918851a036664f49af439c35ab9e8d03127247a"
+        },
+        {
+          "phase": "CURRENT",
+          "repeat": 2,
+          "variant": "after",
+          "seconds": 0.044022500049322844,
+          "frames": 157,
+          "keys": "f9b4b5c342b7dd370d863192eb3311812be657ba218628d5c7bb92b6793d7e30",
+          "poses": "3341cc5770cfd51069e839edd918851a036664f49af439c35ab9e8d03127247a"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 2,
+          "variant": "before",
+          "seconds": 7.911378999997396,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "cc1d943a01eb8e3feca0fc7f2923da520cd9e8e96b00261094605602d80608f7"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 2,
+          "variant": "after",
+          "seconds": 4.224419899983332,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "cc1d943a01eb8e3feca0fc7f2923da520cd9e8e96b00261094605602d80608f7"
+        }
+      ],
+      "native_sha256": {
+        "source\\extras\\ik_channels.py": "c0466d09ff6bf365d3204dab00cb53f650fbb30fa7de88cbecd03040e7ea5a0e",
+        "source\\extras\\ik_native.py": "3ef9ac13f561233b7b164079a6d6be2e1aecc49307f54833857aa754daf28f45",
+        "native\\ik_match\\Cargo.lock": "aeba452fd4e39727bdfbe339a7e63a9df06141a547fde1008d22002f65d07a66",
+        "native\\bin\\sub_ik_match_native.dll": "5bf2e6ddc70229da942cd8b19844db9a613932103dd0000965d4fcc5697503d4",
+        "native\\ik_match\\src\\capture.rs": "5d64a7dd1ff665aab7d38cfc9c01390ef496b1da8bb05be9127e77a5d22915d5",
+        "native\\ik_match\\src\\ffi.rs": "cb73988c705f09a2936a2ff145d4a5ea023d2c9382a222b0c87a461bea950f4a",
+        "native\\ik_match\\src\\inverse4.rs": "40b4801025a7e96a933418ad7f24f01721c181c588b9a80f55a190747b8f09c1",
+        "native\\ik_match\\src\\lib.rs": "621f3b08040e5b22c9a4f76a62a729a787b7a0d9f86a5202be3cfc3001681f20",
+        "native\\ik_match\\src\\main.rs": "42e572b50fd84b6bca983d087be8ad4c1c499273a7fa0cb89f1e921a953a7dfd",
+        "native\\ik_match\\src\\math.rs": "fc491d10431948689a518f62269afa64691040b9ece0c8f1ac0c7a9fcc64688a",
+        "native\\ik_match\\src\\pose.rs": "14f7782ae1996caa46c5d59d5d7b3a2936e100a2eec140afb7eacc97a082ee06",
+        "native\\ik_match\\src\\solver.rs": "a1de3a573edf336c8fdd129e17c0472c98aba1ea8f0142903dfe82085f9afaae"
+      },
+      "native_threads": 1,
+      "exact_pairs": 15
+    },
+    "rust_modes_4.5": {
+      "blender": "4.5.7 LTS",
+      "source_sha256": "e610e9460656880378dfda2d4dbb83df7f64f0ac4ba43bf0b1f797cfcd093495",
+      "source_hashes": {
+        "after": "e610e9460656880378dfda2d4dbb83df7f64f0ac4ba43bf0b1f797cfcd093495",
+        "before": "169aa978bd6649592a0b8aa3524dda124c380bb67b9227e3375b1cd44c307991"
+      },
+      "subdivision": 0,
+      "baseline": "C:\\Users\\notja\\Documents\\Coding\\SSBU Modding\\CrusherD2\\smash-ultimate-blender\\.tests\\benchmarks\\ik_apply\\out\\baseline.blend",
+      "rows": [
+        {
+          "phase": "ARMS",
+          "repeat": 0,
+          "variant": "before",
+          "seconds": 2.7940366999828257,
+          "frames": 157,
+          "keys": "aec73b73cf201a1df82d29b6a8880146e0d44e12633bf8ab330aeb83272110ae",
+          "poses": "29875b99d9204ff913901427e6fa3f0794deb3fbe2686a0869dcf4f97af4d6d5"
+        },
+        {
+          "phase": "ARMS",
+          "repeat": 0,
+          "variant": "after",
+          "seconds": 1.116610400029458,
+          "frames": 157,
+          "keys": "aec73b73cf201a1df82d29b6a8880146e0d44e12633bf8ab330aeb83272110ae",
+          "poses": "29875b99d9204ff913901427e6fa3f0794deb3fbe2686a0869dcf4f97af4d6d5"
+        },
+        {
+          "phase": "LEGS",
+          "repeat": 0,
+          "variant": "before",
+          "seconds": 2.9736093999817967,
+          "frames": 157,
+          "keys": "d3f22217f9a591ce48d73a8d2c13320958336a804f13e2159e8ad22f8ef49c00",
+          "poses": "662436bf6724faf529ca2150d9b99c7ec13fdf295a0d6500db92c58b0bc58aae"
+        },
+        {
+          "phase": "LEGS",
+          "repeat": 0,
+          "variant": "after",
+          "seconds": 1.2217052000341937,
+          "frames": 157,
+          "keys": "d3f22217f9a591ce48d73a8d2c13320958336a804f13e2159e8ad22f8ef49c00",
+          "poses": "662436bf6724faf529ca2150d9b99c7ec13fdf295a0d6500db92c58b0bc58aae"
+        },
+        {
+          "phase": "CURRENT",
+          "repeat": 0,
+          "variant": "before",
+          "seconds": 0.07195999997202307,
+          "frames": 157,
+          "keys": "f9b4b5c342b7dd370d863192eb3311812be657ba218628d5c7bb92b6793d7e30",
+          "poses": "93e3e7c7144c3c71375e7d9586cbb2cd48449a9be778e540084144f6685204cf"
+        },
+        {
+          "phase": "CURRENT",
+          "repeat": 0,
+          "variant": "after",
+          "seconds": 0.04745409998577088,
+          "frames": 157,
+          "keys": "f9b4b5c342b7dd370d863192eb3311812be657ba218628d5c7bb92b6793d7e30",
+          "poses": "93e3e7c7144c3c71375e7d9586cbb2cd48449a9be778e540084144f6685204cf"
+        }
+      ],
+      "native_sha256": {
+        "source\\extras\\ik_channels.py": "c0466d09ff6bf365d3204dab00cb53f650fbb30fa7de88cbecd03040e7ea5a0e",
+        "source\\extras\\ik_native.py": "3ef9ac13f561233b7b164079a6d6be2e1aecc49307f54833857aa754daf28f45",
+        "native\\ik_match\\Cargo.lock": "aeba452fd4e39727bdfbe339a7e63a9df06141a547fde1008d22002f65d07a66",
+        "native\\bin\\sub_ik_match_native.dll": "5bf2e6ddc70229da942cd8b19844db9a613932103dd0000965d4fcc5697503d4",
+        "native\\ik_match\\src\\capture.rs": "5d64a7dd1ff665aab7d38cfc9c01390ef496b1da8bb05be9127e77a5d22915d5",
+        "native\\ik_match\\src\\ffi.rs": "cb73988c705f09a2936a2ff145d4a5ea023d2c9382a222b0c87a461bea950f4a",
+        "native\\ik_match\\src\\inverse4.rs": "40b4801025a7e96a933418ad7f24f01721c181c588b9a80f55a190747b8f09c1",
+        "native\\ik_match\\src\\lib.rs": "621f3b08040e5b22c9a4f76a62a729a787b7a0d9f86a5202be3cfc3001681f20",
+        "native\\ik_match\\src\\main.rs": "42e572b50fd84b6bca983d087be8ad4c1c499273a7fa0cb89f1e921a953a7dfd",
+        "native\\ik_match\\src\\math.rs": "fc491d10431948689a518f62269afa64691040b9ece0c8f1ac0c7a9fcc64688a",
+        "native\\ik_match\\src\\pose.rs": "14f7782ae1996caa46c5d59d5d7b3a2936e100a2eec140afb7eacc97a082ee06",
+        "native\\ik_match\\src\\solver.rs": "a1de3a573edf336c8fdd129e17c0472c98aba1ea8f0142903dfe82085f9afaae"
+      },
+      "native_threads": 1,
+      "exact_pairs": 3
+    },
+    "rust_experimental_current_4.5": {
+      "blender": "4.5.7 LTS",
+      "source_sha256": "cb087162052a8cace77aadaf51c7dbc64855edb20a365f018ef98eb57afbc3f3",
+      "source_hashes": {
+        "after": "cb087162052a8cace77aadaf51c7dbc64855edb20a365f018ef98eb57afbc3f3",
+        "before": "169aa978bd6649592a0b8aa3524dda124c380bb67b9227e3375b1cd44c307991"
+      },
+      "subdivision": 0,
+      "baseline": "C:\\Users\\notja\\Documents\\Coding\\SSBU Modding\\CrusherD2\\smash-ultimate-blender\\.tests\\benchmarks\\ik_apply\\out\\baseline.blend",
+      "rows": [
+        {
+          "phase": "BOTH",
+          "repeat": 0,
+          "variant": "before",
+          "seconds": 2.8089059999911115,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "20652dc393fc11fd8976c53eff0a53c570c6f4785b5ccf1a3e703962bec50a25"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 0,
+          "variant": "after",
+          "seconds": 1.3756343999993987,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "20652dc393fc11fd8976c53eff0a53c570c6f4785b5ccf1a3e703962bec50a25"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 0,
+          "variant": "before",
+          "seconds": 7.67293169995537,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "8c915ec557bb3746d1e30b90d89e384febb37b1afe54a7834e081d7741ac032d"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 0,
+          "variant": "after",
+          "seconds": 4.482250200002454,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "8c915ec557bb3746d1e30b90d89e384febb37b1afe54a7834e081d7741ac032d"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 1,
+          "variant": "after",
+          "seconds": 1.3479383999947459,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "20652dc393fc11fd8976c53eff0a53c570c6f4785b5ccf1a3e703962bec50a25"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 1,
+          "variant": "before",
+          "seconds": 2.9340757000027224,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "20652dc393fc11fd8976c53eff0a53c570c6f4785b5ccf1a3e703962bec50a25"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 1,
+          "variant": "after",
+          "seconds": 4.5214843999710865,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "8c915ec557bb3746d1e30b90d89e384febb37b1afe54a7834e081d7741ac032d"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 1,
+          "variant": "before",
+          "seconds": 8.344535399985034,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "8c915ec557bb3746d1e30b90d89e384febb37b1afe54a7834e081d7741ac032d"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 2,
+          "variant": "before",
+          "seconds": 2.870785299979616,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "20652dc393fc11fd8976c53eff0a53c570c6f4785b5ccf1a3e703962bec50a25"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 2,
+          "variant": "after",
+          "seconds": 1.3217410999932326,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "20652dc393fc11fd8976c53eff0a53c570c6f4785b5ccf1a3e703962bec50a25"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 2,
+          "variant": "before",
+          "seconds": 7.8861273000366054,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "8c915ec557bb3746d1e30b90d89e384febb37b1afe54a7834e081d7741ac032d"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 2,
+          "variant": "after",
+          "seconds": 4.533118100021966,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "8c915ec557bb3746d1e30b90d89e384febb37b1afe54a7834e081d7741ac032d"
+        }
+      ],
+      "native_sha256": {
+        "source\\extras\\ik_channels.py": "c0466d09ff6bf365d3204dab00cb53f650fbb30fa7de88cbecd03040e7ea5a0e",
+        "source\\extras\\ik_native.py": "9a99f06d5434d9764209686d7387e65e00412ca874a207182e40f5bd2fbfafd2",
+        "native\\ik_match\\Cargo.lock": "aeba452fd4e39727bdfbe339a7e63a9df06141a547fde1008d22002f65d07a66",
+        "native\\bin\\sub_ik_match_native.dll": "6354db10da67472659113f27c2fe2b328a81cf579b92393977ae07f0ba418eed",
+        "native\\ik_match\\src\\capture.rs": "5d64a7dd1ff665aab7d38cfc9c01390ef496b1da8bb05be9127e77a5d22915d5",
+        "native\\ik_match\\src\\ffi.rs": "cb73988c705f09a2936a2ff145d4a5ea023d2c9382a222b0c87a461bea950f4a",
+        "native\\ik_match\\src\\inverse4.rs": "40b4801025a7e96a933418ad7f24f01721c181c588b9a80f55a190747b8f09c1",
+        "native\\ik_match\\src\\lib.rs": "621f3b08040e5b22c9a4f76a62a729a787b7a0d9f86a5202be3cfc3001681f20",
+        "native\\ik_match\\src\\main.rs": "42e572b50fd84b6bca983d087be8ad4c1c499273a7fa0cb89f1e921a953a7dfd",
+        "native\\ik_match\\src\\math.rs": "fc491d10431948689a518f62269afa64691040b9ece0c8f1ac0c7a9fcc64688a",
+        "native\\ik_match\\src\\pose.rs": "7e57e4a6b1d3729ea636fca5a8dc4acae06b7da76730ed81a7e0380065c1662f",
+        "native\\ik_match\\src\\solver.rs": "d1b1f5986323e31f4eb8d05c3e43e8641dc61974606a1395714e5b5059290385"
+      },
+      "native_threads": 1,
+      "native_mode": "experimental",
+      "exact_pairs": 6
+    },
+    "rust_experimental_current_5.2": {
+      "blender": "5.2.1 LTS",
+      "source_sha256": "cb087162052a8cace77aadaf51c7dbc64855edb20a365f018ef98eb57afbc3f3",
+      "source_hashes": {
+        "after": "cb087162052a8cace77aadaf51c7dbc64855edb20a365f018ef98eb57afbc3f3",
+        "before": "169aa978bd6649592a0b8aa3524dda124c380bb67b9227e3375b1cd44c307991"
+      },
+      "subdivision": 0,
+      "baseline": "C:\\Users\\notja\\Documents\\Coding\\SSBU Modding\\CrusherD2\\smash-ultimate-blender\\.tests\\benchmarks\\ik_apply\\out\\baseline.blend",
+      "rows": [
+        {
+          "phase": "BOTH",
+          "repeat": 0,
+          "variant": "before",
+          "seconds": 2.8174489999655634,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "2db419b3d1c708a2e44796637fe99ed35dafbf8d9475eb1322e5c8ab8c9d2c53"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 0,
+          "variant": "after",
+          "seconds": 1.1798891999642365,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "2db419b3d1c708a2e44796637fe99ed35dafbf8d9475eb1322e5c8ab8c9d2c53"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 0,
+          "variant": "before",
+          "seconds": 7.837025800021365,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "5c1fe9df8857e85e095bee4a9692a85fbce591478b462b93023a9d2ad548c5dd"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 0,
+          "variant": "after",
+          "seconds": 4.451148100022692,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "5c1fe9df8857e85e095bee4a9692a85fbce591478b462b93023a9d2ad548c5dd"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 1,
+          "variant": "after",
+          "seconds": 1.1781523000099696,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "2db419b3d1c708a2e44796637fe99ed35dafbf8d9475eb1322e5c8ab8c9d2c53"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 1,
+          "variant": "before",
+          "seconds": 2.922872200026177,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "2db419b3d1c708a2e44796637fe99ed35dafbf8d9475eb1322e5c8ab8c9d2c53"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 1,
+          "variant": "after",
+          "seconds": 4.314807800052222,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "5c1fe9df8857e85e095bee4a9692a85fbce591478b462b93023a9d2ad548c5dd"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 1,
+          "variant": "before",
+          "seconds": 8.132129199977499,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "5c1fe9df8857e85e095bee4a9692a85fbce591478b462b93023a9d2ad548c5dd"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 2,
+          "variant": "before",
+          "seconds": 2.956568799971137,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "2db419b3d1c708a2e44796637fe99ed35dafbf8d9475eb1322e5c8ab8c9d2c53"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 2,
+          "variant": "after",
+          "seconds": 1.242494500009343,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "2db419b3d1c708a2e44796637fe99ed35dafbf8d9475eb1322e5c8ab8c9d2c53"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 2,
+          "variant": "before",
+          "seconds": 7.983930399990641,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "5c1fe9df8857e85e095bee4a9692a85fbce591478b462b93023a9d2ad548c5dd"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 2,
+          "variant": "after",
+          "seconds": 4.305008299998008,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "5c1fe9df8857e85e095bee4a9692a85fbce591478b462b93023a9d2ad548c5dd"
+        }
+      ],
+      "native_sha256": {
+        "source\\extras\\ik_channels.py": "c0466d09ff6bf365d3204dab00cb53f650fbb30fa7de88cbecd03040e7ea5a0e",
+        "source\\extras\\ik_native.py": "9a99f06d5434d9764209686d7387e65e00412ca874a207182e40f5bd2fbfafd2",
+        "native\\ik_match\\Cargo.lock": "aeba452fd4e39727bdfbe339a7e63a9df06141a547fde1008d22002f65d07a66",
+        "native\\bin\\sub_ik_match_native.dll": "6354db10da67472659113f27c2fe2b328a81cf579b92393977ae07f0ba418eed",
+        "native\\ik_match\\src\\capture.rs": "5d64a7dd1ff665aab7d38cfc9c01390ef496b1da8bb05be9127e77a5d22915d5",
+        "native\\ik_match\\src\\ffi.rs": "cb73988c705f09a2936a2ff145d4a5ea023d2c9382a222b0c87a461bea950f4a",
+        "native\\ik_match\\src\\inverse4.rs": "40b4801025a7e96a933418ad7f24f01721c181c588b9a80f55a190747b8f09c1",
+        "native\\ik_match\\src\\lib.rs": "621f3b08040e5b22c9a4f76a62a729a787b7a0d9f86a5202be3cfc3001681f20",
+        "native\\ik_match\\src\\main.rs": "42e572b50fd84b6bca983d087be8ad4c1c499273a7fa0cb89f1e921a953a7dfd",
+        "native\\ik_match\\src\\math.rs": "fc491d10431948689a518f62269afa64691040b9ece0c8f1ac0c7a9fcc64688a",
+        "native\\ik_match\\src\\pose.rs": "7e57e4a6b1d3729ea636fca5a8dc4acae06b7da76730ed81a7e0380065c1662f",
+        "native\\ik_match\\src\\solver.rs": "d1b1f5986323e31f4eb8d05c3e43e8641dc61974606a1395714e5b5059290385"
+      },
+      "native_threads": 1,
+      "native_mode": "experimental",
+      "exact_pairs": 6
+    },
+    "rust_verified_4.5": {
+      "blender": "4.5.7 LTS",
+      "source_sha256": "e610e9460656880378dfda2d4dbb83df7f64f0ac4ba43bf0b1f797cfcd093495",
+      "source_hashes": {
+        "after": "e610e9460656880378dfda2d4dbb83df7f64f0ac4ba43bf0b1f797cfcd093495",
+        "before": "169aa978bd6649592a0b8aa3524dda124c380bb67b9227e3375b1cd44c307991"
+      },
+      "subdivision": 0,
+      "baseline": "C:\\Users\\notja\\Documents\\Coding\\SSBU Modding\\CrusherD2\\smash-ultimate-blender\\.tests\\benchmarks\\ik_apply\\out\\baseline.blend",
+      "rows": [
+        {
+          "phase": "BOTH",
+          "repeat": 0,
+          "variant": "before",
+          "seconds": 2.8040785000193864,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "78f6b02f6ca0470a4541a66cfffba1e80c75a93648ae953580c9acd2af541cfd"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 0,
+          "variant": "after",
+          "seconds": 3.584268200036604,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "78f6b02f6ca0470a4541a66cfffba1e80c75a93648ae953580c9acd2af541cfd"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 0,
+          "variant": "before",
+          "seconds": 7.729232500016224,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "7078da866a0c4b5b8d97121ce58b98fb7cc7abc87877ae8e3ee27ce12b7114a1"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 0,
+          "variant": "after",
+          "seconds": 9.394753800006583,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "7078da866a0c4b5b8d97121ce58b98fb7cc7abc87877ae8e3ee27ce12b7114a1"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 1,
+          "variant": "after",
+          "seconds": 3.639221200020984,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "78f6b02f6ca0470a4541a66cfffba1e80c75a93648ae953580c9acd2af541cfd"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 1,
+          "variant": "before",
+          "seconds": 2.9554430000134744,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "78f6b02f6ca0470a4541a66cfffba1e80c75a93648ae953580c9acd2af541cfd"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 1,
+          "variant": "after",
+          "seconds": 9.614579799992498,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "7078da866a0c4b5b8d97121ce58b98fb7cc7abc87877ae8e3ee27ce12b7114a1"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 1,
+          "variant": "before",
+          "seconds": 7.936623300018255,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "7078da866a0c4b5b8d97121ce58b98fb7cc7abc87877ae8e3ee27ce12b7114a1"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 2,
+          "variant": "before",
+          "seconds": 2.9312154999934137,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "78f6b02f6ca0470a4541a66cfffba1e80c75a93648ae953580c9acd2af541cfd"
+        },
+        {
+          "phase": "BOTH",
+          "repeat": 2,
+          "variant": "after",
+          "seconds": 3.577200300002005,
+          "frames": 157,
+          "keys": "54978a8eece59fe0e097a3eb06556da154f5c555af075282a7c5114e43613d14",
+          "poses": "78f6b02f6ca0470a4541a66cfffba1e80c75a93648ae953580c9acd2af541cfd"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 2,
+          "variant": "before",
+          "seconds": 7.9153104000142775,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "7078da866a0c4b5b8d97121ce58b98fb7cc7abc87877ae8e3ee27ce12b7114a1"
+        },
+        {
+          "phase": "IMPORT",
+          "repeat": 2,
+          "variant": "after",
+          "seconds": 9.533691100019496,
+          "frames": 372,
+          "keys": "5ca94bbd1192d25598fcddfbb8df220ac482af5b31816c41b01f097715291ced",
+          "poses": "7078da866a0c4b5b8d97121ce58b98fb7cc7abc87877ae8e3ee27ce12b7114a1"
+        }
+      ],
+      "native_sha256": {
+        "source\\extras\\ik_channels.py": "c0466d09ff6bf365d3204dab00cb53f650fbb30fa7de88cbecd03040e7ea5a0e",
+        "source\\extras\\ik_native.py": "9a99f06d5434d9764209686d7387e65e00412ca874a207182e40f5bd2fbfafd2",
+        "native\\ik_match\\Cargo.lock": "aeba452fd4e39727bdfbe339a7e63a9df06141a547fde1008d22002f65d07a66",
+        "native\\bin\\sub_ik_match_native.dll": "6354db10da67472659113f27c2fe2b328a81cf579b92393977ae07f0ba418eed",
+        "native\\ik_match\\src\\capture.rs": "5d64a7dd1ff665aab7d38cfc9c01390ef496b1da8bb05be9127e77a5d22915d5",
+        "native\\ik_match\\src\\ffi.rs": "cb73988c705f09a2936a2ff145d4a5ea023d2c9382a222b0c87a461bea950f4a",
+        "native\\ik_match\\src\\inverse4.rs": "40b4801025a7e96a933418ad7f24f01721c181c588b9a80f55a190747b8f09c1",
+        "native\\ik_match\\src\\lib.rs": "621f3b08040e5b22c9a4f76a62a729a787b7a0d9f86a5202be3cfc3001681f20",
+        "native\\ik_match\\src\\main.rs": "42e572b50fd84b6bca983d087be8ad4c1c499273a7fa0cb89f1e921a953a7dfd",
+        "native\\ik_match\\src\\math.rs": "fc491d10431948689a518f62269afa64691040b9ece0c8f1ac0c7a9fcc64688a",
+        "native\\ik_match\\src\\pose.rs": "7e57e4a6b1d3729ea636fca5a8dc4acae06b7da76730ed81a7e0380065c1662f",
+        "native\\ik_match\\src\\solver.rs": "d1b1f5986323e31f4eb8d05c3e43e8641dc61974606a1395714e5b5059290385"
+      },
+      "native_threads": 1,
+      "native_mode": "1",
+      "exact_pairs": 6
+    }
+  },
+  "synthetic": {
+    "4.5": {
+      "cases": 5620,
+      "exact": 5620,
+      "worst": [
+        0.0,
+        9992,
+        0.35,
+        12
+      ],
+      "fallbacks": 34380,
+      "failures": [],
+      "blender": "4.5.7 LTS"
+    },
+    "5.2": {
+      "cases": 5620,
+      "exact": 5620,
+      "worst": [
+        0.0,
+        9992,
+        0.35,
+        12
+      ],
+      "fallbacks": 34380,
+      "failures": [],
+      "blender": "5.2.1 LTS"
+    }
+  },
+  "native_modes": {
+    "default": "disabled",
+    "1": "verify every candidate with Blender",
+    "experimental": "unverified native; known mismatches"
+  },
+  "singular_regressions": {
+    "4.5": {
+      "native_candidates": 40,
+      "geometry_or_iteration_fallbacks": 205,
+      "native_mismatches": [
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            5,
+            0
+          ],
+          "angle": 0.0,
+          "error": 1.5816914695887112e-20
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            5,
+            0
+          ],
+          "angle": 0.35,
+          "error": 3.316429770193059e-20
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            5,
+            0
+          ],
+          "angle": -0.75,
+          "error": 1.6766272469853636e-20
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            5,
+            0
+          ],
+          "angle": 1.5707963267948966,
+          "error": 1.3189109250838235e-24
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            5,
+            0
+          ],
+          "angle": -3.141592653589793,
+          "error": 3.641179292151442e-26
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            4,
+            0
+          ],
+          "angle": 0.0,
+          "error": 2.220777285454804e-19
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            4,
+            0
+          ],
+          "angle": 0.35,
+          "error": 4.614122024276186e-20
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            4,
+            0
+          ],
+          "angle": -0.75,
+          "error": 3.0657761761957907e-19
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            4,
+            0
+          ],
+          "angle": 1.5707963267948966,
+          "error": 6.106758985265618e-21
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            4,
+            0
+          ],
+          "angle": -3.141592653589793,
+          "error": 9.303735194505727e-21
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            7,
+            0
+          ],
+          "angle": 0.0,
+          "error": 2.971674138695455e-20
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            7,
+            0
+          ],
+          "angle": 0.35,
+          "error": 3.3610642421759642e-21
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            7,
+            0
+          ],
+          "angle": -0.75,
+          "error": 6.847717765792206e-21
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            7,
+            0
+          ],
+          "angle": 1.5707963267948966,
+          "error": 2.4779940966654762e-21
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            7,
+            0
+          ],
+          "angle": -3.141592653589793,
+          "error": 3.749981142433056e-21
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            1,
+            4,
+            0
+          ],
+          "angle": 0.0,
+          "error": 7.482608984961194e-17
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            1,
+            4,
+            0
+          ],
+          "angle": 1.5707963267948966,
+          "error": 3.552713678800501e-15
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            -1,
+            0
+          ],
+          "angle": 0.0,
+          "error": 1.2357209811899053e-19
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            -1,
+            0
+          ],
+          "angle": 0.35,
+          "error": 2.2112818982575486e-19
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            -1,
+            0
+          ],
+          "angle": -0.75,
+          "error": 2.400825294992217e-19
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            -1,
+            0
+          ],
+          "angle": 1.5707963267948966,
+          "error": 3.5941850600572365e-21
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            -1,
+            0
+          ],
+          "angle": -3.141592653589793,
+          "error": 4.394467453745442e-21
+        },
+        {
+          "bend": 0.01,
+          "target": [
+            0,
+            5,
+            0
+          ],
+          "angle": 0.0,
+          "error": 2.716512054930603e-19
+        },
+        {
+          "bend": 0.01,
+          "target": [
+            0,
+            5,
+            0
+          ],
+          "angle": 0.35,
+          "error": 1.5609287192257474e-19
+        },
+        {
+          "bend": 0.01,
+          "target": [
+            0,
+            5,
+            0
+          ],
+          "angle": -0.75,
+          "error": 7.564653297267815e-20
+        },
+        {
+          "bend": 0.01,
+          "target": [
+            0,
+            5,
+            0
+          ],
+          "angle": 1.5707963267948966,
+          "error": 6.009304663467309e-23
+        },
+        {
+          "bend": 0.01,
+          "target": [
+            0,
+            5,
+            0
+          ],
+          "angle": -3.141592653589793,
+          "error": 3.198716084250751e-23
+        },
+        {
+          "bend": 0.01,
+          "target": [
+            0,
+            7,
+            0
+          ],
+          "angle": 0.0,
+          "error": 2.9192842668584967e-19
+        },
+        {
+          "bend": 0.01,
+          "target": [
+            0,
+            7,
+            0
+          ],
+          "angle": 0.35,
+          "error": 1.101473962169553e-19
+        },
+        {
+          "bend": 0.01,
+          "target": [
+            0,
+            7,
+            0
+          ],
+          "angle": -0.75,
+          "error": 1.186552590097929e-19
+        },
+        {
+          "bend": 0.01,
+          "target": [
+            0,
+            7,
+            0
+          ],
+          "angle": 1.5707963267948966,
+          "error": 3.370520176882258e-21
+        },
+        {
+          "bend": 0.01,
+          "target": [
+            0,
+            7,
+            0
+          ],
+          "angle": -3.141592653589793,
+          "error": 1.984851156892472e-21
+        }
+      ],
+      "verified_exact": 245,
+      "blender": "4.5.7 LTS"
+    },
+    "5.2": {
+      "native_candidates": 40,
+      "geometry_or_iteration_fallbacks": 205,
+      "native_mismatches": [
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            5,
+            0
+          ],
+          "angle": 0.0,
+          "error": 1.5816914695887112e-20
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            5,
+            0
+          ],
+          "angle": 0.35,
+          "error": 3.316429770193059e-20
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            5,
+            0
+          ],
+          "angle": -0.75,
+          "error": 1.6766272469853636e-20
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            5,
+            0
+          ],
+          "angle": 1.5707963267948966,
+          "error": 1.3189109250838235e-24
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            5,
+            0
+          ],
+          "angle": -3.141592653589793,
+          "error": 3.641179292151442e-26
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            4,
+            0
+          ],
+          "angle": 0.0,
+          "error": 2.220777285454804e-19
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            4,
+            0
+          ],
+          "angle": 0.35,
+          "error": 4.614122024276186e-20
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            4,
+            0
+          ],
+          "angle": -0.75,
+          "error": 3.0657761761957907e-19
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            4,
+            0
+          ],
+          "angle": 1.5707963267948966,
+          "error": 6.106758985265618e-21
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            4,
+            0
+          ],
+          "angle": -3.141592653589793,
+          "error": 9.303735194505727e-21
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            7,
+            0
+          ],
+          "angle": 0.0,
+          "error": 2.971674138695455e-20
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            7,
+            0
+          ],
+          "angle": 0.35,
+          "error": 3.3610642421759642e-21
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            7,
+            0
+          ],
+          "angle": -0.75,
+          "error": 6.847717765792206e-21
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            7,
+            0
+          ],
+          "angle": 1.5707963267948966,
+          "error": 2.4779940966654762e-21
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            7,
+            0
+          ],
+          "angle": -3.141592653589793,
+          "error": 3.749981142433056e-21
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            1,
+            4,
+            0
+          ],
+          "angle": 0.0,
+          "error": 7.482608984961194e-17
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            1,
+            4,
+            0
+          ],
+          "angle": 1.5707963267948966,
+          "error": 3.552713678800501e-15
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            -1,
+            0
+          ],
+          "angle": 0.0,
+          "error": 1.2357209811899053e-19
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            -1,
+            0
+          ],
+          "angle": 0.35,
+          "error": 2.2112818982575486e-19
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            -1,
+            0
+          ],
+          "angle": -0.75,
+          "error": 2.400825294992217e-19
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            -1,
+            0
+          ],
+          "angle": 1.5707963267948966,
+          "error": 3.5941850600572365e-21
+        },
+        {
+          "bend": 0.001,
+          "target": [
+            0,
+            -1,
+            0
+          ],
+          "angle": -3.141592653589793,
+          "error": 4.394467453745442e-21
+        },
+        {
+          "bend": 0.01,
+          "target": [
+            0,
+            5,
+            0
+          ],
+          "angle": 0.0,
+          "error": 2.716512054930603e-19
+        },
+        {
+          "bend": 0.01,
+          "target": [
+            0,
+            5,
+            0
+          ],
+          "angle": 0.35,
+          "error": 1.5609287192257474e-19
+        },
+        {
+          "bend": 0.01,
+          "target": [
+            0,
+            5,
+            0
+          ],
+          "angle": -0.75,
+          "error": 7.564653297267815e-20
+        },
+        {
+          "bend": 0.01,
+          "target": [
+            0,
+            5,
+            0
+          ],
+          "angle": 1.5707963267948966,
+          "error": 6.009304663467309e-23
+        },
+        {
+          "bend": 0.01,
+          "target": [
+            0,
+            5,
+            0
+          ],
+          "angle": -3.141592653589793,
+          "error": 3.198716084250751e-23
+        },
+        {
+          "bend": 0.01,
+          "target": [
+            0,
+            7,
+            0
+          ],
+          "angle": 0.0,
+          "error": 2.9192842668584967e-19
+        },
+        {
+          "bend": 0.01,
+          "target": [
+            0,
+            7,
+            0
+          ],
+          "angle": 0.35,
+          "error": 1.101473962169553e-19
+        },
+        {
+          "bend": 0.01,
+          "target": [
+            0,
+            7,
+            0
+          ],
+          "angle": -0.75,
+          "error": 1.186552590097929e-19
+        },
+        {
+          "bend": 0.01,
+          "target": [
+            0,
+            7,
+            0
+          ],
+          "angle": 1.5707963267948966,
+          "error": 3.370520176882258e-21
+        },
+        {
+          "bend": 0.01,
+          "target": [
+            0,
+            7,
+            0
+          ],
+          "angle": -3.141592653589793,
+          "error": 1.984851156892472e-21
+        }
+      ],
+      "verified_exact": 245,
+      "blender": "5.2.1 LTS"
+    }
+  },
+  "historical_benchmark_note": "The rust_final and rust_modes series preceded the geometry guard and opt-in policy. Source and DLL hashes identify the tested revisions."
+}

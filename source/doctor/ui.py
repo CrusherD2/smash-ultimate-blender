@@ -119,6 +119,14 @@ class SUB_PG_doctor_state(PropertyGroup):
         ),
         default=True,
     )
+    auto_convert_materials: BoolProperty(
+        name='Convert Non-Smash Materials',
+        description=(
+            'Convert materials that have no Smash shader label when a model export runs, '
+            'instead of stopping the export. Uses the diffuse-only conversion'
+        ),
+        default=True,
+    )
     show_errors: BoolProperty(name='Errors', default=True)
     show_warnings: BoolProperty(name='Warnings', default=True)
     show_info: BoolProperty(name='Info', default=True)
@@ -363,7 +371,8 @@ class SUB_OP_doctor_fix_safe(Operator):
     bl_label = 'Fix Safe Issues'
     bl_description = (
         'Apply every fix that cannot lose work: adding missing attributes, normalizing and '
-        'limiting weights, applying transforms, repairing modifiers, slots and names'
+        'limiting weights, applying transforms, repairing modifiers, slots and names, and '
+        'converting materials that have no Smash shader label'
     )
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -570,6 +579,9 @@ class SUB_PT_smash_export_doctor(Panel):
         row = box.row()
         row.enabled = state.run_before_export
         row.prop(state, 'block_on_errors')
+        row = box.row()
+        row.enabled = state.run_before_export
+        row.prop(state, 'auto_convert_materials')
         box.label(text='Only genuinely invalid output blocks an export.', icon='INFO')
         box.label(text='Wrong-looking but valid output is reported and lets you through.')
 
@@ -601,6 +613,22 @@ def _wrap(text, width):
 # ---------------------------------------------------------------------------
 
 
+def _auto_convert_materials(context, state, results):
+    """Turn plain Blender materials into Smash ones rather than blocking the export."""
+    if not state.auto_convert_materials:
+        return 0
+    converted = 0
+    for result in results:
+        if result.fix_id != 'convert_blender_material' or not result.fixable:
+            continue
+        ok, message = run_fix(context, result)
+        if ok:
+            converted += 1
+        else:
+            print(f'[Smash Export Doctor] {message}')
+    return converted
+
+
 def preflight(context, operator, scope='ALL') -> bool:
     """Run the checks before an export. Returns False when the export should stop.
 
@@ -613,6 +641,10 @@ def preflight(context, operator, scope='ALL') -> bool:
         return True
 
     results = run_checks(context, _scopes_for(scope))
+    converted = _auto_convert_materials(context, state, results)
+    if converted:
+        operator.report({'INFO'}, f'Export Doctor converted {converted} material(s) to Smash shaders.')
+        results = run_checks(context, _scopes_for(scope))
     store_results(state, results, scope)
 
     if not results:

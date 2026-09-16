@@ -1,0 +1,172 @@
+{
+  "generated": "2026-09-13",
+  "tolerance": {
+    "relative": 1e-05,
+    "pose": 0.0001,
+    "absolute": 1e-09
+  },
+  "variant": "blender",
+  "sources": [
+    "baseline",
+    "near_straight",
+    "shyguy_static"
+  ],
+  "run_count": 14,
+  "total_seconds": 36.23418309999397,
+  "runs": [
+    {
+      "source": "baseline",
+      "blend": ".tests\\benchmarks\\ik_apply\\out\\baseline.blend",
+      "scenario": "normal",
+      "limbs": "BOTH",
+      "frame_count": 157,
+      "bone_count": 12,
+      "total_residual": 109943.63674022951,
+      "candidates": null,
+      "seconds": 2.954775999998674
+    },
+    {
+      "source": "baseline",
+      "blend": ".tests\\benchmarks\\ik_apply\\out\\baseline.blend",
+      "scenario": "normal",
+      "limbs": "ARMS",
+      "frame_count": 157,
+      "bone_count": 6,
+      "total_residual": 66477.9660783052,
+      "candidates": null,
+      "seconds": 1.708461600006558
+    },
+    {
+      "source": "baseline",
+      "blend": ".tests\\benchmarks\\ik_apply\\out\\baseline.blend",
+      "scenario": "normal",
+      "limbs": "LEGS",
+      "frame_count": 157,
+      "bone_count": 6,
+      "total_residual": 43465.67066192433,
+      "candidates": null,
+      "seconds": 1.2593436999595724
+    },
+    {
+      "source": "baseline",
+      "blend": ".tests\\benchmarks\\ik_apply\\out\\baseline.blend",
+      "scenario": "object_scale",
+      "limbs": "BOTH",
+      "frame_count": 157,
+      "bone_count": 12,
+      "total_residual": 110517.32287536132,
+      "candidates": null,
+      "seconds": 1.5871277000405826
+    },
+    {
+      "source": "baseline",
+      "blend": ".tests\\benchmarks\\ik_apply\\out\\baseline.blend",
+      "scenario": "parent_scale",
+      "limbs": "BOTH",
+      "frame_count": 157,
+      "bone_count": 12,
+      "total_residual": 125208.89223091018,
+      "candidates": null,
+      "seconds": 1.579991600010544
+    },
+    {
+      "source": "baseline",
+      "blend": ".tests\\benchmarks\\ik_apply\\out\\baseline.blend",
+      "scenario": "inheritance",
+      "limbs": "BOTH",
+      "frame_count": 157,
+      "bone_count": 12,
+      "total_residual": 109943.64222178739,
+      "candidates": null,
+      "seconds": 1.7885653000557795
+    },
+    {
+      "source": "baseline",
+      "blend": ".tests\\benchmarks\\ik_apply\\out\\baseline.blend",
+      "scenario": "stretch",
+      "limbs": "BOTH",
+      "frame_count": 157,
+      "bone_count": 12,
+      "total_residual": 247122.18631863504,
+      "candidates": null,
+      "seconds": 1.6567042999668047
+    },
+    {
+      "source": "baseline",
+      "blend": ".tests\\benchmarks\\ik_apply\\out\\baseline.blend",
+      "scenario": "arm_pull",
+      "limbs": "BOTH",
+      "frame_count": 157,
+      "bone_count": 12,
+      "total_residual": 333419.3269500051,
+      "candidates": null,
+      "seconds": 1.5930423999670893
+    },
+    {
+      "source": "baseline",
+      "blend": ".tests\\benchmarks\\ik_apply\\out\\baseline.blend",
+      "scenario": "animated_stretch",
+      "limbs": "BOTH",
+      "frame_count": 157,
+      "bone_count": 12,
+      "total_residual": 213796.5157480005,
+      "candidates": null,
+      "seconds": 1.6230849999701604
+    },
+    {
+      "source": "baseline",
+      "blend": ".tests\\benchmarks\\ik_apply\\out\\baseline.blend",
+      "scenario": "foot_controls",
+      "limbs": "BOTH",
+      "frame_count": 157,
+      "bone_count": 12,
+      "total_residual": 109943.63674022951,
+      "candidates": null,
+      "seconds": 1.626913300016895
+    },
+    {
+      "source": "near_straight",
+      "blend": ".tests\\benchmarks\\ik_corpus\\near_straight.blend",
+      "scenario": "normal",
+      "limbs": "BOTH",
+      "frame_count": 40,
+      "bone_count": 12,
+      "total_residual": 25999.26316217476,
+      "candidates": null,
+      "seconds": 0.4411705000093207
+    },
+    {
+      "source": "near_straight",
+      "blend": ".tests\\benchmarks\\ik_corpus\\near_straight.blend",
+      "scenario": "parent_scale",
+      "limbs": "BOTH",
+      "frame_count": 40,
+      "bone_count": 12,
+      "total_residual": 26638.57646152317,
+      "candidates": null,
+      "seconds": 0.5261498999898322
+    },
+    {
+      "source": "near_straight",
+      "blend": ".tests\\benchmarks\\ik_corpus\\near_straight.blend",
+      "scenario": "stretch",
+      "limbs": "BOTH",
+      "frame_count": 40,
+      "bone_count": 12,
+      "total_residual": 142629.4029759935,
+      "candidates": null,
+      "seconds": 0.469964699994307
+    },
+    {
+      "source": "shyguy_static",
+      "blend": ".tests\\benchmarks\\ik_corpus\\shyguy_static.blend",
+      "scenario": "normal",
+      "limbs": "LEGS",
+      "frame_count": 5,
+      "bone_count": 6,
+      "total_residual": 9.409473881584107e-10,
+      "candidates": null,
+      "seconds": 0.17531700001563877
+    }
+  ]
+}

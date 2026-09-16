@@ -152,6 +152,50 @@ def invoke_position_match_dialog(cleanup_mode='LEGS'):
     bpy.ops.sub.fk_to_ik_transfer('INVOKE_DEFAULT', cleanup_mode=cleanup_mode)
 
 
+def _format_diag_report(rec):
+    """One compact line summarising a diagnostics record, or None if empty."""
+    stages = rec.get('stages', {})
+    counts = rec.get('counts', {})
+    reasons = rec.get('reasons', {})
+    if not stages and not reasons:
+        return None
+
+    # Pure counters carry no timing (they are always added with seconds=0.0);
+    # rendering them as "name 0.000s (N updates)" is meaningless -- the 0.000s
+    # is noise and "updates" is the wrong word for a count like how many
+    # chain-frames the native guards declined. Render those as plain counts.
+    counter_only = ('candidates', 'native_solves', 'native_declined')
+
+    order = ('sample', 'isolate', 'place', 'search', 'write')
+    stage_parts = []
+    for name in order:
+        if name not in stages:
+            continue
+        count = counts.get(name)
+        if count:
+            stage_parts.append(f"{name} {stages[name]:.3f}s ({count} updates)")
+        else:
+            stage_parts.append(f"{name} {stages[name]:.3f}s")
+    for name, seconds in stages.items():
+        if name in order:
+            continue
+        count = counts.get(name)
+        if name in counter_only:
+            stage_parts.append(f"{name}: {count or 0}")
+        elif count:
+            stage_parts.append(f"{name} {seconds:.3f}s ({count} updates)")
+        else:
+            stage_parts.append(f"{name} {seconds:.3f}s")
+
+    reason_str = ' '.join(f"{guard}={code}" for guard, code in reasons.items())
+
+    if stage_parts and reason_str:
+        return f"IK match: {', '.join(stage_parts)} | {reason_str}"
+    if stage_parts:
+        return f"IK match: {', '.join(stage_parts)}"
+    return f"IK match: {reason_str}"
+
+
 def run_fk_to_ik_match_for_raw_import(context, cleanup_mode='LEGS'):
     """Match IK controls to FK on the current frame only (no dialogs)."""
     if context.mode != 'POSE':
@@ -794,6 +838,7 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
     def _execute_transfer(self, context):
         from .create_animation_rig import find_target_armature, _activate_armature
         from .ik_channels import match
+        from . import ik_match_diag as diag
         obj = find_target_armature(context)
         if obj is None:
             return {'CANCELLED'}
@@ -805,6 +850,10 @@ class SUB_OP_fk_to_ik_transfer(bpy.types.Operator):
         except Exception as exc:
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
+        if diag.enabled():
+            diag_message = _format_diag_report(diag.record())
+            if diag_message:
+                self.report({'INFO'}, diag_message)
         self.report({'INFO'}, f"Matched {count} limb poses; switch keys preserved." if self.clean_animation else f"Matched {count} limb poses; FK keys and switch keys preserved.")
         return {'FINISHED'}
 

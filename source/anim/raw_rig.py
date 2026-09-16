@@ -19,6 +19,28 @@ def plain(value):
     return [plain(v) for v in value]
 
 
+def prune_empty(value):
+    """Drop mappings that carry no values, recursively.
+
+    Add-on PropertyGroup pointers are materialised lazily: a rig whose swing
+    data nobody has touched has no 'sub_swing_data' key at all, and one where
+    something merely *read* it has an empty one. Serialising the same rig twice
+    therefore produced different payloads -- observed on Blender 4.5 as
+    sub_face_picker, sub_helper_bone_data, sub_swing_data, sub_shpc and
+    sub_floor_contact/body_target appearing only in the second snapshot.
+
+    An empty group restores to nothing either way: set_props only assigns the
+    keys a snapshot carries, so an absent empty group and a present empty group
+    both leave the property at its default. Normalising them away makes two
+    exports of one rig byte-identical, which is what a round-trip format owes
+    its callers.
+    """
+    if isinstance(value,dict):
+        pruned={k:prune_empty(v) for k,v in value.items()}
+        return {k:v for k,v in pruned.items() if v!={}}
+    return value
+
+
 def props(owner):
     result={}
     for key in owner.keys():
@@ -26,7 +48,7 @@ def props(owner):
             result[key]=plain(owner[key])
         except (TypeError,ValueError):
             pass
-    return result
+    return prune_empty(result)
 
 
 def scalar_rna(owner):
