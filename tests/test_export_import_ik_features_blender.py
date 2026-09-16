@@ -24,6 +24,24 @@ with tempfile.TemporaryDirectory() as folder:
     assert model.find_default_eyelid(costume) == specific
     assert model.find_default_eyelid(root / 'fighter/other/model/body/c03') is None
 
+    # The importer toggle follows whichever model the list has selected.
+    ssp = bpy.context.scene.sub_scene_properties
+    ssp.model_import_models.clear()
+    ssp.auto_import_default_eyelid = False
+    has_eyelid = ssp.model_import_models.add()
+    has_eyelid.name, has_eyelid.path = 'c03', str(costume)
+    assert model.sync_auto_import_default_eyelid(ssp) is True
+    assert ssp.auto_import_default_eyelid is True
+    no_eyelid = ssp.model_import_models.add()
+    no_eyelid.name = 'other'
+    no_eyelid.path = str(root / 'fighter/other/model/body/c03')
+    ssp.model_import_models_index = 1
+    assert ssp.auto_import_default_eyelid is False
+    ssp.model_import_models_index = 0
+    assert ssp.auto_import_default_eyelid is True
+    ssp.model_import_models.clear()
+    ssp.model_import_models_index = 0
+
 calls = []
 context = SimpleNamespace(window_manager=SimpleNamespace(
     progress_begin=lambda *args: calls.append('begin'),

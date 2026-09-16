@@ -46,8 +46,9 @@ These are the pieces that are **not** in the main plugin, or are substantially d
 
 Panels in the 3D Viewport's **Ultimate** sidebar tab have a small **?** in
 their headers linking to documentation, including nested panels. Properties
-panels and other tabs do not show these help buttons. Hover over controls for
-a description of their operation.
+panels and other tabs do not show these help buttons. Turn the **?** headers
+off entirely with **Show Panel Help Buttons** in the add-on preferences, which
+is on by default. Hover over controls for a description of their operation.
 
 The **Ultimate Motion List** panel, under Ultimate Animation Data, reads and
 updates **motion_list.bin/.yml/.yaml** alongside animation exports: a cancel
@@ -70,10 +71,11 @@ detection rules, frame conventions, and backup behavior.
 - In Armature Data → **Ultimate Visibility Track Entries**, use **Purge Current** or **Purge All Anims** to remove tracks with no corresponding model mesh and compact the shared list safely
 - Visibility names are matched case-insensitively; case-only duplicates are merged using logical OR so an enabled state is not lost
 - Importing transforms while IK is enabled matches the new motion to those limbs. Raw imports preserve existing authored target/pole channels; material/visibility-only imports skip matching. Import temporarily disables auto-key and restores it and the previous mode afterward
+- Importing transforms onto a full **Animation Rig** also matches its enabled finger sliders and custom components, for single and batch imports alike. Existing controls are muted during the import so the source tracks recover, then fitted over the clip with progress in the status bar. Standalone IK Tools rigs and material-only imports do not trigger it
 
 **Exporter**:
 
-- Export the current action, or batch export from a matching multi-select checkbox list. The batch button shows the selected count
+- Export the current action, or batch export from a matching multi-select checkbox list. Refreshing the list leaves every action unchecked; the batch button shows the selected count
 - Export runs synchronously and restores the active actions, action slots, current frame/subframe, and auto-key setting after success or failure. Batch clips without SAP data no longer inherit the previous clip's SAP action
 - **Export Raw Animation** and **Include Raw with .NUANMB Export** live in the **Raw Animations** panel, not here
 - Bone override list, populate-from-armature, **Thrown** preset
@@ -92,9 +94,17 @@ on disk. Fighter `motion/body` folders can discover their associated `rawanims`
 directory automatically.
 
 **Export Raw Animation** saves the current animation. Enable **Include Raw with
-.NUANMB Export** here to include a raw companion when exporting game animations.
-Raw imports preserve authored target/pole channels; use a compatible armature
-and inspect the imported motion before further editing or game export.
+.NUANMB Export** here, or **Also Export Raw Animation** in the Animation
+Exporter, to write the unbaked clip beside single or batch game exports. The raw
+file is written before the exporter prepares its bake, and only after preflight
+has cleared, so a blocked export never leaves one behind.
+
+New raw files snapshot the animation rig itself — controller bones, widgets,
+constraints, drivers, rig settings, both finger control modes, and keyframe
+handle types — so importing restores that setup without an FK-to-IK match. Raw
+imports preserve authored target/pole channels; use a compatible armature and
+inspect the imported motion before further editing or game export. Raw files
+written by earlier versions cannot recover rig settings they never stored.
 
 ### Model folders and export settings
 
@@ -102,6 +112,7 @@ and inspect the imported motion before further editing or game export.
 - **Add Model Folder** maps an imported model's source directory to its export directory. A matching model destination overrides the global default; the export browser still lets you choose another location
 - Model discovery follows symlinks and Windows junctions, including linked mod directories
 - Remembered animation folders belong to each armature and are saved in the `.blend`. Selecting an armature or one of its skinned meshes restores that model's folder list and active folder; missing folders remain recorded, and costume-specific imports do not silently fall back to another costume
+- **Auto-import Default Eyelid** in the Model Importer checks itself whenever the selected model's motion folder (`/model/body/c40/` → `/motion/body/c40/`, falling back to the shared `c00`) actually has `a00defaulteyelid.nuanmb`, and clears itself when it does not
 - Model export defaults to **Order Only**: preserve vanilla bone order while using Blender's bone transforms. Choose **Order & Values** to retain vanilla transforms too. Without a selected vanilla skeleton, the export dialog uses **No Link**
 
 Setup details: [Model workflow folders](docs/model-workflow-folders.md).
@@ -113,6 +124,7 @@ Setup details: [Model workflow folders](docs/model-workflow-folders.md).
 - Sixteen checks cover materials and shader attributes, weights, modifiers, transforms, naming collisions, skeletons, IK/unbaked controls, action slots, camera names, frame ranges, scale inheritance, non-finite values, and missing paths
 - Click a result to select its object, material, bone, or action; severity counts filter the list
 - **Fix Safe Issues** applies safe fixes and reruns checks. Individual fixes are also available; rig baking requires a separate decision
+- Materials with no Smash shader label are converted to a Smash material (the diffuse-only conversion, which also renames the mesh's UV and color attributes) instead of stopping the export. **Convert Non-Smash Materials** in Preflight Settings is on by default; turn it off to have the export stop on them again
 - **Run Before Export** and **Block Invalid Exports** are on by default. Blocking findings stop model, single-animation, or batch-animation export before it writes files
 - Missing vanilla bones and remaining IK controls warn without blocking custom rigs. Missing configured skeleton/PRC files block; missing remembered browser folders are informational
 - Animation-only checks use the active export object, so exporting a camera does not inspect an unrelated model armature
@@ -123,16 +135,19 @@ Setup details: [Model workflow folders](docs/model-workflow-folders.md).
 
 - **Create Animation Rig** — control shapes on a `smush_blender_import` armature
   - Optional IK (hands, feet, poles), including extra arms such as `HandL2`
-  - **Finger sliders** (thumb pad + curl/spread; extra hands get the same controls). Toggle sliders vs Smash finger circles after creation
+  - **Finger sliders** (thumb pad + curl/spread; extra hands get the same controls). Show sliders, Smash finger circles, or **Both** after creation; matching fits sliders for shared curl and circles for individual joint motion, and both stay active whichever set is displayed
   - **Eye look** (`BL_EyeLook` + `CustomVector31`)
   - Hide helper / swing bones, match IK to the loaded anim, clean leftover keyframes
-- **Rig Extras** — once a rig exists, IK, Eyes, and Fingers each show as Added or Missing with a one-click **Add** or **Bake & Remove**, so you can build a rig without one of them and add it later
-- Remove rig, or **Bake and Remove Rig** (fingers / eyes / IK)
-- **Idle Pose Library** — predefined poses come from the active animation folder and refresh when it changes. Applying reads the source clip on demand; custom stored poses remain available across folder changes. Options include Trans, mirrored, and 180 rotate
+- **Make Custom Components** — build controls for bones the standard rig does not cover: captured-pose eyes, eyelids and mouth expressions, look targets, isolated handles, extra IK chains, and rotation sliders. See [Custom animation rig components](docs/custom-components.md) and the section below
+- **Rig Extras** — once a rig exists, IK, Eyes, Fingers, and Custom Components each show as Added or Missing with a one-click **Add** or **Bake & Remove**, so you can build a rig without one of them and add it later
+- Remove rig, or **Bake and Remove Rig** (fingers / eyes / IK / custom components)
+- **Idle Pose Library** — predefined poses come from the active animation folder and refresh when it changes. Applying reads the source clip on demand; custom stored poses remain available across folder changes. Options include Trans, mirrored, and 180 rotate. LegC and ClavicleC are never posed or keyed, because the game rejects keys on them
 - **User Poses** — **Save Pose**, **Remove Pose**, and **Apply to Current Frame**, with an option to affect only selected bones
 - **IK Tools** — create arm/leg IK, bake & remove IK/FK, toggle influence, **Bulk IK** on every loaded animation
+- **Viewport IK buttons** — with gizmos enabled, selecting an Animation Rig IK controller draws a labeled wireframe **Switch FK** button on the visible face of its box, plus **Plant** and **Release** when floor contact is configured. They run the same keyed operators as the IK panel. Standalone IK Tools rigs do not show them
+- **Hide Off-Mode Bones** — one button hides the FK bones of limbs posed in IK and the IK controls of limbs posed in FK. Toggle it off to show every limb bone; that choice sticks, and switching modes will not re-hide them until you turn it back on
 - **Live Floor Contact** — calibrate heel/toe or palm/finger points, keep them above a world-Z floor, plant limbs manually or at editable markers, and optionally align rotation or adjust `Trans` height. The constraint/driver setup is live and non-destructive; calibration can be saved in Armature Collection Presets. See [Live IK floor contact](docs/ik-floor-contact.md)
-- **Reverse heel lift** — leave `FootIK` and `ToeIK` in place and rotate `FootRollIK` to raise/rotate the heel and ankle around the stationary toe. For a chain such as `FootL → ToeL → BaseToeL`, the last toe bone (`BaseToeL`) stays grounded while the foot and preceding toe segment move around it. Parented toe descendants are recognized even with Blender's **Connected** option off. `ToeIK` independently rotates the terminal toe. Fresh IK automatically sets up the corrected pivot; no repair button or floor-contact setup is needed. Exact planting requires a reachable ankle target or enabled leg stretch; live floor correction can move the whole foot. See [Live IK floor contact](docs/ik-floor-contact.md)
+- **Reverse heel lift** — leave `FootIK` and `ToeIK` in place and rotate `FootRollIK` to raise/rotate the heel and ankle around the stationary toe. For a chain such as `FootL → ToeL → BaseToeL`, the last toe bone (`BaseToeL`) stays grounded while the foot and preceding toe segment move around it. Parented toe descendants are recognized even with Blender's **Connected** option off, and they are found through the foot's hierarchy rather than by name, so rigs that split the toe into `Toe1L` / `Toe2L` instead of a plain `ToeL` still get the roll controls. `ToeIK` independently rotates the terminal toe. Fresh IK automatically sets up the corrected pivot; no repair button or floor-contact setup is needed. Exact planting requires a reachable ankle target or enabled leg stretch; live floor correction can move the whole foot. See [Live IK floor contact](docs/ik-floor-contact.md)
 - **Independent toe articulation** — multi-joint feet also get `ToeBendIKL/R`. Rotate this control to bend the foot relative to the first toe joint while the toe chain remains stationary; combine it with `FootRollIK` for heel lift. Zero bend preserves the existing roll. Single-toe feet need no extra control. Matching, keying, and Bake & Remove include the new control.
 - **Mirror Animation** — space, Smash Y Anim Flip, custom extra bones, **Mirror All Loaded Animations**. Newly imported actions rebuild their Smash pose cache from the source `.nuanmb` when first needed; if the source has moved, mirroring falls back to the armature-derived pose path
 - **Misc Anim Stuff** (collapsible) — Transfer Hip Animation to Trans, Reset Bone Locations, Ground Character, Invert Positive and Negative, Remove Animation from Swing Bones, **GIF or Photo** (also on the Action Editor header)
@@ -151,8 +166,50 @@ IK and FK have independent animation channels, with keyed mode values that blend
 - Targets and poles have no parent, so they do not inherit `Trans` motion. Existing independent rigs receive endpoint constraint and driver repairs on load
 - **Position IK Controls** evaluates independent limbs together, including Entire Animation, while retaining sequential matching for custom dependencies. Pose-tool refresh waits until matching finishes; solver precision and frame sampling are retained
 - **Bake & Remove IK** takes a limb selection (all present IK, legs only, arms only, arms and legs), samples the evaluated motion before removing controls, and leaves unrelated limb channels alone
-- Solver animation lives on hidden, nondeforming `BL_SUB_IK_*` bones; original bones blend to them through driven constraints
+- Solver animation lives on hidden, nondeforming `BL_SUB_IK_*` bones; original bones blend to them through driven constraints. Hidden `BL_SUB_IK_MATCH_` bones carry the residual between the solved and the sampled pose, so a matched limb lands on the FK motion it was matched from
 - Matching and pose-tool regressions: `python tests/ik_batch_matching.py` and `python tests/pose_tool_deferral.py`.
+
+### Custom animation rig components
+
+**Make Custom Components** opens a compact editor inside Animation Tools, below
+Create Animation Rig. It walks three steps — **Bones**, **Controls**, **Animate**
+— and builds one component at a time, so an unfinished entry never blocks the
+rest. Full guide: [`docs/custom-components.md`](docs/custom-components.md).
+
+- **Bone Eyes (Captured Poses)** — a look pad control, with an optional rear
+  orbit pivot, authored **Left / Right / Up / Down** orbit limits, and
+  interpolation that preserves the orbital arc
+- **Eyelids / Blink** and **Mouth Expressions** — animate captured bone poses
+  instead of shape keys. One visible controller carries a keyable **Expression**
+  dropdown and a 0–1 **Strength** slider, with up to 32 named expressions per
+  component and optional intermediate **checkpoints** that Strength interpolates
+  through. **Both Eyelids** combines the two individual captures, clamped so a
+  shared and an individual slider cannot double the closure
+- **Look Target** — assigned bones track a movable target, with a selectable bone
+  forward axis and no captured poses needed
+- **Isolated Bones** — an independent handle per bone for feet without leg
+  chains, floating hands, or props: moving Hip or Trans leaves them in place. The
+  original hierarchy is retained and no solver is created; optional heel and toe
+  rotation handles pivot with the controller
+- **Custom IK** — select a chain, accept or change the proposed bend joint, and
+  preview the path. Chains cannot overlap an existing setup. Jaw rotation, tail
+  and tentacle curls, and wing and feather fans are available as rotation sliders
+- **Hide Controlled Bones** hides the originals while the handles stay visible,
+  and restores them when switched off or removed
+- **Selected Control Appearance** restyles standard rig controls as well as
+  custom ones: ten shapes, custom widget objects, nonuniform scale, offset and
+  rotation, **Apply Offset / Rotation to Actual Control** to make a widget offset
+  functional, and **Make Widget Mesh Editable** to edit one control's geometry in
+  the viewport. Auto-save writes changes back to the current preset
+- **Match Animation** in Rig Extras → Custom Components transfers the current
+  action over a frame range, keying custom controls (custom IK included) while
+  leaving the original bone keys intact. Hidden matching offsets carry motion no
+  slider or captured expression can represent, and travel with export and Bake &
+  Remove
+- Definitions, captures, and widget geometry save as portable JSON presets in
+  Blender's user scripts directory. **Create Animation Rig → Custom Components**
+  builds a chosen preset alongside the regular rig; `.nuanmb` export samples the
+  evaluated skeleton and omits controller bones
 
 ### GIF or Photo and Animation Navigation
 
@@ -243,6 +300,10 @@ Opens from the Action Editor header, Ultimate Animation Data, or its own window.
 - Face camera create / view / remove
 - Preview assigned vis tracks
 
+Bone-driven eyes, eyelids, and mouth expressions built from captured poses live
+in [Custom animation rig components](docs/custom-components.md) instead, and are
+keyed through their own Expression and Strength controls.
+
 ### Misc.
 
 - **Eye Look (CustomVector31)** — set up EyeL/EyeR tracks, add `BL_EyeLook`, match from material, bake, live preview (Solid Texture / Material). Look At vs offset mode, gain/sensitivity, clamp, invert, pupil size from control-bone scale. Live preview does not export; bake writes the keys export reads
@@ -291,6 +352,28 @@ Expy Kit lives in the Ultimate tab (always listed; most operators want Pose Mode
 ### Import, export, and matching performance
 
 Model import converts textures concurrently and groups vertex-weight writes. Animation import caches track data and avoids repeated pose evaluation where bone inheritance permits it; visibility drivers are replaced cleanly instead of accumulating duplicate variables. Model export reduces mode changes and mesh processing, while texture export uses up to four external encoders with temporary-file cleanup.
+
+IK matching is exact against its FK source: `BL_SUB_IK_MATCH_` correction bones
+key the residual between the solved and the sampled pose, so the deform bones
+land on the FK motion they were matched from. Whole-animation matching samples FK
+from F-Curves instead of stepping the scene frame and runs the pole search on a
+minimal isolated copy of the rig, roughly halving match and import times; both
+fall back to ordinary scene evaluation whenever their guards cannot prove the fast
+path is equivalent. Component matching shares one dependency-graph update per
+parent level, and finger matching fits sliders linearly with batched circle
+corrections.
+
+A bundled [Rust IK accelerator](native/ik_match/README.md) is enabled by default
+on Windows x64 under Blender 4.5 and 5.2 and roughly halves those times again.
+Every other platform, Blender version, and unsupported rig or constraint setup
+keeps Blender's own solver. Untick **Use Native IK Accelerator** in the add-on
+preferences to turn it off, or set `SUB_NATIVE_IK=0` (off everywhere) or
+`SUB_NATIVE_IK=1` (verify every native result against Blender), which override
+the preference. Results are measured against Blender's backend rather than proven
+identical to it, so use `=0` or `=1` where exactness must be guaranteed.
+
+Set `SUB_IK_DIAG=1` for per-stage match timings, candidate counts, and the rate
+at which the accelerator hands chain-frames back to Blender.
 
 ### Helper bones (`BL_*`)
 

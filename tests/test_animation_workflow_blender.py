@@ -75,6 +75,17 @@ with tempfile.TemporaryDirectory() as folder:
     assert bpy.context.scene.frame_current == 7
     assert bpy.context.scene.tool_settings.use_keyframe_insert_auto
 
+# Freshly listed animations and actions start with nothing selected.
+import_anim = importlib.import_module(MODULE + '.source.anim.import_anim')
+ssp = bpy.context.scene.sub_scene_properties
+with tempfile.TemporaryDirectory() as folder:
+    for name in ('a00defaulteyelid.nuanmb', 'a00wait1.nuanmb'):
+        (Path(folder) / name).touch()
+    assert import_anim.fill_animation_import_list(ssp, folder) == 2
+    assert not any(item.selected for item in ssp.animation_import_files)
+ssp.animation_import_files.clear()
+assert export.SUB_PG_anim_action_item.bl_rna.properties['export'].default is False
+
 # Real armature and batch exports, including SAP action restoration.
 bpy.ops.object.armature_add()
 obj = bpy.context.object
@@ -131,6 +142,11 @@ with tempfile.TemporaryDirectory() as folder:
         assert Path(operator.filepath).is_file()
 # Generator cancellation and temporary IK action restoration are covered by
 # test_ik_workflow_regressions_blender.py.
+
+# The batch exporter's refresh leaves every listed action unchecked.
+bpy.context.view_layer.objects.active = obj
+assert bpy.ops.sub.refresh_actions() == {'FINISHED'}
+assert ssp.action_export_list and not any(item.export for item in ssp.action_export_list)
 
 addon_utils.disable(MODULE, default_set=False, handle_error=on_error)
 assert not errors, errors

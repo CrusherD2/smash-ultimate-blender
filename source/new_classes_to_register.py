@@ -77,6 +77,7 @@ classes = [
     source.extras.create_animation_rig.SUB_OP_remove_animation_rig,
     source.extras.create_animation_rig.SUB_OP_bake_and_remove_rig,
     source.extras.create_animation_rig.SUB_OP_anim_rig_toggle_ik_fk,
+    source.extras.create_animation_rig.SUB_OP_toggle_off_mode_bones,
     source.extras.create_animation_rig.SUB_OP_key_ik_stretch,
     source.extras.anim_rig_extras.SUB_OP_match_ik_to_animation,
     source.extras.anim_rig_extras.SUB_OP_anim_rig_add_ik,

@@ -87,6 +87,12 @@ class SUB_AddonPreferences(AddonPreferences):
         default=True,
     )
 
+    show_panel_help_buttons: BoolProperty(
+        name="Show Panel Help Buttons",
+        description="Show the '?' documentation link in the header of the Ultimate sidebar panels",
+        default=True,
+    )
+
     collection_preset_directory: StringProperty(
         name="Custom Collection Preset Directory",
         description="Directory used when the Collection Presets panel library is set to Custom",
@@ -133,11 +139,8 @@ class SUB_AddonPreferences(AddonPreferences):
         box.prop(self, "collection_preset_directory")
 
         box = layout.box()
-        box.label(text="Ultimate Sidebar Layout")
-        box.label(
-            text="Panel visibility and order live in the Panel Presets panel at the bottom of the Ultimate tab.",
-            icon='INFO',
-        )
+        box.label(text="Panel Help Buttons")
+        box.prop(self, "show_panel_help_buttons")
 
         box = layout.box()
         box.label(text="Additional ParamLabels Files")
@@ -212,6 +215,12 @@ def show_animation_extension_on_import(extension, context=None):
 def format_animation_name_on_import(stem, extension, context=None):
     """Format an imported action name using the per-format extension setting."""
     return stem + extension if show_animation_extension_on_import(extension, context) else stem
+
+
+def show_panel_help_buttons(context=None):
+    """Default to showing the help link when preferences are unavailable."""
+    prefs = get_addon_preferences(context)
+    return True if prefs is None else prefs.show_panel_help_buttons
 
 
 def register():

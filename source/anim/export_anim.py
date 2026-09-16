@@ -192,7 +192,7 @@ class SUB_OP_apply_override_preset_thrown(Operator):
 class SUB_PG_anim_action_item(bpy.types.PropertyGroup):
     name: StringProperty(name="Name", description='Animation filename used for this batch export entry')
     action: PointerProperty(type=bpy.types.Action, description='Blender action to sample for this animation')
-    export: BoolProperty(name="Export", default=True, description='Include this animation in the next batch export')
+    export: BoolProperty(name="Export", default=False, description='Include this animation in the next batch export')
 
 # UI List for displaying available actions
 class SUB_UL_action_export_list(UIList):
@@ -360,7 +360,7 @@ class SUB_OP_refresh_actions(Operator):
             item = ssp.action_export_list.add()
             item.name = action.name
             item.action = action
-            item.export = True
+            item.export = False
             
         return {'FINISHED'}
 

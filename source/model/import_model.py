@@ -291,6 +291,8 @@ def refresh_model_import_list(ssp, directory: str) -> int:
     else:
         ssp.model_import_models_index = min(ssp.model_import_models_index, max(len(ssp.model_import_models) - 1, 0))
 
+    sync_auto_import_default_eyelid(ssp)
+
     return count
 
 
@@ -861,6 +863,24 @@ def find_default_eyelid(model_folder):
                     return path
             break
     return None
+
+
+def default_eyelid_available(ssp):
+    """Report whether the selected importer entry has a default eyelid to import."""
+    if ssp is None or not ssp.model_import_models:
+        return False
+    index = min(max(ssp.model_import_models_index, 0), len(ssp.model_import_models) - 1)
+    item = ssp.model_import_models[index]
+    folders = [item.path, *(alt.path for alt in getattr(item, 'alts', []))]
+    return any(folder and find_default_eyelid(folder) is not None for folder in folders)
+
+
+def sync_auto_import_default_eyelid(ssp):
+    """Check the toggle by default for models whose motion folder has the animation."""
+    available = default_eyelid_available(ssp)
+    if ssp is not None:
+        ssp.auto_import_default_eyelid = available
+    return available
 
 
 def get_shader_db_file_path():

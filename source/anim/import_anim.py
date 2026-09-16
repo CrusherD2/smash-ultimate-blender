@@ -74,7 +74,7 @@ def fill_animation_import_list(ssp, folder):
         anim_item = ssp.animation_import_files.add()
         anim_item.name = os.path.splitext(anim_file)[0]
         anim_item.path = str(Path(folder) / anim_file)
-        anim_item.selected = count == 0
+        anim_item.selected = False
         count += 1
     ssp.animation_import_files_index = 0
     return count

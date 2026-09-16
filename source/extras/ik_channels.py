@@ -31,6 +31,24 @@ PULL_END = 'SUB IK Pull End'
 ARM_PULL_PROPERTY = 'sub_ik_arm_pull'
 
 
+def _toe_roots_under(foot_bone):
+    """Shallowest toe-named descendants of the foot.
+
+    Rigs that split the toe into Toe1L / Toe2L have no bone called exactly
+    ToeL, so the hierarchy is the only thing that identifies their toes.
+    """
+    if foot_bone is None:
+        return []
+    roots, pending = [], list(foot_bone.children)
+    while pending:
+        bone = pending.pop(0)
+        if 'toe' in bone.name.lower():
+            roots.append(bone)
+            continue
+        pending.extend(bone.children)
+    return roots
+
+
 def connected_toe_bones(obj, names):
     """Parented toe hierarchy; Smash joints need not use Blender Connected."""
     foot = names[-1]
@@ -38,13 +56,14 @@ def connected_toe_bones(obj, names):
         return ()
     wanted = ('Toe' + foot[4:]).lower()
     root = next((bone for bone in obj.data.bones if bone.name.lower() == wanted), None)
-    if root is None:
+    roots = [root] if root is not None else _toe_roots_under(obj.data.bones.get(foot))
+    if not roots:
         return ()
-    result = [root.name]
-    pending = list(root.children)
+    result = [bone.name for bone in roots]
+    pending = [child for bone in roots for child in bone.children]
     while pending:
         bone = pending.pop(0)
-        if 'toe' in bone.name.lower():
+        if 'toe' in bone.name.lower() and bone.name not in result:
             result.append(bone.name)
         pending.extend(bone.children)
     return tuple(result)
@@ -55,11 +74,12 @@ def toe_pivot_name(obj, names):
     toe_names = connected_toe_bones(obj, names)
     if not toe_names:
         return None
-    root = obj.data.bones[toe_names[0]]
+    # Depth is measured from the foot, so sibling toe roots stay comparable.
+    foot = obj.data.bones.get(names[-1])
 
     def depth(name):
         bone, count = obj.data.bones[name], 0
-        while bone != root:
+        while bone.parent is not None and bone.parent != foot:
             bone, count = bone.parent, count + 1
         return count
 
