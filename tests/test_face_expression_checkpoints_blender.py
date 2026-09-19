@@ -33,7 +33,7 @@ for con in constraints: con.mute=False
 matching.match_animation(bpy.context,obj,1,1,match_ik=False)
 bpy.context.scene.frame_set(1)
 bpy.context.view_layer.update()
-assert face.expression_get(main)==3
+assert face.expression_get(main)==3,(face.expression_get(main),[(fc.data_path,[tuple(k.co) for k in fc.keyframe_points]) for fc in curves.get_all_action_fcurves(obj.animation_data.action) if 'sub_face_expression' in fc.data_path])
 assert abs(main.location.y-.75)<1e-5,main.location.y
 assert face.validate_data(c.face_data)['steps']==data['steps']
 print('EXPRESSION CHECKPOINTS, INTERPOLATION AND MATCHING PASSED')

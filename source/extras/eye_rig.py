@@ -823,10 +823,15 @@ def match_eye_look_from_material(arma, *, overwrite=False, delete_material=False
             0.004,
             almost_same=lambda a, b: (a[1] - b[1]).length < 1e-6,
         )
-        locations = [
-            (frame, _offset_location_vector(pbone, ssp, look.x, look.y))
-            for frame, look in looks
-        ]
+        # Convert every sampled eye target in one native batch.
+        from . import component_native
+        import numpy as np
+        sensitivity = max(float(ssp.eye_look_sensitivity), 1e-6)
+        sensitivity_y = max(float(getattr(ssp, 'eye_look_sensitivity_y', sensitivity)), 1e-6)
+        transform = np.asarray(pbone.bone.matrix_local.to_3x3().inverted(), dtype=float)
+        transform = transform[:, (0, 2)] / np.asarray((sensitivity, sensitivity_y))
+        offsets = component_native.project(transform, [tuple(look) for _, look in looks])
+        locations = [(frame, Vector(offset)) for (frame, _), offset in zip(looks, offsets)]
         if scales:
             scales = _simplify_timed_keys(
                 scales,

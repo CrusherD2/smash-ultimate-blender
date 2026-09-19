@@ -3148,7 +3148,16 @@ class SUB_OP_create_animation_rig(Operator):
                 cleaned += clean_redundant_keys_on_id(armature_obj.data)
             progress.update(1.0)
 
-        if slider_count:
+        if self.setup_custom_components:
+            from . import anim_layers_compat, component_matching, component_workflow
+            if anim_layers_compat.viewport_driving_action(armature_obj)[0] is not None and (
+                slider_count or any(c.kind!='IK' for c in component_workflow.definitions(armature_obj))
+            ):
+                # One source sample / matching / key-writing pass for the entire
+                # component rig, including fingers. Main IK was matched above.
+                component_matching.match_animation(context,armature_obj,context.scene.frame_start,
+                    context.scene.frame_end,include_fingers=bool(slider_count),match_ik=False)
+        elif slider_count:
             from .anim_rig_extras import match_existing_finger_animation
             match_existing_finger_animation(context, armature_obj)
         extra = " IK controls added." if ik_created else ""
@@ -3850,4 +3859,3 @@ def unregister():
         bpy.app.timers.unregister(_pose_tool_apply_soon)
     if bpy.app.timers.is_registered(_heal_widgets_once):
         bpy.app.timers.unregister(_heal_widgets_once)
-
