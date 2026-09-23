@@ -164,6 +164,11 @@ SMASH = [
     ('BulbR', 'Hip', frame_matrix((-2, 1, 9.5), (0, 0, 1), (1, 0, 0))),
     ('LeafL', 'LegL', frame_matrix((2.5, 0, 7), (0, .7, .7), (1, 0, 0))),
     ('LeafR', 'LegR', frame_matrix((-2.5, 0, 7), (0, .7, .7), (1, 0, 0))),
+    # Parentless IK controls with identical (not mirrored) axes on both sides.
+    ('FootIKL', None, frame_matrix((2, -1, 1), (0, 0, 1), (1, 0, 0))),
+    ('FootIKR', None, frame_matrix((-2, -1, 1), (0, 0, 1), (1, 0, 0))),
+    ('ToeIKL', 'FootIKL', frame_matrix((2, -2, .5), (0, -1, 0), (0, 0, 1))),
+    ('ToeIKR', 'FootIKR', frame_matrix((-2, -2, .5), (0, -1, 0), (0, 0, 1))),
 ]
 
 
@@ -204,11 +209,29 @@ run(smash_y_anim_flip=False, include_fingers=True)
 for frame in (1, 5, 9):
     bpy.context.scene.frame_set(frame)
     for src, dst in [('Hip', 'Hip'), ('LegL', 'LegR'), ('Tail1', 'Tail1'), ('Tail2', 'Tail2'),
-                     ('BulbL', 'BulbR'), ('BulbR', 'BulbL'), ('LeafL', 'LeafR'), ('LeafR', 'LeafL')]:
+                     ('BulbL', 'BulbR'), ('BulbR', 'BulbL'), ('LeafL', 'LeafR'), ('LeafR', 'LeafL'),
+                     ('FootIKL', 'FootIKR'), ('FootIKR', 'FootIKL'), ('ToeIKL', 'ToeIKR')]:
         a = obj.data.bones[src].matrix_local
         b = obj.data.bones[dst].matrix_local
         fix = b.to_3x3().normalized().to_4x4().inverted() @ RX @ a.to_3x3().normalized().to_4x4()
         expected = RX @ posed_before[frame][src] @ fix.inverted()
         got = obj.pose.bones[dst].matrix
         assert error(got, expected) < 1e-4, ('smash parent', frame, src, dst, error(got, expected))
+
+# IK controls are listed by Find Custom Bones, and unchecking them keeps them
+# in place on both mirror paths.
+for smash_y in (False, True):
+    obj = build_smash()
+    assert bpy.ops.sub.find_custom_mirror_bones() == {'FINISHED'}
+    items = bpy.context.scene.sub_scene_properties.mirror_custom_bones
+    assert {'FootIKL', 'FootIKR', 'ToeIKL'} <= {i.name for i in items}
+    for name in ('FootIKL', 'FootIKR'):
+        items[name].include = False
+    bpy.context.scene.frame_set(5)
+    held = {n: obj.pose.bones[n].matrix_basis.copy() for n in ('FootIKL', 'FootIKR')}
+    run(smash_y_anim_flip=smash_y, include_fingers=True)
+    bpy.context.scene.frame_set(5)
+    for name, basis in held.items():
+        assert error(obj.pose.bones[name].matrix_basis, basis) < 1e-6, (smash_y, name)
+    items.clear()
 print('MIRROR CUSTOM FCURVE TEST PASSED')

@@ -12,6 +12,7 @@ from .anim_flip import (
     create_mirror_map,
     extract_bone_name_from_path,
     find_custom_mirror_bones,
+    is_ik_control,
     keyframe_pose_bones,
     load_smash_pose_cache,
     mirror_evaluated_pose,
@@ -319,11 +320,16 @@ def mirror_action_smash_y(
 
     armature = context.active_object
     excluded_bones = collect_excluded_bone_names(armature, include_fingers=include_fingers)
+    # IK controls carry no Smash track, so anim_flip skips them, but they
+    # still have to move to the other side with the body unless unchecked.
+    custom_excluded = {name for name in excluded_bones if not is_ik_control(name)}
     ssp = getattr(context.scene, 'sub_scene_properties', None)
     if ssp is not None:
-        excluded_bones |= collect_unchecked_custom_mirror_bones(
+        unchecked = collect_unchecked_custom_mirror_bones(
             armature, getattr(ssp, 'mirror_custom_bones', [])
         )
+        excluded_bones |= unchecked
+        custom_excluded |= unchecked
     source_bones = None
     target_bones = None
     in_place = False
@@ -338,6 +344,7 @@ def mirror_action_smash_y(
         target_bones = selected_bones
         in_place = True
         excluded_bones -= source_bones
+        custom_excluded -= source_bones
 
     scene = context.scene
     bone_filter = source_bones
@@ -356,9 +363,9 @@ def mirror_action_smash_y(
     # the opposite side changes the source interpolation of later frames.
     from .mirror_custom_bones import (
         custom_mirror_names, custom_mirror_sources, snapshot_custom_pose, apply_custom_pose,
-        control_mirror_map,
+        control_mirror_map, mirror_pole_angles,
     )
-    custom_names = custom_mirror_names(armature) - excluded_bones
+    custom_names = custom_mirror_names(armature) - custom_excluded
     custom_map = control_mirror_map(armature)
     if source_bones is not None:
         custom_names &= set(source_bones)
@@ -374,7 +381,7 @@ def mirror_action_smash_y(
             pose_data = live
             custom_pose = snapshot_custom_pose(armature, custom_names, custom_map, in_place)
             custom_pose = {name: matrix for name, matrix in custom_pose.items()
-                           if name not in excluded_bones}
+                           if name not in custom_excluded}
             pose_data = {name: data for name, data in pose_data.items() if name not in custom_names}
             snapshots.append((frame, pose_data, custom_pose))
         for frame, pose_data, custom_pose in snapshots:
@@ -391,6 +398,8 @@ def mirror_action_smash_y(
             )
             applied.extend(apply_custom_pose(armature, custom_pose))
             keyframe_pose_bones(applied, frame)
+        mirror_pole_angles(armature, act, custom_names, custom_map, in_place=in_place,
+                           frame=scene.frame_current if only_active_frame else None)
     finally:
         scene.frame_set(original_frame)
 
@@ -476,7 +485,8 @@ def mirror_action(
         custom_skip_all = {
             name for name in custom_mirror_names(armature)
             if name not in selected_only_set and (
-                should_exclude_bone_from_mirroring(name, armature, include_fingers)
+                (should_exclude_bone_from_mirroring(name, armature, include_fingers)
+                 and not is_ik_control(name))
                 or name in custom_skip
             )
         }
@@ -673,14 +683,18 @@ def mirror_action(
                 kf.interpolation = interpolation
 
     if custom_names:
-        from .mirror_custom_bones import mirror_custom_frames
+        from .mirror_custom_bones import mirror_custom_frames, mirror_pole_angles, rest_reflection
         frames = _frames_for_action(
             act, current_frame is not None, context.scene, selected_bone_names=custom_names
         )
+        # The channel flip reflects the body across its rest symmetry plane.
         mirror_custom_frames(
             context, armature, custom_names, custom_map, frames,
             in_place=selected_bones_only, excluded=custom_skip_all,
+            pose_reflection=rest_reflection(armature),
         )
+        mirror_pole_angles(armature, act, custom_names - custom_skip_all, custom_map,
+                           in_place=selected_bones_only, frame=current_frame)
 
 
 #########################################################################################

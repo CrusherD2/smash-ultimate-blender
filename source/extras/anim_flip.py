@@ -342,6 +342,12 @@ def extract_bone_name_from_path(path):
     return ""
 
 
+def is_ik_control(bone_name):
+    """Addon IK target/pole controls. Anim_flip skips them (they carry no Smash
+    track), but the rest-relative custom mirror must move them to the other side."""
+    return bool(bone_name) and not bone_name.startswith(('S_', 'H_')) and bool(_IK_HELPER.search(bone_name))
+
+
 def is_untouchable_mirror_bone(bone_name):
     """Swing, helper, and addon IK bones are never mirrored."""
     if not bone_name:
@@ -401,7 +407,7 @@ def find_custom_mirror_bones(armature):
     return sorted(
         bone.name
         for bone in armature.pose.bones
-        if not is_standard_smash_bone(bone.name)
+        if not is_standard_smash_bone(bone.name) or is_ik_control(bone.name)
     )
 
 
