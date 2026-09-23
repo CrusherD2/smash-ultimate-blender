@@ -594,12 +594,16 @@ class SUB_OP_batch_export_anim(AnimationExport, Operator):
         return max(last_frame, 1)  # Ensure we always have at least 1 frame
     
     def export_steps(self, context):
-        from ..doctor import preflight
-        if not preflight(context, self, 'ANIM'):
-            return {'CANCELLED'}
-
         ssp = context.scene.sub_scene_properties
         obj = context.active_object
+
+        # Collect the actions selected for export before the preflight, so the
+        # doctor checks exactly those and never every action in the file.
+        selected_actions = [item for item in ssp.action_export_list if item.export]
+
+        from ..doctor import preflight
+        if not preflight(context, self, 'ANIM', actions=[item.action for item in selected_actions]):
+            return {'CANCELLED'}
 
         # Store current action
         current_action = None
@@ -612,8 +616,6 @@ class SUB_OP_batch_export_anim(AnimationExport, Operator):
         # Save directory for future use
         ssp.last_anim_export_dir = self.directory
         
-        # Collect the actions selected for export.
-        selected_actions = [item for item in ssp.action_export_list if item.export]
         total_count = len(selected_actions)
         
         if total_count == 0:
@@ -1030,8 +1032,13 @@ class SUB_OP_anim_export(AnimationExport, Operator):
         # anything is written. The raw capture below cannot be undone -- it is
         # a second file on disk -- so a preflight that runs after it would
         # leave that file behind on a cancelled export.
+        # Only the action being exported belongs in scope.
+        active_action = obj.animation_data.action if obj.animation_data is not None else None
         from ..doctor import preflight
-        if not preflight(context, self, 'ANIM'):
+        if not preflight(
+            context, self, 'ANIM',
+            actions=[active_action] if active_action is not None else [],
+        ):
             return {'CANCELLED'}
 
         # ...but only then capture the raw data, and still before the regular

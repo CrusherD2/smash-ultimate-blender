@@ -191,7 +191,18 @@ def import_texture_to_blender(operator: bpy.types.Operator, texture_name: str, m
 
 def import_material_images(operator: bpy.types.Operator, ssbh_matl: ssbh_data_py.matl_data.MatlData, model_dir:str ) -> dict[str, bpy.types.Image]:
     texture_name_to_image_dict: dict[str, bpy.types.Image] = {}
-    texture_names_in_matl = {tex.data for mat in ssbh_matl.entries for tex in mat.textures}
+    texture_names_by_lowercase: dict[str, list[str]] = {}
+    for mat in ssbh_matl.entries:
+        for texture in mat.textures:
+            aliases = texture_names_by_lowercase.setdefault(texture.data.lower(), [])
+            if texture.data not in aliases:
+                aliases.append(texture.data)
+
+    # Texture matching is case-insensitive, so case-only aliases in the MATL
+    # refer to the same file. Import each file once. This also prevents parallel
+    # conversions on Windows from sharing a temp path, where the first import
+    # could delete the PNG before the second import packed it.
+    texture_names_in_matl = [aliases[0] for aliases in texture_names_by_lowercase.values()]
 
     model_dir_path = Path(model_dir)
     nutexb_paths, png_paths = _index_model_dir(model_dir_path)
@@ -214,10 +225,12 @@ def import_material_images(operator: bpy.types.Operator, ssbh_matl: ssbh_data_py
     conversion_errors = _convert_nutexb_files(conversions)
 
     for texture_name in texture_names_in_matl:
-        texture_name_to_image_dict[texture_name] = import_texture_to_blender(
+        image = import_texture_to_blender(
             operator, texture_name, model_dir_path,
             nutexb_paths, png_paths, conversion_errors, temp_png_paths,
         )
+        for alias in texture_names_by_lowercase[texture_name.lower()]:
+            texture_name_to_image_dict[alias] = image
 
     return texture_name_to_image_dict
 

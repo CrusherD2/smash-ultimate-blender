@@ -58,7 +58,7 @@ from pathlib import Path
 assert addon_utils.check('startup_export_test') == (True, True)
 export = importlib.import_module('startup_export_test.source.anim.export_anim')
 doctor = importlib.import_module('startup_export_test.source.doctor')
-doctor.preflight = lambda *args: True
+doctor.preflight = lambda *args, **kwargs: True
 folder = Path({str(profile)!r})
 started = time.monotonic()
 completed = 0

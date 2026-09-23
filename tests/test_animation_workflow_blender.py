@@ -12,7 +12,7 @@ export = importlib.import_module(MODULE + '.source.anim.export_anim')
 selection = importlib.import_module(MODULE + '.source.anim.selection')
 model = importlib.import_module(MODULE + '.source.model.export_model')
 doctor = importlib.import_module(MODULE + '.source.doctor')
-doctor.preflight = lambda *args: True
+doctor.preflight = lambda *args, **kwargs: True
 
 items = [SimpleNamespace(name=n, selected=False) for n in ['run_a', 'idle', 'run_b', 'run_c']]
 selection.select_range(items, 'selected', 3, 'run_a', shift=True, visible_indices=[0, 2, 3])

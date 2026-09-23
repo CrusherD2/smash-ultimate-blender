@@ -122,8 +122,9 @@ class SUB_PG_doctor_state(PropertyGroup):
     auto_convert_materials: BoolProperty(
         name='Convert Non-Smash Materials',
         description=(
-            'Convert materials that have no Smash shader label when a model export runs, '
-            'instead of stopping the export. Uses the diffuse-only conversion'
+            'Default state of the model exporter\'s "Convert Non-Smash Materials" option. '
+            'Materials without a Smash shader label are converted with the diffuse-only '
+            'conversion when a model export runs'
         ),
         default=True,
     )
@@ -613,38 +614,22 @@ def _wrap(text, width):
 # ---------------------------------------------------------------------------
 
 
-def _auto_convert_materials(context, state, results):
-    """Turn plain Blender materials into Smash ones rather than blocking the export."""
-    if not state.auto_convert_materials:
-        return 0
-    converted = 0
-    for result in results:
-        if result.fix_id != 'convert_blender_material' or not result.fixable:
-            continue
-        ok, message = run_fix(context, result)
-        if ok:
-            converted += 1
-        else:
-            print(f'[Smash Export Doctor] {message}')
-    return converted
-
-
-def preflight(context, operator, scope='ALL') -> bool:
+def preflight(context, operator, scope='ALL', actions=None) -> bool:
     """Run the checks before an export. Returns False when the export should stop.
+
+    ``actions`` narrows the animation checks to the exact export set; exporters
+    pass it so an unselected animation can never cancel an export.
 
     Blocking is deliberately narrow: only results a check marked as producing
     genuinely invalid output can cancel an export, and only when the user left
-    "Block Invalid Exports" on.
+    "Block Invalid Exports" on. Materials are never blocking; the model exporter
+    converts them up front from its own file-browser option.
     """
     state = getattr(context.scene, 'sub_doctor', None)
     if state is None or not state.run_before_export:
         return True
 
-    results = run_checks(context, _scopes_for(scope))
-    converted = _auto_convert_materials(context, state, results)
-    if converted:
-        operator.report({'INFO'}, f'Export Doctor converted {converted} material(s) to Smash shaders.')
-        results = run_checks(context, _scopes_for(scope))
+    results = run_checks(context, _scopes_for(scope), actions=actions)
     store_results(state, results, scope)
 
     if not results:

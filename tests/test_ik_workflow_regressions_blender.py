@@ -194,7 +194,13 @@ from_compat.assign_action(obj.animation_data,a)
 from_compat.assign_action(data.animation_data,sap_a)
 reference_a = capture()
 bulk.get_armature_actions = lambda obj: [a,b]
+# Manual action ranges and unrelated timeline ranges must not crop either clip.
+for clip in (a, b):
+    clip.use_frame_range = True
+    clip.frame_start, clip.frame_end = 2, 3
+scene.frame_start, scene.frame_end = 40, 45
 assert bpy.ops.sub.bulk_ik_bake_all('EXEC_DEFAULT') == {'FINISHED'}
+assert (scene.frame_start, scene.frame_end) == (40, 45)
 assert 'HandIKL' not in obj.pose.bones
 from_compat.assign_action(obj.animation_data,a)
 compare(reference_a,capture(),'bulk first clip')

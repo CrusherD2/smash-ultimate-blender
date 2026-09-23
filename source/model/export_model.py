@@ -12,7 +12,7 @@ import pstats
 
 from pathlib import Path
 from bpy_extras.io_utils import ImportHelper
-from bpy.props import StringProperty, BoolProperty, EnumProperty
+from bpy.props import StringProperty, BoolProperty, EnumProperty, IntProperty
 from bpy.types import Operator, Panel, EditBone, Object, Context, EditBone, Mesh, MeshVertex, ShapeKey
 from mathutils import Vector, Matrix
 
@@ -238,6 +238,14 @@ class SUB_OP_model_exporter(Operator):
         default=True,
     )
 
+    convert_materials: BoolProperty(
+        name='Convert Non-Smash Materials',
+        description='Convert materials that have no Smash shader label before exporting, using the diffuse-only conversion',
+        default=True,
+        options={'SKIP_SAVE'},
+    )
+    material_count: IntProperty(default=0, options={'SKIP_SAVE'})
+
     linked_nusktb_settings: EnumProperty(
         name="Bone Linkage",
         description="Pick 'Order & Values' unless you intentionally edited the vanilla bones.",
@@ -317,10 +325,37 @@ class SUB_OP_model_exporter(Operator):
             self.directory = os.path.join(configured, '')
         if context.scene.sub_scene_properties.vanilla_nusktb == '':
             self.linked_nusktb_settings = 'NO_LINK'
+        # Seed the folder picker with how many materials still need converting
+        # and the doctor's preferred default. The export never blocks on
+        # materials; this checkbox decides whether to convert them up front.
+        from ..doctor import material_conversion_candidates
+        state = getattr(context.scene, 'sub_doctor', None)
+        if state is not None:
+            self.convert_materials = state.auto_convert_materials
+        self.material_count = len(material_conversion_candidates(context))
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
-    
+
+    def draw(self, context):
+        # Drawn as the folder picker's side panel.
+        layout = self.layout
+        if self.material_count:
+            layout.label(
+                text=f'{self.material_count} material(s) have no Smash shader label.',
+                icon='INFO',
+            )
+        else:
+            layout.label(text='All materials already use a Smash shader.', icon='CHECKMARK')
+        layout.prop(self, 'convert_materials')
+
     def execute(self, context):
+        # Convert before the preflight so the checks see the converted result.
+        if self.convert_materials and self.material_count:
+            from ..doctor import convert_materials, material_conversion_candidates
+            converted = convert_materials(context, material_conversion_candidates(context))
+            self.material_count = 0
+            if converted:
+                self.report({'INFO'}, f'Export Doctor converted {converted} material(s) to Smash shaders.')
         # Preflight first, so a scene that cannot produce a valid model never
         # gets as far as writing half a file set.
         from ..doctor import preflight
