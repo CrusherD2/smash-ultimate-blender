@@ -29,6 +29,8 @@ from .core import (
     DoctorResult,
     check,
     fixer,
+    run_checks,
+    run_fix,
 )
 
 
@@ -227,13 +229,12 @@ def check_missing_materials(scene):
         if len(mesh.material_slots) == 0:
             results.append(DoctorResult(
                 check_id='missing_materials',
-                severity=ERROR,
+                severity=WARNING,
                 message=f'"{mesh.name}" has no material slots.',
-                detail='The .numdlb cannot be written without a material. '
-                       'Assign a material, or disable .NUMDLB export.',
+                detail='The model still exports; the mesh simply carries no material data. '
+                       'Assign a material to control what it looks like in game.',
                 target_type=TARGET_OBJECT,
                 target_name=mesh.name,
-                blocking=True,
             ))
             continue
 
@@ -242,12 +243,12 @@ def check_missing_materials(scene):
             if material is None:
                 results.append(DoctorResult(
                     check_id='missing_materials',
-                    severity=ERROR,
+                    severity=WARNING,
                     message=f'"{mesh.name}" slot {index + 1} is empty.',
-                    detail='Create or assign a material for this slot.',
+                    detail='Create or assign a material for this slot. The export still runs.',
                     target_type=TARGET_OBJECT,
                     target_name=mesh.name,
-                    blocking=index == 0,
+                    blocking=False,
                 ))
                 continue
 
@@ -258,18 +259,43 @@ def check_missing_materials(scene):
                     check_id='missing_materials',
                     severity=ERROR,
                     message=f'"{material.name}" has no Smash shader label.',
-                    detail=f'Used by "{mesh.name}". Convert it to a Smash material, or set a '
+                    detail=f'Used by "{mesh.name}". The export still runs, but the material is '
+                           'written unconverted. Convert it to a Smash material, or set a '
                            'shader label so a .numatb entry can be written.',
                     target_type=TARGET_MATERIAL,
                     target_name=mesh.name,
                     sub_target=material.name,
-                    blocking=True,
+                    blocking=False,
                     fix_id='convert_blender_material',
                     fix_label='Convert to a Smash material',
                     fix_is_safe=True,
                     payload={'object': mesh.name, 'material': material.name},
                 ))
     return results
+
+
+def material_conversion_candidates(context):
+    """Materials in the model export set that have no Smash shader label.
+
+    Returns the DoctorResults the conversion fix runs on, so an exporter can
+    offer to convert them before writing any file. Materials are never blocking
+    on their own; this is purely an opt-in convenience.
+    """
+    results = run_checks(context, (SCOPE_MODEL,), only_check_ids={'missing_materials'})
+    return [
+        result for result in results
+        if result.fix_id == 'convert_blender_material' and result.fixable
+    ]
+
+
+def convert_materials(context, results):
+    """Run the conversion fix on each candidate. Returns how many converted."""
+    converted = 0
+    for result in results:
+        ok, _message = run_fix(context, result)
+        if ok:
+            converted += 1
+    return converted
 
 
 @check(

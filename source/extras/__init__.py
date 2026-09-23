@@ -1,4 +1,5 @@
 from . import attribute_renamer
+from . import clipboard_image
 from . import create_animation_rig
 from . import create_meshes
 from . import eye_rig
@@ -45,6 +46,7 @@ from . import custom_components
 
 # Explicit registration function for the package
 def register():
+    clipboard_image.register()
     # Register reset_animation first to ensure it's available for the panel
     reset_animation.register()
     
@@ -86,6 +88,7 @@ def register():
     ik_pole_alignment.register()
     
 def unregister():
+    clipboard_image.unregister()
     custom_components.unregister()
     custom_ik.unregister()
     face_picker.unregister()

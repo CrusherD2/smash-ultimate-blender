@@ -120,7 +120,7 @@ class DoctorScene:
     meshes the model exporter would see, not every mesh in the file.
     """
 
-    def __init__(self, context, scopes=(SCOPE_MODEL, SCOPE_ANIM)):
+    def __init__(self, context, scopes=(SCOPE_MODEL, SCOPE_ANIM), actions=None):
         import bpy
 
         self.context = context
@@ -132,7 +132,7 @@ class DoctorScene:
         self.meshes = self._find_meshes()
         self.materials = self._find_materials()
         self.camera = self._find_camera(context)
-        self.actions = self._find_actions(bpy)
+        self.actions = self._find_actions(bpy, actions)
 
     def _find_armature(self, context):
         # Animation export uses the active object, independently of the model
@@ -181,9 +181,30 @@ class DoctorScene:
             return active
         return None
 
-    def _find_actions(self, bpy):
-        """Actions that plausibly belong to the armature or camera in play."""
+    def _find_actions(self, bpy, actions=None):
+        """Actions that plausibly belong to the armature or camera in play.
+
+        ``actions`` is the explicit export set. When the exporter passes it, the
+        doctor checks exactly those actions and nothing else, so a problem in an
+        action the user did not select can never cancel the export.
+        """
         from ..anim.fcurve_compat import action_matches_armature
+
+        if actions is not None:
+            owner = self.armature if self.armature is not None else self.camera
+            if owner is None:
+                return []
+            found = []
+            seen = set()
+            for action in actions:
+                if action is None:
+                    continue
+                name = getattr(action, 'name', None)
+                if name is None or name in seen:
+                    continue
+                seen.add(name)
+                found.append((owner, action))
+            return found
 
         actions = []
         seen = set()
@@ -218,13 +239,16 @@ def severity_rank(severity: str) -> int:
         return len(SEVERITY_ORDER)
 
 
-def run_checks(context, scopes=(SCOPE_MODEL, SCOPE_ANIM), only_check_ids=None):
+def run_checks(context, scopes=(SCOPE_MODEL, SCOPE_ANIM), only_check_ids=None, actions=None):
     """Run every check in scope. Returns results sorted worst-first.
+
+    ``actions`` narrows the animation checks to an explicit export set; pass it
+    from an exporter so only the animations being written are inspected.
 
     A check that raises is reported as its own WARNING rather than aborting the
     run, so one broken check can never hide the other fourteen.
     """
-    scene = DoctorScene(context, scopes)
+    scene = DoctorScene(context, scopes, actions)
     results = []
 
     for spec in CHECKS:

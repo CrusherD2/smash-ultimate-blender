@@ -8,6 +8,7 @@ from ..blender_compat import assign_action, assign_bone_to_collection, ensure_bo
 from ..anim.fcurve_compat import collect_actions_for_armatures
 from . import anim_layers_compat
 from .apply_ik_animation import (
+    action_bake_frame_range,
     bake_action_visual,
     collect_fk_bone_names,
     delete_ik_bones_from_armature,
@@ -347,8 +348,8 @@ class SUB_OP_bulk_ik_match_all(bpy.types.Operator):
                 _update_progress_cursor(context, progress)
 
                 assign_action(armature_object.animation_data, action)
-                fr_start = int(action.frame_range[0])
-                fr_end = int(action.frame_range[1])
+                fr_start, fr_end = action_bake_frame_range(
+                    action, context.scene, armature_object.animation_data.action_slot)
                 context.scene.frame_start = fr_start
                 context.scene.frame_end = fr_end
 
@@ -479,8 +480,8 @@ class SUB_OP_bulk_ik_bake_all(bpy.types.Operator):
                     data.animation_data.use_nla = False
                     assign_action(data.animation_data,
                                   bpy.data.actions.get(f'{armature_object.name} {action.name} SAP Data'))
-                    fr_start = int(action.frame_range[0])
-                    fr_end = int(action.frame_range[1])
+                    fr_start, fr_end = action_bake_frame_range(
+                        action, context.scene, armature_object.animation_data.action_slot)
                     context.scene.frame_start = fr_start
                     context.scene.frame_end = fr_end
 

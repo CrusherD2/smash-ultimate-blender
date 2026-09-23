@@ -153,7 +153,7 @@ assert ui.cancel_frame(marker_action) is None and len(marker_action.pose_markers
 ui.SUB_PT_motion_list.draw(SimpleNamespace(layout=Layout()), bpy.context)
 
 doctor = importlib.import_module(MODULE + '.source.doctor')
-doctor.preflight = lambda *args: True
+doctor.preflight = lambda *args, **kwargs: True
 bpy.ops.object.camera_add()
 obj = bpy.context.object
 for frame in (1, 40):

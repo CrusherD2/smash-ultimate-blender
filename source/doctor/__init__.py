@@ -10,6 +10,7 @@ from . import core
 from . import checks
 from . import ui
 
+from .checks import convert_materials, material_conversion_candidates
 from .ui import preflight
 
 

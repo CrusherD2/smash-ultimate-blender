@@ -1,4 +1,5 @@
 import bpy
+import math
 from contextlib import contextmanager
 
 from ..anim.fcurve_compat import get_all_action_fcurves, remove_fcurve
@@ -146,16 +147,34 @@ def _key_pose_rotation(pose_bone, frame):
         pose_bone.keyframe_insert("rotation_quaternion", frame=frame, group=pose_bone.name)
 
 
+def action_bake_frame_range(action, scene, slot=None):
+    """Use actual keys, never the Action's optional playback range.
+
+    Round outward so fractional and negative endpoint keys are not truncated.
+    A layered action can contain other objects; only sample the bound slot.
+    """
+    curves = []
+    if action is not None:
+        if slot is not None and getattr(action, 'is_action_layered', False):
+            for layer in action.layers:
+                for strip in layer.strips:
+                    bag = strip.channelbag(slot, ensure=False)
+                    if bag is not None:
+                        curves.extend(bag.fcurves)
+        else:
+            curves = get_all_action_fcurves(action)
+    bounds = [fc.range() for fc in curves
+              if len(fc.keyframe_points) or len(fc.sampled_points)]
+    if bounds:
+        return math.floor(min(r[0] for r in bounds)), math.ceil(max(r[1] for r in bounds))
+    return int(scene.frame_start), int(scene.frame_end)
+
+
 def _action_frame_range(armature_object, scene):
     from . import anim_layers_compat
 
-    action, _slot = anim_layers_compat.viewport_driving_action(armature_object)
-    if action is not None:
-        fr = action.frame_range
-        start, end = int(fr[0]), int(fr[1])
-        if end >= start:
-            return start, end
-    return int(scene.frame_start), int(scene.frame_end)
+    action, slot = anim_layers_compat.viewport_driving_action(armature_object)
+    return action_bake_frame_range(action, scene, slot)
 
 
 def _prepare_frame_eval_for_bake(armature_object, limbs="BOTH"):
