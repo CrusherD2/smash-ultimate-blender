@@ -355,12 +355,15 @@ def mirror_action_smash_y(
     # Snapshot every source frame before inserting keys. Otherwise a new key on
     # the opposite side changes the source interpolation of later frames.
     from .mirror_custom_bones import (
-        custom_mirror_names, snapshot_custom_pose, apply_custom_pose, control_mirror_map,
+        custom_mirror_names, custom_mirror_sources, snapshot_custom_pose, apply_custom_pose,
+        control_mirror_map,
     )
     custom_names = custom_mirror_names(armature) - excluded_bones
-    if bone_filter is not None:
-        custom_names &= set(bone_filter)
     custom_map = control_mirror_map(armature)
+    if source_bones is not None:
+        custom_names &= set(source_bones)
+    elif bone_filter is not None:
+        custom_names = custom_mirror_sources(custom_names, bone_filter, custom_map)
     original_frame = scene.frame_current
     snapshots = []
     try:
@@ -464,6 +467,35 @@ def mirror_action(
     else:
         raise ValueError(f"Unsupported {axis=}")
 
+    # Fixed channel negation only matches Smash bone axes. Extra bones have
+    # arbitrary rest orientations, so the L/R (Y) mirror handles them in rest
+    # space instead and leaves their fcurves out of the channel pass.
+    custom_names = set()
+    if axis == 'Y' and armature is not None and context is not None:
+        from .mirror_custom_bones import custom_mirror_names, custom_mirror_sources, control_mirror_map
+        custom_skip_all = {
+            name for name in custom_mirror_names(armature)
+            if name not in selected_only_set and (
+                should_exclude_bone_from_mirroring(name, armature, include_fingers)
+                or name in custom_skip
+            )
+        }
+        candidates = custom_mirror_names(armature) - custom_skip_all
+        if selected_bones_only:
+            custom_names = candidates & selected_only_set
+            custom_map = {}
+        else:
+            custom_map = control_mirror_map(armature)
+            if current_frame is not None:
+                animated = {
+                    extract_bone_name_from_path(fc.data_path)
+                    for fc in get_fcurves(act)
+                    if any(abs(kf.co[0] - current_frame) < 0.001 for kf in fc.keyframe_points)
+                }
+            else:
+                animated = _action_bone_names(act)
+            custom_names = custom_mirror_sources(candidates, animated, custom_map)
+
     if only_active_frame and current_frame is not None:
         # Frame-specific mirroring: only affect keyframes at current frame
         # Step 1: Collect all source data first to prevent overwriting issues
@@ -476,6 +508,9 @@ def mirror_action(
             
             bone_name = extract_bone_name_from_path(path)
             
+            if bone_name in custom_names:
+                continue
+
             # Check if this bone should be excluded from mirroring
             if bone_name and bone_name not in selected_only_set and (
                 should_exclude_bone_from_mirroring(bone_name, armature, include_fingers)
@@ -558,6 +593,9 @@ def mirror_action(
             
             bone_name = extract_bone_name_from_path(path)
             
+            if bone_name in custom_names:
+                continue
+
             # Check if this bone should be excluded from mirroring
             if bone_name and bone_name not in selected_only_set and (
                 should_exclude_bone_from_mirroring(bone_name, armature, include_fingers)
@@ -633,6 +671,16 @@ def mirror_action(
                 kf.handle_left = (left_x, left_y)
                 kf.handle_right = (right_x, right_y)
                 kf.interpolation = interpolation
+
+    if custom_names:
+        from .mirror_custom_bones import mirror_custom_frames
+        frames = _frames_for_action(
+            act, current_frame is not None, context.scene, selected_bone_names=custom_names
+        )
+        mirror_custom_frames(
+            context, armature, custom_names, custom_map, frames,
+            in_place=selected_bones_only, excluded=custom_skip_all,
+        )
 
 
 #########################################################################################
@@ -1104,11 +1152,11 @@ class SUB_OT_find_custom_mirror_bones(Operator):
         for name in custom_names:
             item = ssp.mirror_custom_bones.add()
             item.name = name
-            item.include = previous.get(name, False)
+            item.include = previous.get(name, True)
         ssp.mirror_custom_bones_index = 0
         ssp.mirror_custom_armature_name = armature.name
         if custom_names:
-            self.report({'INFO'}, f"Found {len(custom_names)} custom bone(s). Check the ones to mirror.")
+            self.report({'INFO'}, f"Found {len(custom_names)} custom bone(s). Uncheck any that should not be mirrored.")
         else:
             self.report({'INFO'}, "No custom bones found on this armature")
         return {'FINISHED'}

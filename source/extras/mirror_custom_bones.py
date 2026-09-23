@@ -11,11 +11,56 @@ def custom_mirror_names(obj):
             and not name.startswith('BL_CC_MCH_')}
 
 
+# Smash's Z reflection becomes Blender armature-space Y for a parentless bone.
+_ARMATURE_REFLECTION = Matrix.Diagonal((1.0, -1.0, 1.0, 1.0))
+# anim_flip negates each Smash bone's local Z (translateZ, rotateX/Y), which
+# is also Z in the imported Blender bone axes.
+_SMASH_LOCAL_FLIP = Matrix.Diagonal((1.0, 1.0, -1.0, 1.0))
+
+
+def _rest_axes(bone):
+    return bone.matrix_local.to_3x3().normalized().to_4x4()
+
+
+def mirror_change(obj, source_name, target_name, custom=None, _cache=None):
+    """Basis conjugation C so that target basis = C @ source basis @ C⁻¹.
+
+    A mirrored bone must follow its mirrored parent: world mirror is
+    target = R @ source @ S, where each Smash parent's S is its local Z flip
+    and an extra parent's S is its own C⁻¹. Parentless bones use the armature
+    reflection. Mirroring every extra bone across the armature plane instead
+    breaks as soon as its parent is flipped in local space (tails swing into
+    the floor).
+    """
+    if custom is None:
+        custom = custom_mirror_names(obj)
+    if _cache is None:
+        _cache = {}
+    key = (source_name, target_name)
+    if key in _cache:
+        return _cache[key]
+    source = obj.data.bones[source_name]
+    target = obj.data.bones[target_name]
+    if source.parent is None or target.parent is None:
+        change = _rest_axes(target).inverted() @ _ARMATURE_REFLECTION @ _rest_axes(source)
+    else:
+        if source.parent.name in custom:
+            parent_flip = mirror_change(obj, source.parent.name, target.parent.name, custom, _cache)
+        else:
+            parent_flip = _SMASH_LOCAL_FLIP
+        offset_s = _rest_axes(source.parent).inverted() @ _rest_axes(source)
+        offset_t = _rest_axes(target.parent).inverted() @ _rest_axes(target)
+        change = offset_t.inverted() @ parent_flip @ offset_s
+    _cache[key] = change
+    return change
+
+
 def snapshot_custom_pose(obj, names, mirror_map, in_place=False):
-    # Smash's Z reflection becomes Blender armature-space Y. Reflect the
-    # animation delta, not the rest translation: arbitrary custom rest poses
-    # and controller offsets must stay neutral when their channels are zero.
-    reflection = Matrix.Diagonal((1.0, -1.0, 1.0, 1.0))
+    # Reflect the animation delta, not the rest translation: arbitrary custom
+    # rest poses and controller offsets must stay neutral when their channels
+    # are zero.
+    custom = custom_mirror_names(obj)
+    cache = {}
     result = {}
     for name in names:
         source = obj.pose.bones[name]
@@ -31,9 +76,7 @@ def snapshot_custom_pose(obj, names, mirror_map, in_place=False):
             if source.get('expression') == 'Look X / Y' or eye_pad:
                 basis.translation.x *= -1
         else:
-            source_axes = source.bone.matrix_local.to_3x3().normalized().to_4x4()
-            target_axes = target.bone.matrix_local.to_3x3().normalized().to_4x4()
-            change = target_axes.inverted() @ reflection @ source_axes
+            change = mirror_change(obj, name, target_name, custom, cache)
             basis = change @ basis @ change.inverted()
         result[target_name] = basis
     return result
@@ -46,6 +89,40 @@ def apply_custom_pose(obj, pose):
         bone.matrix_basis = basis
         applied.append(bone)
     return applied
+
+
+def custom_mirror_sources(names, animated, mirror_map):
+    """Custom bones to snapshot: the animated ones plus their counterparts.
+
+    An unanimated counterpart still has to be written (its rest pose becomes
+    the other side), otherwise a one-sided animation is duplicated, not moved.
+    """
+    animated = set(names) & set(animated)
+    sources = set(animated)
+    for name in names:
+        if mirror_map.get(name, name) in animated:
+            sources.add(name)
+    sources.update(mirror_map.get(name, name) for name in animated)
+    return sources & set(names)
+
+
+def mirror_custom_frames(context, obj, names, mirror_map, frames, in_place=False, excluded=()):
+    """Rest-relative mirror of custom bones, keyed on every given frame."""
+    from .anim_flip import keyframe_pose_bones
+    scene = context.scene
+    original_frame = scene.frame_current
+    snapshots = []
+    try:
+        # Snapshot every frame before keying: a new key on the opposite side
+        # changes the interpolation of later source frames.
+        for frame in frames:
+            scene.frame_set(frame)
+            pose = snapshot_custom_pose(obj, names, mirror_map, in_place)
+            snapshots.append((frame, {n: m for n, m in pose.items() if n not in excluded}))
+        for frame, pose in snapshots:
+            keyframe_pose_bones(apply_custom_pose(obj, pose), frame)
+    finally:
+        scene.frame_set(original_frame)
 
 
 def control_mirror_map(obj):
