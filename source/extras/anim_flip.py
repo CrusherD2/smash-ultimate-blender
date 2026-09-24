@@ -342,6 +342,19 @@ def extract_bone_name_from_path(path):
     return ""
 
 
+def is_ik_control(bone_name):
+    """Addon IK target/pole controls. Anim_flip skips them (they carry no Smash
+    track), but the rest-relative custom mirror must move them to the other side."""
+    return bool(bone_name) and not bone_name.startswith(('S_', 'H_')) and bool(_IK_HELPER.search(bone_name))
+
+
+def mirrors_in_rest_space(bone_name):
+    """Bones anim_flip skips that the rest-relative custom mirror still moves:
+    swing bones (vanilla or custom S_ chains) and addon IK controls. Helper
+    (H_) bones stay untouched; the game derives them from other bones."""
+    return bool(bone_name) and (bone_name.startswith('S_') or is_ik_control(bone_name))
+
+
 def is_untouchable_mirror_bone(bone_name):
     """Swing, helper, and addon IK bones are never mirrored."""
     if not bone_name:
@@ -372,7 +385,38 @@ _STANDARD_SMASH_PATTERN = re.compile(
     r'Clavicle[CLR]\d*)$'
 )
 _STANDARD_SMASH_SUFFIXES = ('_null', '_eff', '_offset')
-_STANDARD_FACE_KEYWORDS = ('brow', 'lip', 'eye', 'nose', 'cheek', 'jaw', 'mouth', 'tooth', 'tongue')
+_STANDARD_FACE_KEYWORDS = ('brow', 'lip', 'eye', 'nose', 'cheek', 'jaw', 'mouth', 'tooth', 'teeth', 'tongue')
+# Name parts: underscore/camel-case words and digit runs (UpperLip -> Upper, Lip).
+_NAME_PARTS = re.compile(r'[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+')
+
+
+def is_face_bone_name(bone_name):
+    """Face-rig name: a word of the name starts with a face keyword.
+
+    Matching whole words keeps Lip, UpperLip, left_upper_eyelid and EyebrowL
+    while rejecting names that merely contain the letters (flip, HairClip).
+    """
+    return any(part.lower().startswith(_STANDARD_FACE_KEYWORDS)
+               for part in _NAME_PARTS.findall(bone_name or ''))
+
+
+def is_face_rig_bone(armature, bone_name):
+    """Face rig: a face-named bone, or anything under Face or a face-named bone.
+
+    The hierarchy catches compound names a word match cannot (Shadow's
+    Downlip / Uplip under Face > Mouth_group) without the old substring rule
+    that also swallowed unrelated names like balloon_rope_flip.
+    """
+    if bone_name == 'Face' or is_face_bone_name(bone_name):
+        return True
+    bones = getattr(getattr(armature, 'data', None), 'bones', None)
+    bone = bones.get(bone_name) if bones is not None else None
+    parent = bone.parent if bone is not None else None
+    while parent is not None:
+        if parent.name.startswith('Face') or is_face_bone_name(parent.name):
+            return True
+        parent = parent.parent
+    return False
 
 
 def is_standard_smash_bone(bone_name):
@@ -390,18 +434,21 @@ def is_standard_smash_bone(bone_name):
         return True
     if base == 'Face' or base.startswith('Face'):
         return True
-    lower = base.lower()
-    return any(keyword in lower for keyword in _STANDARD_FACE_KEYWORDS)
+    return is_face_bone_name(base)
 
 
 def find_custom_mirror_bones(armature):
-    """Bones on this armature that are not part of a normal Smash skeleton."""
+    """Bones on this armature that are not part of a normal Smash skeleton.
+
+    The face rig is never mirrored, so it is never listed either.
+    """
     if armature is None or getattr(armature, 'type', None) != 'ARMATURE':
         return []
     return sorted(
         bone.name
         for bone in armature.pose.bones
-        if not is_standard_smash_bone(bone.name)
+        if (not is_standard_smash_bone(bone.name) or mirrors_in_rest_space(bone.name))
+        and not is_face_rig_bone(armature, bone.name)
     )
 
 
@@ -440,22 +487,13 @@ def should_exclude_bone_from_mirroring(bone_name, armature=None, include_fingers
     if bone_name_lower in ('hip', 'hipn', 'trans', 'root', 'pelvis'):
         return False
 
-    facial_keywords = ('brow', 'lip', 'eye', 'nose', 'cheek', 'jaw', 'mouth')
-    if any(keyword in bone_name_lower for keyword in facial_keywords):
+    # The face rig is left alone, so a tongue under an unflipped jaw stays
+    # unflipped too.
+    if is_face_rig_bone(armature, bone_name):
         return True
 
     if not include_fingers and bone_name.startswith('Finger'):
         return True
-
-    if bone_name == 'Face':
-        return True
-
-    if armature is not None and getattr(armature, 'type', None) == 'ARMATURE':
-        pose_bones = getattr(getattr(armature, 'pose', None), 'bones', None)
-        if pose_bones is not None and bone_name in pose_bones:
-            bone = pose_bones[bone_name]
-            if bone.parent and bone.parent.name == 'Face':
-                return True
 
     return False
 

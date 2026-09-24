@@ -79,6 +79,12 @@ def run(axis='Y', **kwargs):
     assert ok
 
 
+# Face bones are matched by whole name words, not by stray letters.
+for name in ('UpperLip', 'LipU', 'left_upper_eyelid_a_01', 'EyebrowL', 'Tongue_offset', 'Jaw'):
+    assert flip.is_face_bone_name(name) and flip.should_exclude_bone_from_mirroring(name), name
+for name in ('balloon_rope_blue_flip', 'HairClipL', 'Tulip', 'Hip'):
+    assert not flip.is_face_bone_name(name) and not flip.should_exclude_bone_from_mirroring(name), name
+
 # Default Y mirror (Smash Y Anim Flip off) must mirror extra bones in rest space.
 obj = build()
 source = sample(obj)
@@ -164,6 +170,29 @@ SMASH = [
     ('BulbR', 'Hip', frame_matrix((-2, 1, 9.5), (0, 0, 1), (1, 0, 0))),
     ('LeafL', 'LegL', frame_matrix((2.5, 0, 7), (0, .7, .7), (1, 0, 0))),
     ('LeafR', 'LegR', frame_matrix((-2.5, 0, 7), (0, .7, .7), (1, 0, 0))),
+    # Swing chains: a centre chain and a pair whose rests are not mirrored.
+    ('S_Tail1', 'Hip', frame_matrix((0, 2.5, 9), (0, .9, -.4), (1, 0, 0))),
+    ('S_Tail2', 'S_Tail1', frame_matrix((0, 4, 8.3), (.1, .9, -.3), (1, 0, .2))),
+    ('S_Hair_L1', 'Hip', frame_matrix((1, -1, 11), (.3, 0, 1), (0, 1, 0))),
+    ('S_Hair_R1', 'Hip', frame_matrix((-1, -1, 11), (-.1, .2, 1), (0, 1, 0))),
+    ('S_Hair_L2_null', 'S_Hair_L1', frame_matrix((1.3, -1, 12), (0, 0, 1), (1, 0, 0))),
+    ('S_Hair_R2_null', 'S_Hair_R1', frame_matrix((-1.3, -1, 12), (0, 0, 1), (1, 0, 0))),
+    # Only one side's name carries a marker (Amy's Hammer / HammerR); an
+    # off-centre bone whose R means red has no twin and stays in place.
+    ('Hammer', 'LegL', frame_matrix((2.2, -.5, 8), (0, -1, 0), (1, 0, 0))),
+    ('HammerR', 'LegR', frame_matrix((-2.2, -.5, 8), (0, -1, 0), (1, 0, 0))),
+    ('EmeraldR', 'Hip', frame_matrix((1.5, 1, 10), (0, 0, 1), (1, 0, 0))),
+    ('EmeraldB', 'Hip', frame_matrix((-1.5, 1.3, 10), (0, 0, 1), (1, 0, 0))),
+    # Face rig: compound lip names are only recognisable by sitting under Face.
+    ('Face', 'Hip', frame_matrix((0, -1, 12), (0, 0, 1), (1, 0, 0))),
+    ('Mouth_group', 'Face', frame_matrix((0, -1.5, 12), (0, -1, 0), (1, 0, 0))),
+    ('DownlipL', 'Mouth_group', frame_matrix((.3, -1.8, 12), (0, -1, 0), (1, 0, 0))),
+    ('DownlipR', 'Mouth_group', frame_matrix((-.3, -1.8, 12), (0, -1, 0), (1, 0, 0))),
+    # Parentless IK controls with identical (not mirrored) axes on both sides.
+    ('FootIKL', None, frame_matrix((2, -1, 1), (0, 0, 1), (1, 0, 0))),
+    ('FootIKR', None, frame_matrix((-2, -1, 1), (0, 0, 1), (1, 0, 0))),
+    ('ToeIKL', 'FootIKL', frame_matrix((2, -2, .5), (0, -1, 0), (0, 0, 1))),
+    ('ToeIKR', 'FootIKR', frame_matrix((-2, -2, .5), (0, -1, 0), (0, 0, 1))),
 ]
 
 
@@ -196,19 +225,52 @@ def build_smash():
 
 
 obj = build_smash()
+custom_mirror = importlib.import_module(MODULE + '.source.extras.mirror_custom_bones')
+pairs = custom_mirror.control_mirror_map(obj)
+assert pairs['Hammer'] == 'HammerR' and pairs['HammerR'] == 'Hammer'
+assert pairs['EmeraldR'] == 'EmeraldR' and pairs['EmeraldB'] == 'EmeraldB'
+for name in ('Face', 'Mouth_group', 'DownlipL'):
+    assert flip.should_exclude_bone_from_mirroring(name, obj), name
+    assert name not in flip.find_custom_mirror_bones(obj), name
+assert not flip.should_exclude_bone_from_mirroring('Tail1', obj)
+bpy.context.scene.frame_set(5)
+face_before = obj.pose.bones['DownlipL'].matrix_basis.copy()
 posed_before = {}
 for frame in (1, 5, 9):
     bpy.context.scene.frame_set(frame)
     posed_before[frame] = {p.name: p.matrix.copy() for p in obj.pose.bones}
 run(smash_y_anim_flip=False, include_fingers=True)
+bpy.context.scene.frame_set(5)
+assert error(obj.pose.bones['DownlipL'].matrix_basis, face_before) < 1e-6
 for frame in (1, 5, 9):
     bpy.context.scene.frame_set(frame)
     for src, dst in [('Hip', 'Hip'), ('LegL', 'LegR'), ('Tail1', 'Tail1'), ('Tail2', 'Tail2'),
-                     ('BulbL', 'BulbR'), ('BulbR', 'BulbL'), ('LeafL', 'LeafR'), ('LeafR', 'LeafL')]:
+                     ('BulbL', 'BulbR'), ('BulbR', 'BulbL'), ('LeafL', 'LeafR'), ('LeafR', 'LeafL'),
+                     ('FootIKL', 'FootIKR'), ('FootIKR', 'FootIKL'), ('ToeIKL', 'ToeIKR'),
+                     ('S_Tail1', 'S_Tail1'), ('S_Tail2', 'S_Tail2'), ('S_Hair_L1', 'S_Hair_R1'),
+                     ('S_Hair_R1', 'S_Hair_L1'), ('S_Hair_L2_null', 'S_Hair_R2_null'),
+                     ('Hammer', 'HammerR'), ('HammerR', 'Hammer')]:
         a = obj.data.bones[src].matrix_local
         b = obj.data.bones[dst].matrix_local
         fix = b.to_3x3().normalized().to_4x4().inverted() @ RX @ a.to_3x3().normalized().to_4x4()
         expected = RX @ posed_before[frame][src] @ fix.inverted()
         got = obj.pose.bones[dst].matrix
         assert error(got, expected) < 1e-4, ('smash parent', frame, src, dst, error(got, expected))
+
+# IK controls are listed by Find Custom Bones, and unchecking them keeps them
+# in place on both mirror paths.
+for smash_y in (False, True):
+    obj = build_smash()
+    assert bpy.ops.sub.find_custom_mirror_bones() == {'FINISHED'}
+    items = bpy.context.scene.sub_scene_properties.mirror_custom_bones
+    assert {'FootIKL', 'FootIKR', 'ToeIKL', 'S_Tail1', 'S_Hair_L1'} <= {i.name for i in items}
+    for name in ('FootIKL', 'FootIKR', 'S_Tail1'):
+        items[name].include = False
+    bpy.context.scene.frame_set(5)
+    held = {n: obj.pose.bones[n].matrix_basis.copy() for n in ('FootIKL', 'FootIKR', 'S_Tail1')}
+    run(smash_y_anim_flip=smash_y, include_fingers=True)
+    bpy.context.scene.frame_set(5)
+    for name, basis in held.items():
+        assert error(obj.pose.bones[name].matrix_basis, basis) < 1e-6, (smash_y, name)
+    items.clear()
 print('MIRROR CUSTOM FCURVE TEST PASSED')

@@ -413,7 +413,11 @@ If Blender runs but the addon will not enable, open an issue on [this fork](http
 
 ### Auto-updater
 
-This fork watches the **`animation-workflow`** branch (not GitHub Releases). When a new commit lands with a higher add-on version, **Update Available!** appears in the Ultimate tab with the changelog and **Download & Install Update**. Equal or older remote versions do not trigger the panel. If version information cannot be read, the updater falls back to comparing commits. It backs up the current install and restarts Blender.
+This fork watches the **`animation-workflow`** branch (not GitHub Releases). The check runs in the background at startup. When the branch has a higher add-on version (`bl_info['version']`), a popup shows that version's patch notes with **Update Now**, **Remind Me Later** (asks again next launch) and **Skip This Version** (quiet until a newer version is published). **Update Available!** also appears in the Ultimate tab. Equal or older remote versions, or versions that cannot be read, never count as an update. Installing restarts Blender, and it offers to save unsaved changes first.
+
+- **Patch notes** come from [`CHANGELOG.md`](CHANGELOG.md): add a `## <version>` section when bumping the version. If there is no matching section, recent commit messages are shown instead. After an update installs, a one-time **What's New** popup shows the new notes.
+- **Blender requirement:** if the update's `bl_info['blender']` is newer than the running Blender, there is no popup. The panel says which Blender version is required and disables installing.
+- **Turning the popup off:** Preferences › Add-ons › Smash Ultimate Blender Tools › Plugin Updates › *Show Update Popup*. A skipped version can be cleared there too.
 
 Version comparison uses the exact remote commit being checked. A local build with an equal or higher version keeps the panel hidden; use manual installation if you intentionally want a different build with the same version.
 

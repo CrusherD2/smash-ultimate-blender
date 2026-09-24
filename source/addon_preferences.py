@@ -93,6 +93,14 @@ class SUB_AddonPreferences(AddonPreferences):
         default=True,
     )
 
+    show_update_popup: BoolProperty(
+        name="Show Update Popup",
+        description="When Blender starts and a newer compatible version of the plugin is "
+                    "published, show a popup with its patch notes. Updates stay available in "
+                    "the Ultimate sidebar either way",
+        default=True,
+    )
+
     collection_preset_directory: StringProperty(
         name="Custom Collection Preset Directory",
         description="Directory used when the Collection Presets panel library is set to Custom",
@@ -137,6 +145,20 @@ class SUB_AddonPreferences(AddonPreferences):
         box = layout.box()
         box.label(text="Armature Collection Presets")
         box.prop(self, "collection_preset_directory")
+
+        box = layout.box()
+        box.label(text="Plugin Updates")
+        box.prop(self, "show_update_popup")
+        from .updater.prompt import skipped_version
+        from .updater.changelog import format_version
+        skipped = skipped_version()
+        if skipped is not None:
+            row = box.row()
+            row.label(text=f"Skipped version: v{format_version(skipped)}", icon='CANCEL')
+            row.operator("sub.update_clear_skipped", text="Clear", icon='X')
+        row = box.row(align=True)
+        row.operator("sub.check_for_updates", text="Check for Updates", icon='FILE_REFRESH')
+        row.operator("sub.update_whats_new", text="What's New in This Version", icon='TEXT')
 
         box = layout.box()
         box.label(text="Panel Help Buttons")

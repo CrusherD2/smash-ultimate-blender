@@ -4,7 +4,7 @@ bl_info = {
     'category': 'Object',
     'location': 'View 3D > Tool Shelf > Ultimate',
     'description': 'A collection of tools for importing models and animations to smash ultimate.',
-    'version': (4, 7, 1),
+    'version': (4, 8, 0),
     'blender': (4, 4, 0),
     'warning': 'TO REMOVE: First "Disable" the plugin, then restart blender, then you can hit "Remove" to uninstall',
     'doc_url': 'https://github.com/ssbucarlos/smash-ultimate-blender/wiki',
@@ -70,8 +70,10 @@ def register():
     from .source import updater
     updater.register()
 
-    from .source.updater.version_check import check_for_newer_version
-    check_for_newer_version()
+    # Show post-update notes, then check GitHub off the main thread; an
+    # available update opens a popup unless the user turned it off.
+    from .source.updater.prompt import schedule_startup
+    schedule_startup()
 
     # Add sub_scene_properties to the Scene object
     if not hasattr(bpy.types.Scene, "sub_scene_properties"):
@@ -96,6 +98,9 @@ def register():
     from .source.anim import motion_list_ui
     motion_list_ui.register()
 
+    from .source import drag_drop
+    drag_drop.register()
+
     # Last, once every panel exists: Panel Presets owns both sidebar visibility
     # and sidebar order, and its registration applies the saved layout.
     from .source.extras import panel_presets
@@ -115,6 +120,9 @@ def unregister():
     # Unregister panel presets first (restores original panel polls)
     from .source.extras import panel_presets
     panel_presets.unregister()
+
+    from .source import drag_drop
+    drag_drop.unregister()
 
     from .source.anim import motion_list_ui
     motion_list_ui.unregister()
