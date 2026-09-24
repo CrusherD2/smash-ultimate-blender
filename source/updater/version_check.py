@@ -62,10 +62,24 @@ UPDATE_STATUS: str = "idle"  # idle, checking, downloading, installing, ready_to
 LOCAL_VERSION_AHEAD: bool = False
 LOCAL_ADDON_VERSION: tuple = None
 REMOTE_ADDON_VERSION: tuple = None
+# Minimum Blender version declared by the remote bl_info, and whether this
+# Blender satisfies it. Incompatible updates are shown but cannot be installed.
+REMOTE_BLENDER_REQUIREMENT: tuple = None
+UPDATE_BLENDER_COMPATIBLE: bool = True
+# CHANGELOG.md sections between the installed and the available version.
+PENDING_CHANGELOG_SECTIONS: list = []
+
+REPO = "CrusherD2/smash-ultimate-blender"
+BRANCH = "animation-workflow"
+CHANGELOG_URL = f"https://github.com/{REPO}/blob/{BRANCH}/CHANGELOG.md"
 
 # Matches the bl_info version tuple in an addon __init__.py.
 _BL_INFO_VERSION_RE = re.compile(
     r"""['"]version['"]\s*:\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)"""
+)
+# Matches the bl_info minimum Blender version, e.g. 'blender': (4, 4, 0).
+_BL_INFO_BLENDER_RE = re.compile(
+    r"""['"]blender['"]\s*:\s*\(\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*(\d+)\s*)?\)"""
 )
 
 def get_commit_file_path():
@@ -105,22 +119,68 @@ def get_local_addon_version():
     return None
 
 
-def get_remote_addon_version(ref="animation-workflow"):
-    """bl_info version tuple published at `ref`, or None if it cannot be read."""
+def fetch_remote_text(ref, path, timeout=10):
+    """A file's text from the repository at `ref`, or None if it cannot be read."""
     try:
-        url = f"https://raw.githubusercontent.com/CrusherD2/smash-ultimate-blender/{ref}/__init__.py"
-        response = requests.get(url, timeout=10)
+        url = f"https://raw.githubusercontent.com/{REPO}/{ref}/{path}"
+        response = requests.get(url, timeout=timeout)
         response.raise_for_status()
-        match = _BL_INFO_VERSION_RE.search(response.text)
-        if match:
-            return tuple(int(part) for part in match.groups())
-        print("Smash_ultimate_blender: No bl_info version found in the remote __init__.py")
+        return response.text
     except Exception as e:
-        print(f"Smash_ultimate_blender: Could not read remote addon version: {e}")
+        print(f"Smash_ultimate_blender: Could not read remote {path}: {e}")
     return None
 
 
-def local_version_is_ahead(ref="animation-workflow"):
+def parse_bl_info_versions(init_text):
+    """(addon version, minimum Blender version) from __init__.py text; None where missing."""
+    version = blender = None
+    match = _BL_INFO_VERSION_RE.search(init_text or "")
+    if match:
+        version = tuple(int(part) for part in match.groups())
+    match = _BL_INFO_BLENDER_RE.search(init_text or "")
+    if match:
+        blender = tuple(int(part or 0) for part in match.groups())
+    return version, blender
+
+
+def get_remote_addon_version(ref=BRANCH):
+    """bl_info version tuple published at `ref`, or None if it cannot be read.
+
+    Also records the remote minimum Blender version in REMOTE_BLENDER_REQUIREMENT.
+    """
+    global REMOTE_BLENDER_REQUIREMENT
+    version, REMOTE_BLENDER_REQUIREMENT = parse_bl_info_versions(fetch_remote_text(ref, "__init__.py"))
+    if version is None:
+        print("Smash_ultimate_blender: No bl_info version found in the remote __init__.py")
+    return version
+
+
+def blender_meets_requirement(requirement, blender_version=None):
+    """True when this Blender is at least `requirement` (an unknown requirement passes)."""
+    if requirement is None:
+        return True
+    current = tuple(blender_version or bpy.app.version)[:3]
+    return current >= tuple(requirement)
+
+
+def get_pending_changelog_sections(ref, installed, remote):
+    """CHANGELOG.md sections from `installed` (exclusive) to `remote` at `ref`."""
+    from . import changelog
+    sections = changelog.parse_changelog(fetch_remote_text(ref, "CHANGELOG.md"))
+    return changelog.sections_between(sections, installed, remote)
+
+
+def get_local_changelog_sections():
+    """Every section of the installed CHANGELOG.md, newest first."""
+    from . import changelog
+    try:
+        with open(os.path.join(get_addon_path(), "CHANGELOG.md"), encoding="utf-8") as f:
+            return changelog.parse_changelog(f.read())
+    except OSError:
+        return []
+
+
+def local_version_is_ahead(ref=BRANCH):
     """True only when this install's version is provably newer than `ref`.
 
     A local build ahead of the branch is normally unreleased work, and offering
@@ -236,10 +296,14 @@ def get_commits_between(base_sha, head_sha):
 
 def check_for_newer_version():
     """
-    Check the animation-workflow branch for new commits.
-    If there's a newer commit than what we have stored, mark update as available.
+    Check the animation-workflow branch for a newer bl_info version.
+
+    An update is available only when the branch's version is higher than the
+    installed one. Also records the update's minimum Blender version and its
+    CHANGELOG.md notes. Blocking network I/O: call start_background_check from UI.
     """
     global UPDATE_STATUS, UPDATE_AVAILABLE, LATEST_COMMIT_SHA, LATEST_COMMIT_MESSAGE, LATEST_COMMIT_DATE, CURRENT_COMMIT_SHA, CURRENT_COMMIT_MESSAGE, PENDING_UPDATE_COMMITS, LOCAL_VERSION_AHEAD
+    global UPDATE_BLENDER_COMPATIBLE, PENDING_CHANGELOG_SECTIONS
     
     UPDATE_STATUS = "checking"
     
@@ -281,46 +345,50 @@ def check_for_newer_version():
         CURRENT_COMMIT_SHA = current_sha
         CURRENT_COMMIT_MESSAGE = current_message
         
-        # Check if we have a new commit
-        LOCAL_VERSION_AHEAD = False
         if current_sha is None:
-            # First time running, store current commit and don't show update
-            print("Smash_ultimate_blender: First time checking, storing current commit SHA")
+            # First run: remember the installed commit for later changelog comparisons.
             save_current_commit_sha(latest_sha)
-            UPDATE_AVAILABLE = False
-        elif current_sha != latest_sha:
-            # Commit differences alone do not make an equal or older version
-            # an update. Read the version at the exact commit being checked.
-            LOCAL_VERSION_AHEAD = local_version_is_ahead(latest_sha)
-            if (
-                LOCAL_ADDON_VERSION is not None
-                and REMOTE_ADDON_VERSION is not None
-                and LOCAL_ADDON_VERSION >= REMOTE_ADDON_VERSION
-            ):
-                local_text = ".".join(str(part) for part in LOCAL_ADDON_VERSION)
-                remote_text = ".".join(str(part) for part in REMOTE_ADDON_VERSION)
-                print(
-                    f"Smash_ultimate_blender: Installed version v{local_text} is equal to or newer "
-                    f"than v{remote_text} on animation-workflow; not offering an update."
-                )
-                PENDING_UPDATE_COMMITS = []
-                UPDATE_AVAILABLE = False
-                UPDATE_STATUS = "idle"
-                return
 
-            # New commit available!
-            print(f"Smash_ultimate_blender: New commit available!")
-            print(f"  Current: {current_sha[:8] if current_sha else 'None'}")
-            print(f"  Latest:  {latest_sha[:8]}")
-            print(f"  Message: {latest_message[:100]}...")
-            PENDING_UPDATE_COMMITS = get_commits_between(current_sha, latest_sha)
-            UPDATE_AVAILABLE = True
-        else:
-            # No update available
-            print("Smash_ultimate_blender: Plugin is up to date")
+        # The version number decides whether an update exists, so pushes that
+        # do not bump bl_info['version'] never prompt users.
+        LOCAL_VERSION_AHEAD = local_version_is_ahead(latest_sha)
+        UPDATE_BLENDER_COMPATIBLE = blender_meets_requirement(REMOTE_BLENDER_REQUIREMENT)
+        if (
+            LOCAL_ADDON_VERSION is None
+            or REMOTE_ADDON_VERSION is None
+            or LOCAL_ADDON_VERSION >= REMOTE_ADDON_VERSION
+        ):
+            if LOCAL_ADDON_VERSION and REMOTE_ADDON_VERSION:
+                print(
+                    f"Smash_ultimate_blender: Plugin is up to date "
+                    f"(installed v{_version_text(LOCAL_ADDON_VERSION)}, "
+                    f"published v{_version_text(REMOTE_ADDON_VERSION)})"
+                )
             PENDING_UPDATE_COMMITS = []
+            PENDING_CHANGELOG_SECTIONS = []
             UPDATE_AVAILABLE = False
-            
+            UPDATE_STATUS = "idle"
+            return
+
+        print(
+            f"Smash_ultimate_blender: Update available: v{_version_text(LOCAL_ADDON_VERSION)} "
+            f"-> v{_version_text(REMOTE_ADDON_VERSION)}"
+        )
+        if not UPDATE_BLENDER_COMPATIBLE:
+            print(
+                f"Smash_ultimate_blender: The update requires Blender "
+                f"{_version_text(REMOTE_BLENDER_REQUIREMENT)}+; not offering it for install."
+            )
+        PENDING_CHANGELOG_SECTIONS = get_pending_changelog_sections(
+            latest_sha, LOCAL_ADDON_VERSION, REMOTE_ADDON_VERSION
+        )
+        # Commit notes are the fallback when CHANGELOG.md has no matching sections.
+        PENDING_UPDATE_COMMITS = (
+            [] if PENDING_CHANGELOG_SECTIONS
+            else get_commits_between(current_sha, latest_sha)
+        )
+        UPDATE_AVAILABLE = True
+
     except Exception as e:
         print(f"Smash_ultimate_blender: Couldn't check for branch updates. Error: {e}")
         if hasattr(e, 'response') and e.response is not None:
@@ -330,6 +398,54 @@ def check_for_newer_version():
         return
     
     UPDATE_STATUS = "idle"
+
+def _version_text(version):
+    return ".".join(str(part) for part in version) if version else "?"
+
+
+_check_thread = None
+
+
+def start_background_check(on_done=None):
+    """Run check_for_newer_version off the main thread so startup never waits on the network.
+
+    `on_done` runs on the main thread (from a Blender timer) once the check ends.
+    """
+    global _check_thread
+    if _check_thread is not None and _check_thread.is_alive():
+        return False
+
+    def worker():
+        try:
+            check_for_newer_version()
+        except Exception as e:
+            print(f"Smash_ultimate_blender: Update check failed: {e}")
+
+    def poll():
+        if _check_thread is not None and _check_thread.is_alive():
+            return 0.5
+        redraw_all_areas()
+        if on_done is not None:
+            try:
+                on_done()
+            except Exception as e:
+                print(f"Smash_ultimate_blender: Update notification failed: {e}")
+        return None
+
+    _check_thread = threading.Thread(target=worker, name="sub_update_check", daemon=True)
+    _check_thread.start()
+    bpy.app.timers.register(poll, first_interval=0.5, persistent=True)
+    return True
+
+
+def redraw_all_areas():
+    try:
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                area.tag_redraw()
+    except Exception:
+        pass
+
 
 def get_addon_path():
     """Get the path to the current addon directory"""
@@ -525,11 +641,31 @@ class SUB_OP_download_update(Operator):
     _context = None
     _timer = None
 
+    def invoke(self, context, event):
+        # Blender restarts after installing, and that restart quits without
+        # prompting, so offer a save before any unsaved work is lost.
+        if bpy.data.is_dirty:
+            return context.window_manager.invoke_props_dialog(
+                self, title="Unsaved Changes", confirm_text="Update Without Saving")
+        return self.execute(context)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="Blender restarts after the update.", icon='ERROR')
+        layout.label(text="Unsaved changes in this file will be lost.")
+        layout.operator("wm.save_mainfile", text="Save File First", icon='FILE_TICK')
+
     def execute(self, context):
         global UPDATE_STATUS, UPDATE_DOWNLOAD_PROGRESS, BRANCH_DOWNLOAD_URL
 
         if not UPDATE_AVAILABLE:
             self.report({'ERROR'}, "No update available")
+            return {'CANCELLED'}
+        if not UPDATE_BLENDER_COMPATIBLE:
+            self.report({'ERROR'}, f"This update requires Blender {_version_text(REMOTE_BLENDER_REQUIREMENT)} or newer")
+            return {'CANCELLED'}
+        if UPDATE_STATUS in {"downloading", "installing"}:
+            self.report({'WARNING'}, "An update is already in progress")
             return {'CANCELLED'}
 
         UPDATE_STATUS = "downloading"
@@ -801,68 +937,72 @@ class SUB_OP_restart_blender(Operator):
         layout.label(text="Save before restarting?")
         layout.operator("wm.save_mainfile", text="Save and Continue")
 
+def pending_update_notes():
+    """The pending update's notes as [(heading, [lines])], newest version first.
+
+    CHANGELOG.md sections when available, otherwise the commit-message fallback.
+    """
+    from .changelog import format_version
+    if PENDING_CHANGELOG_SECTIONS:
+        return [
+            (f"v{format_version(section.version)}" + (f"  ({section.date})" if section.date else ""),
+             section.notes or ["No notes for this version."])
+            for section in PENDING_CHANGELOG_SECTIONS
+        ]
+    commits = PENDING_UPDATE_COMMITS
+    if not commits and LATEST_COMMIT_MESSAGE:
+        commits = [{"message": LATEST_COMMIT_MESSAGE.splitlines()[0], "full_message": LATEST_COMMIT_MESSAGE}]
+    if not commits:
+        return []
+    return [("Recent changes", _changelog_lines_from_commits(commits))]
+
+
 class SUB_OP_view_update_changelog(Operator):
-    """Show commit messages included in the pending update"""
+    """Show the patch notes included in the pending update"""
     bl_idname = "sub.view_update_changelog"
     bl_label = "Update Changelog"
-    bl_description = "Show what changed in the commits included in this update"
+    bl_description = "Show the patch notes for every version included in this update"
 
     def execute(self, context):
         return {'FINISHED'}
 
     def invoke(self, context, event):
-        global PENDING_UPDATE_COMMITS
-
-        if not PENDING_UPDATE_COMMITS and LATEST_COMMIT_MESSAGE:
-            PENDING_UPDATE_COMMITS = [{
-                "sha": (LATEST_COMMIT_SHA or "")[:8],
-                "message": LATEST_COMMIT_MESSAGE.splitlines()[0],
-                "full_message": LATEST_COMMIT_MESSAGE,
-                "date": (LATEST_COMMIT_DATE or "")[:10],
-                "author": "",
-            }]
-
-        return context.window_manager.invoke_popup(self, width=420)
+        return context.window_manager.invoke_props_dialog(
+            self, width=520, title=f"What's new in v{_version_text(REMOTE_ADDON_VERSION)}")
 
     def draw(self, context):
+        from .ui import draw_notes
         layout = self.layout
-        col = layout.column(align=True)
-        col.label(text="What's New", icon='INFO')
-        col.separator()
-
-        if not PENDING_UPDATE_COMMITS:
-            col.label(text="No changes listed.")
-            return
-
-        lines = _changelog_lines_from_commits(PENDING_UPDATE_COMMITS)
-        box = col.box()
-        inner = box.column(align=True)
-        for index, line in enumerate(lines, start=1):
-            inner.label(text=f"{index}. {line}")
+        draw_notes(layout, pending_update_notes(), max_lines=40)
+        row = layout.row()
+        row.operator("wm.url_open", text="Full Changelog Online", icon='URL').url = CHANGELOG_URL
+        row.template_popup_confirm("", cancel_text="Close")
 
 
 class SUB_OP_check_for_updates(Operator):
     """Manually check for updates"""
     bl_idname = "sub.check_for_updates"
     bl_label = "Check for Updates"
-    bl_description = "Manually check for available updates"
-    
+    bl_description = "Check GitHub for a newer version of the plugin"
+
     def execute(self, context):
         check_for_newer_version()
-        
+        redraw_all_areas()
+
         if UPDATE_AVAILABLE:
-            commit_short = LATEST_COMMIT_SHA[:8] if LATEST_COMMIT_SHA else "unknown"
-            self.report({'INFO'}, f"Update available: commit {commit_short}")
+            message = f"Update available: v{_version_text(REMOTE_ADDON_VERSION)}"
+            if not UPDATE_BLENDER_COMPATIBLE:
+                message += f" (requires Blender {_version_text(REMOTE_BLENDER_REQUIREMENT)}+)"
+            self.report({'INFO'}, message)
         elif LOCAL_VERSION_AHEAD and LOCAL_ADDON_VERSION and REMOTE_ADDON_VERSION:
-            local_text = ".".join(str(part) for part in LOCAL_ADDON_VERSION)
-            remote_text = ".".join(str(part) for part in REMOTE_ADDON_VERSION)
             self.report(
                 {'INFO'},
-                f"This install (v{local_text}) is newer than the published v{remote_text}",
+                f"This install (v{_version_text(LOCAL_ADDON_VERSION)}) is newer than "
+                f"the published v{_version_text(REMOTE_ADDON_VERSION)}",
             )
         else:
             self.report({'INFO'}, "No updates available")
-        
+
         return {'FINISHED'}
 
 # Register properties for the scene

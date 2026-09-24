@@ -70,8 +70,10 @@ def register():
     from .source import updater
     updater.register()
 
-    from .source.updater.version_check import check_for_newer_version
-    check_for_newer_version()
+    # Show post-update notes, then check GitHub off the main thread; an
+    # available update opens a popup unless the user turned it off.
+    from .source.updater.prompt import schedule_startup
+    schedule_startup()
 
     # Add sub_scene_properties to the Scene object
     if not hasattr(bpy.types.Scene, "sub_scene_properties"):
