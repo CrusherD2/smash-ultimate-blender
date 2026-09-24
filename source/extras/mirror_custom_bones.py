@@ -88,6 +88,85 @@ class MirrorSpace:
         fix = self.world_fix(source_name, target_name)
         return fix.inverted() @ basis @ fix
 
+    def world(self, source_name, target_name, source_world):
+        """Target world that mirrors the source's deformation.
+
+        A vertex skinned to the source maps to its mirror image skinned to
+        the target, so the mirrored mesh matches even when a vanilla rig
+        places its left and right bones slightly asymmetrically.
+        """
+        source = self.obj.data.bones[source_name]
+        target = self.obj.data.bones[target_name]
+        return (self.pose @ source_world @ source.matrix_local.inverted()
+                @ self.rest @ target.matrix_local)
+
+
+def _is_weight_control(pose_bone):
+    """Expression sliders and eye pads: channels are weights, not space."""
+    return bool(pose_bone.get('expression')) or (
+        pose_bone.name.endswith('_Look') and bool(pose_bone.bone.get('sub_face_owner')))
+
+
+def snapshot_custom_sources(obj, names):
+    """Per-bone (basis, world before own constraints, evaluated world)."""
+    result = {}
+    for name in names:
+        bone = obj.pose.bones[name]
+        rest = bone.bone.matrix_local
+        if bone.parent is None:
+            own = rest @ bone.matrix_basis
+        else:
+            own = bone.parent.matrix @ bone.parent.bone.matrix_local.inverted() @ rest @ bone.matrix_basis
+        result[name] = (bone.matrix_basis.copy(), own, bone.matrix.copy())
+    return result
+
+
+def _depth(bone):
+    depth = 0
+    while bone.parent is not None:
+        bone, depth = bone.parent, depth + 1
+    return depth
+
+
+def mirrored_custom_pose(space, snapshot, mirror_map, in_place=False, excluded=()):
+    """Target bases for a snapshot, parents first.
+
+    Call with the frame evaluated after every other bone was mirrored: a
+    target whose parent is not written here is posed against that parent's
+    actual mirrored matrix.
+    """
+    obj = space.obj
+    targets = {}
+    for name, entry in snapshot.items():
+        target = name if in_place else mirror_map.get(name, name)
+        if target in obj.pose.bones and target not in excluded:
+            targets[target] = (name, entry)
+    written = {}
+    result = []
+    for target in sorted(targets, key=lambda n: _depth(obj.data.bones[n])):
+        name, (basis, own, evaluated) = targets[target]
+        source = obj.pose.bones[name]
+        if _is_weight_control(source):
+            basis = basis.copy()
+            # Eye pads and Look X / Y use authored Left/Right channels.
+            if source.get('expression') == 'Look X / Y' or not source.get('expression'):
+                basis.translation.x *= -1
+        elif in_place:
+            basis = space.basis(name, target, basis)
+        else:
+            bone = obj.data.bones[target]
+            if bone.parent is None:
+                parent_space = bone.matrix_local
+            else:
+                parent_world = written.get(bone.parent.name)
+                if parent_world is None:
+                    parent_world = obj.pose.bones[bone.parent.name].matrix
+                parent_space = parent_world @ bone.parent.matrix_local.inverted() @ bone.matrix_local
+            basis = parent_space.inverted() @ space.world(name, target, own)
+            written[target] = space.world(name, target, evaluated)
+        result.append((target, basis))
+    return result
+
 
 def snapshot_custom_pose(obj, names, mirror_map, in_place=False, pose_reflection=None):
     # Reflect the animation delta, not the rest translation: arbitrary custom
@@ -114,46 +193,67 @@ def snapshot_custom_pose(obj, names, mirror_map, in_place=False, pose_reflection
     return result
 
 
-def apply_custom_pose(obj, pose):
-    applied = []
-    for name, basis in pose.items():
-        bone = obj.pose.bones[name]
-        bone.matrix_basis = basis
-        applied.append(bone)
-    return applied
-
-
-def custom_mirror_sources(names, animated, mirror_map):
+def custom_mirror_sources(names, animated, mirror_map, obj=None):
     """Custom bones to snapshot: the animated ones plus their counterparts.
 
     An unanimated counterpart still has to be written (its rest pose becomes
     the other side), otherwise a one-sided animation is duplicated, not moved.
+    With ``obj``, unanimated custom ancestors are written too: a chain whose
+    left and right rests differ can only be mirrored exactly as a whole.
     """
-    animated = set(names) & set(animated)
+    names = set(names)
+    animated = names & set(animated)
     sources = set(animated)
+    if obj is not None:
+        for name in animated:
+            parent = obj.data.bones[name].parent
+            while parent is not None and parent.name in names:
+                sources.add(parent.name)
+                parent = parent.parent
+    for name in list(sources):
+        sources.add(mirror_map.get(name, name))
     for name in names:
-        if mirror_map.get(name, name) in animated:
+        if mirror_map.get(name, name) in sources:
             sources.add(name)
-    sources.update(mirror_map.get(name, name) for name in animated)
-    return sources & set(names)
+    return sources & names
 
 
-def mirror_custom_frames(context, obj, names, mirror_map, frames, in_place=False, excluded=(),
-                         pose_reflection=None):
-    """Rest-relative mirror of custom bones, keyed on every given frame."""
-    from .anim_flip import keyframe_pose_bones
+def snapshot_custom_frames(context, obj, names, frames):
+    """Source transforms for every frame, taken before anything is keyed:
+    a new key on the opposite side changes later source interpolation."""
     scene = context.scene
     original_frame = scene.frame_current
-    snapshots = []
     try:
-        # Snapshot every frame before keying: a new key on the opposite side
-        # changes the interpolation of later source frames.
+        snapshots = []
         for frame in frames:
             scene.frame_set(frame)
-            pose = snapshot_custom_pose(obj, names, mirror_map, in_place, pose_reflection)
-            snapshots.append((frame, {n: m for n, m in pose.items() if n not in excluded}))
-        for frame, pose in snapshots:
-            keyframe_pose_bones(apply_custom_pose(obj, pose), frame)
+            snapshots.append((frame, snapshot_custom_sources(obj, names)))
+        return snapshots
+    finally:
+        scene.frame_set(original_frame)
+
+
+def key_custom_pose(obj, pose, frame):
+    from .anim_flip import keyframe_pose_bones
+    bones = []
+    for name, basis in pose:
+        bone = obj.pose.bones[name]
+        bone.matrix_basis = basis
+        bones.append(bone)
+    keyframe_pose_bones(bones, frame)
+
+
+def mirror_custom_frames(context, obj, snapshots, mirror_map, in_place=False, excluded=(),
+                         pose_reflection=None):
+    """Key mirrored custom bones after every other bone has been mirrored."""
+    space = MirrorSpace(obj, pose_reflection=pose_reflection)
+    scene = context.scene
+    original_frame = scene.frame_current
+    try:
+        for frame, snapshot in snapshots:
+            scene.frame_set(frame)
+            pose = mirrored_custom_pose(space, snapshot, mirror_map, in_place, excluded)
+            key_custom_pose(obj, pose, frame)
     finally:
         scene.frame_set(original_frame)
 
@@ -202,10 +302,50 @@ def mirror_pole_angles(obj, action, names, mirror_map, in_place=False, frame=Non
             key.interpolation = interpolation
 
 
+# Side markers, plus the common "_flip" suffix for a mirrored copy.
+_SIDE_MARKERS = {'l', 'r', '_l', '_r', '.l', '.r', 'left', 'right', '_left', '_right',
+                 'flip', '_flip'}
+
+
+def _pair_marked_counterparts(obj, mapping):
+    """Pair bones like Hammer / HammerR or rope / rope_flip, where only one
+    name carries a side.
+
+    Name rules cannot tell which bone is the other side's, so both conditions
+    are required: the names differ only by a side marker, and the bone sits
+    at the mirrored rest position under the mirrored parent. ``EmeraldR``
+    (R for red) has no such twin and stays unpaired.
+    """
+    from .anim_flip import _difference
+    bones = obj.data.bones
+    reflection = rest_reflection(obj).to_3x3()
+    lonely = sorted((b for b in bones if mapping.get(b.name, b.name) == b.name),
+                    key=lambda b: (_depth(b), b.name))
+    for bone in lonely:
+        if mapping.get(bone.name, bone.name) != bone.name:
+            continue
+        mirrored = reflection @ bone.head_local
+        tolerance = max(1e-3, 0.02 * bone.length)
+        if (mirrored - bone.head_local).length <= tolerance:
+            continue
+        parent = mapping.get(bone.parent.name, bone.parent.name) if bone.parent else None
+        for other in lonely:
+            if other is bone or mapping.get(other.name, other.name) != other.name:
+                continue
+            if (other.parent.name if other.parent else None) != parent:
+                continue
+            if {part.lower() for part in _difference(bone.name, other.name)} - {''} - _SIDE_MARKERS:
+                continue
+            if (other.head_local - mirrored).length <= tolerance:
+                mapping[bone.name], mapping[other.name] = other.name, bone.name
+                break
+    return mapping
+
+
 def control_mirror_map(obj):
     """Pair generated UUID/hash names through component bone assignments."""
     import json
-    mapping = create_mirror_map(obj.pose.bones.keys())
+    mapping = _pair_marked_counterparts(obj, create_mirror_map(obj.pose.bones.keys()))
     definitions = json.loads(obj.get('sub_custom_components', '[]'))
     owners = {}
     for definition in definitions:
