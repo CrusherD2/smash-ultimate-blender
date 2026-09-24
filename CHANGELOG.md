@@ -3,19 +3,25 @@
 Patch notes shown by the plugin's updater. When you bump `bl_info['version']` in
 `__init__.py`, add a section for that version at the top:
 
-    ## 4.7.2 - 2026-09-30
+    ## 4.8.1 - 2026-10-01
     - One short, user-facing line per change
 
 The updater shows every section newer than the user's installed version, and
 the "What's New" popup shows them once after the update installs. Sections
 that aren't headed by a version number (like "Unreleased") are never shown.
 
-## Unreleased
-- Update popup with patch notes, "Remind Me Later" and "Skip This Version" (can be turned off in Preferences)
-- Updates that need a newer Blender are shown but can't be installed until Blender is updated
-- "What's New" popup after the plugin updates
-- The update check no longer slows down Blender startup
-- Fixed animation mirroring, including IK bones
+## 4.8.0 - 2026-09-23
+- Drag and drop Smash files onto the 3D Viewport or Outliner to import them: model files, animations (.nuanmb/.rawanim), swing.prc, stage lighting and .shpcanim. A single drop can mix types, and animations and swing.prc go onto the model that was just imported. Also under File > Import > Smash Ultimate
+- Mirror Animation: IK controls now move to the other side with the body, and keyed IK pole angles are swapped and flipped
+- Mirror Animation: custom bones (including ones with unusual rest orientations) mirror correctly and follow their parents' mirrored pose, so meshes line up even on rigs with slightly uneven left/right bones
+- Mirror Animation: swing bones now move to the other side with the body instead of staying put
+- Mirror Animation: the whole face rig is left alone (including Teeth and names like Downlip), and unrelated bones that just contain face-like letters (e.g. "flip") are no longer skipped
+- Mirror Animation: expression sliders and eye pads mirror correctly
+- New update popup with patch notes and Update Now / Remind Me Later / Skip This Version. You can turn it off in Preferences > Add-ons > Plugin Updates
+- Updates that need a newer Blender are shown in the sidebar but can't be installed until you update Blender
+- A "What's New" popup appears once after the plugin updates, and you can reopen it from Preferences
+- The update check runs in the background, so it no longer slows down Blender startup
+- Update Now offers to save unsaved changes before Blender restarts
 
 ## 4.7.1 - 2026-09-22
 - Much faster animation rig creation and finger matching (native solver on Windows)

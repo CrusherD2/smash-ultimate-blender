@@ -58,7 +58,8 @@ class ParseTest(unittest.TestCase):
         sections = changelog.parse_changelog((ROOT / 'CHANGELOG.md').read_text(encoding='utf-8'))
         self.assertTrue(sections)
         self.assertTrue(all(section.notes for section in sections))
-        self.assertNotIn((4, 7, 2), [s.version for s in sections])
+        # The indented how-to example in the file header is not a real section.
+        self.assertNotIn((4, 8, 1), [s.version for s in sections])
 
     def test_sections_are_sorted_newest_first(self):
         text = '## 1.0.0\n- a\n## 1.2.0\n- b\n## 1.1.0\n- c\n'
