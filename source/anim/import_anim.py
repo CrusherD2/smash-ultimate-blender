@@ -284,14 +284,35 @@ def _refresh_imported_ik(context, obj, active_limbs, *, preserve_controls=False)
                 continue
             wanted.append(kind)
         if wanted:
-            # One sweep covering every eligible limb. match() walks the whole
-            # clip per call, so asking per kind sampled and solved the entire
-            # animation twice on an arms-and-legs rig. _batch additionally lets
-            # the limbs it can prove independent share depsgraph evaluations --
-            # it defaults off, so this path had been taking the slowest branch.
-            ik_channels.match(context, obj,
-                              'BOTH' if len(wanted) > 1 else wanted[0],
-                              entire=True, key=True, _batch=True)
+            # Live Floor Contact redirects the IK solver through driven
+            # contact targets, so matching with it on bakes the floor
+            # offset into the feet. Suspend it for the match, then restore.
+            floor_props = getattr(obj, 'sub_floor_contact', None) if hasattr(obj, 'sub_floor_contact') else None
+            suspend_floor = bool(floor_props is not None and getattr(floor_props, 'enabled', False))
+            if suspend_floor:
+                floor_props.enabled = False
+                try:
+                    obj.update_tag()
+                except Exception:
+                    pass
+                context.view_layer.update()
+            try:
+                # One sweep covering every eligible limb. match() walks the whole
+                # clip per call, so asking per kind sampled and solved the entire
+                # animation twice on an arms-and-legs rig. _batch additionally lets
+                # the limbs it can prove independent share depsgraph evaluations --
+                # it defaults off, so this path had been taking the slowest branch.
+                ik_channels.match(context, obj,
+                                  'BOTH' if len(wanted) > 1 else wanted[0],
+                                  entire=True, key=True, _batch=True)
+            finally:
+                if suspend_floor:
+                    floor_props.enabled = True
+                    try:
+                        obj.update_tag()
+                    except Exception:
+                        pass
+                    context.view_layer.update()
             for kind in wanted:
                 rig._key_use_ik(obj, context.scene.frame_start, limbs=kind, enabled=True)
                 rig._set_ik_enabled(context, obj, True, limbs=kind)
