@@ -86,6 +86,8 @@ class SUB_PG_floor_limb(PropertyGroup):
     mirror_source: StringProperty()
     expanded: BoolProperty(name='Contact Settings', default=False, options=set())
     enabled: BoolProperty(name='Floor', default=True, update=_changed)
+    floor_offset: FloatProperty(name='Floor Offset', default=0.0, subtype='DISTANCE', update=_changed,
+                                description='Per-limb adjustment added to the shared Floor Height')
     planted: BoolProperty(name='Planted', default=False, update=_changed,
                           description='Hold the contact marker; can be keyframed')
     auto_plant: BoolProperty(name='Auto Plant at Marker', default=False, update=_changed,
@@ -141,12 +143,14 @@ def _point_defaults(arm, control, floor, toe_bone=None):
     return points
 
 
-def setup_limb(context, arm, control, kind, points=None):
+def setup_limb(context, arm, control, kind, points=None, floor_offset=None):
     props = arm.sub_floor_contact
     limb = next((item for item in props.limbs if item.control == control), None)
     if limb is not None and all((limb.raw, limb.oriented, limb.heel, limb.toe, limb.anchor,
                                  limb.anchor_heel, limb.anchor_toe, limb.alignment, limb.solved)):
         return limb
+    if floor_offset is None:
+        floor_offset = limb.floor_offset if limb is not None else 0.0
     if limb is not None:
         remove(context, arm, controls={control})
     limb = props.limbs.add()
@@ -154,6 +158,7 @@ def setup_limb(context, arm, control, kind, points=None):
     limb.kind = kind
     limb.expanded = kind == 'LEGS' and 'IKL' in control
     limb.enabled = kind == 'LEGS'
+    limb.floor_offset = floor_offset
     size = max(arm.data.bones[control].length * 0.07, 0.025)
     for attr, label, visible in (
         ('raw', 'Input', False), ('oriented', 'Orientation', False),
@@ -174,7 +179,7 @@ def setup_limb(context, arm, control, kind, points=None):
         controls = ik_channels.foot_controls(job[1], arm)
         toe_bone = controls[3] if controls else None
     points = points or _point_defaults(
-        arm, control, context.scene.sub_floor_height, toe_bone)
+        arm, control, context.scene.sub_floor_height + floor_offset, toe_bone)
     for marker, point in zip((limb.heel, limb.toe), points):
         marker.parent = limb.oriented
         marker.matrix_parent_inverse = Matrix.Identity(4)
@@ -217,6 +222,7 @@ def configure(scene, arm, limb):
         'friction': (arm, path + '.resistance'),
         'toe_pin': (arm, path + '.pin_toe'),
         'floor': (scene, 'sub_floor_height'),
+        'foff': (arm, path + '.floor_offset'),
         'hz': (limb.heel, 'LOC_Z', ''), 'tz': (limb.toe, 'LOC_Z', ''),
         'hx': (limb.heel, 'LOC_X', ''), 'tx': (limb.toe, 'LOC_X', ''),
         'hy': (limb.heel, 'LOC_Y', ''), 'ty': (limb.toe, 'LOC_Y', ''),
@@ -251,11 +257,11 @@ def configure(scene, arm, limb):
         ('py', 'ty if toe_pin else ((hy if hz<=tz else ty) if roll else (hy+ty)/2)'),
         ('ax', 'tax if toe_pin else ((hax if hz<=tz else tax) if roll else (hax+tax)/2)'),
         ('ay', 'tay if toe_pin else ((hay if hz<=tz else tay) if roll else (hay+tay)/2)'),
-        ('d', '(tz if toe_pin else min(hz,tz))-floor'),
+        ('d', '(tz if toe_pin else min(hz,tz))-(floor+foff)'),
         ('attachment', 'max(0,min(1,(rh-max(0,d))/max(s,0.000001),(rd-sqrt((px-ax)**2+(py-ay)**2))/max(s,0.000001))) if auto else 0'),
         ('ease', 'attachment*attachment*(3-2*attachment)'),
         ('weight', '1 if pin or toe_pin else max(ease,friction*max(0,1-max(0,d)/max(rh,0.000001)))'),
-        ('height', 'z-min(hz,tz)+floor+(0 if pin or toe_pin or d<=0 else (1-ease)*(d*d/s*(2-d/s) if s>0 and d<s else d))'),
+        ('height', 'z-min(hz,tz)+floor+foff+(0 if pin or toe_pin or d<=0 else (1-ease)*(d*d/s*(2-d/s) if s>0 and d<s else d))'),
     ):
         limb.solved[name] = 0.0
         drive(limb.solved, '["' + name + '"]', expression)
@@ -286,7 +292,7 @@ def capture(context, arm, limb):
     graph = context.evaluated_depsgraph_get()
     points = [p.evaluated_get(graph).matrix_world.translation.copy() for p in (limb.heel, limb.toe)]
     matrix = limb.oriented.evaluated_get(graph).matrix_world.copy()
-    matrix.translation.z += context.scene.sub_floor_height - min(p.z for p in points)
+    matrix.translation.z += (context.scene.sub_floor_height + limb.floor_offset) - min(p.z for p in points)
     limb.anchor.matrix_world = matrix
 
 
@@ -466,7 +472,7 @@ def serialize(arm):
                       'points': [list(p.location) for p in (limb.heel, limb.toe)],
                       'alignment': list(limb.alignment.rotation_euler),
                       'softness': limb.softness, 'rolling': limb.rolling,
-                      'pin_toe': limb.pin_toe})
+                      'pin_toe': limb.pin_toe, 'floor_offset': limb.floor_offset})
     if not limbs:
         return json.loads(arm.get(PENDING, '{}'))
     return {'version': 1, 'limbs': limbs}
@@ -483,6 +489,8 @@ def load_calibration(context, arm, data):
             raise ValueError('Invalid floor contact calibration')
         if not math.isfinite(float(item.get('softness', .05))) or float(item.get('softness', .05)) < 0:
             raise ValueError('Contact softness must be a finite nonnegative distance')
+        if not math.isfinite(float(item.get('floor_offset', 0.0))):
+            raise ValueError('Floor offset must be a finite distance')
         alignment = item.get('alignment', (0, 0, 0))
         if len(alignment) != 3 or not all(math.isfinite(float(v)) for v in alignment):
             raise ValueError('Invalid calibrated orientation')
@@ -504,7 +512,8 @@ def restore_pending(context, arm):
             continue
         if any(l.control == control for l in arm.sub_floor_contact.limbs):
             continue
-        limb = setup_limb(context, arm, control, item['kind'], item['points'])
+        limb = setup_limb(context, arm, control, item['kind'], item['points'],
+                          floor_offset=float(item.get('floor_offset', 0.0)))
         limb.softness = max(0.0, float(item.get('softness', .05)))
         limb.rolling = bool(item.get('rolling', True))
         limb.pin_toe = bool(item.get('pin_toe', False))
@@ -527,7 +536,7 @@ def mirror(context, arm, limb):
         point = source @ marker.location
         point.x = -point.x
         points.append(tuple(inverse @ point))
-    other = setup_limb(context, arm, other_name, limb.kind, points)
+    other = setup_limb(context, arm, other_name, limb.kind, points, floor_offset=limb.floor_offset)
     for marker, point in zip((other.heel, other.toe), points):
         marker.location = point
     other.softness = limb.softness
@@ -708,6 +717,7 @@ def draw(layout, context, arm):
         if not limb.expanded:
             continue
         col.prop(limb, 'planted')
+        col.prop(limb, 'floor_offset')
         col.prop(limb, 'softness')
         col.prop(limb, 'auto_plant')
         if limb.auto_plant:
@@ -748,6 +758,18 @@ def _restore_contacts():
                             fc.driver.expression = fc.driver.expression.replace(
                                 'z-(tz if toe_pin else min(hz,tz))+floor',
                                 'z-min(hz,tz)+floor')
+                        if fc.data_path in ('["d"]', '["height"]') and 'foff' not in fc.driver.expression:
+                            fc.driver.expression = fc.driver.expression.replace(
+                                'z-min(hz,tz)+floor', 'z-min(hz,tz)+floor+foff')
+                            fc.driver.expression = fc.driver.expression.replace(
+                                '))-floor', '))-(floor+foff)')
+                            if not any(v.name == 'foff' for v in fc.driver.variables):
+                                var = fc.driver.variables.new()
+                                var.name = 'foff'
+                                var.type = 'SINGLE_PROP'
+                                var.targets[0].id_type = 'OBJECT'
+                                var.targets[0].id = obj
+                                var.targets[0].data_path = limb.path_from_id() + '.floor_offset'
                 # Remove the short-lived generated roll helper from files made
                 # by the previous implementation and restore the direct path.
                 old = bpy.data.objects.get(obj.name + ' • ' + limb.control + ' Foot Roll')

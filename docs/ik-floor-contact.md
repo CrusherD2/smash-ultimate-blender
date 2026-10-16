@@ -39,6 +39,9 @@ order chooses one pivot; this is not a solver that pins multiple separate toes.
 ## Pose and plant
 
 - **Floor Height** is a world Z value belonging to the scene, initially zero.
+- **Floor Offset** (per limb, under Advanced) is added to Floor Height for
+  that limb only, so one foot can rest higher or lower while the shared floor
+  still moves both together.
 - **Floor** keeps calibrated points above the plane and allows horizontal
   movement. The original IK control can still be dragged below the plane; the
   separate contact target stops at the floor.
