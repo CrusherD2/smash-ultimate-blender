@@ -29,6 +29,16 @@ TOE_OUTPUT = 'SUB IK Toe'
 PULL_TARGET = 'SUB IK Pull Target'
 PULL_END = 'SUB IK Pull End'
 ARM_PULL_PROPERTY = 'sub_ik_arm_pull'
+PULL_BASE = 'SUB IK Pull Base'
+SOLVER_BASE = 'SUB IK Solver Base'
+# Matched reference, keyed on each IK target/pole per frame. These store the
+# post-placement basis locations -- the same channels the fade drivers read --
+# so live-vs-reference is exactly zero at the matched pose by construction.
+REF_PROPS = ('sub_match_x', 'sub_match_y', 'sub_match_z')
+# Fade radii as fractions of the chain's rest length: full FK residual inside
+# the inner radius, pure solver outside the outer one, linear ramp between.
+_DETAIL_INNER = 0.10
+_DETAIL_OUTER = 0.40
 
 
 def _toe_roots_under(foot_bone):
@@ -342,6 +352,126 @@ def toe_outputs(obj, limbs='BOTH'):
                 yield toe, con, kind
 
 
+def _ensure_ref_props(obj, controls):
+    """Create (unkeyed) reference slots so fcurve creation never fails."""
+    for name in controls:
+        pb = obj.pose.bones.get(name)
+        if pb is None:
+            continue
+        for prop in REF_PROPS:
+            if prop not in pb:
+                pb[prop] = 0.0
+
+
+def _stash_control_ref(writer, pose_bone, translation, frame):
+    base = pose_bone.path_from_id()
+    for index, prop in enumerate(REF_PROPS):
+        writer.stash_channel(base + '["' + prop + '"]', 0, frame,
+                             float(translation[index]), pose_bone.name)
+
+
+def _chain_rest_length(obj, path):
+    total = 0.0
+    for first, second in zip(path, path[1:]):
+        total += (obj.data.bones[second].head_local - obj.data.bones[first].head_local).length
+    return total
+
+
+def _has_driver(obj, constraint, prop):
+    anim = getattr(obj, 'animation_data', None)
+    if anim is None:
+        return False
+    try:
+        return anim.drivers.find(constraint.path_from_id() + '.' + prop) is not None
+    except Exception:
+        return False
+
+
+def _drive_pull_base(obj, pull, target, pole, inner, outer):
+    """Fade the frozen FK residual out as controls leave the matched pose.
+
+    The PULL bone already stacks solver then residual. This drives the second
+    copy's influence from the live pole/target distance to their keyed matched
+    references, so a dragged KneeIK/FootIK blends toward the pure solver
+    instead of twisting the limb with a stale offset. At the matched pose the
+    weight is exactly 1.
+    """
+    base = pull.constraints.get(PULL_BASE)
+    if base is None:
+        return
+    driver = base.driver_add('influence').driver
+    driver.type = 'SCRIPTED'
+    for variable in list(driver.variables):
+        driver.variables.remove(variable)
+
+    def live(name, bone, axis):
+        var = driver.variables.new()
+        var.name = name
+        var.type = 'SINGLE_PROP'
+        var.targets[0].id_type = 'OBJECT'
+        var.targets[0].id = obj
+        var.targets[0].data_path = ('pose.bones[' + json.dumps(bone) + ']'
+                                    '.location[' + str(axis) + ']')
+
+    def ref(name, bone, axis):
+        var = driver.variables.new()
+        var.name = name
+        var.type = 'SINGLE_PROP'
+        var.targets[0].id_type = 'OBJECT'
+        var.targets[0].id = obj
+        var.targets[0].data_path = ('pose.bones[' + json.dumps(bone) + ']'
+                                    '["' + REF_PROPS[axis] + '"]')
+
+    for axis in range(3):
+        live(('plx', 'ply', 'plz')[axis], pole, axis)
+    for axis in range(3):
+        ref(('prx', 'pry', 'prz')[axis], pole, axis)
+    for axis in range(3):
+        live(('glx', 'gly', 'glz')[axis], target, axis)
+    for axis in range(3):
+        ref(('grx', 'gry', 'grz')[axis], target, axis)
+    span = max(outer - inner, 1e-6)
+
+    def num(value):
+        return repr(round(value, 4))
+
+    # NOTE: driver expressions are truncated at 255 chars, so the fade is a
+    # linear ramp (smoothstep does not fit). Keep this expression short.
+    def weight(cx, cy, cz, rx, ry, rz):
+        dist = 'sqrt((' + cx + '-' + rx + ')**2+(' + cy + '-' + ry + ')**2+(' + cz + '-' + rz + ')**2)'
+        return '1-min(max((' + dist + '-' + num(inner) + ')/' + num(span) + ',0),1)'
+
+    driver.expression = ('min(' + weight('plx', 'ply', 'plz', 'prx', 'pry', 'prz') + ','
+                         + weight('glx', 'gly', 'glz', 'grx', 'gry', 'grz') + ')')
+
+
+def _install_detail_drivers(obj, jobs):
+    """(Re)build correction-fade drivers for freshly matched chains."""
+    for _kind, names, target, pole in jobs:
+        path = limb_path(obj, names)
+        if not path:
+            continue
+        parented = False
+        for bone in (target, pole):
+            pb = obj.pose.bones.get(bone)
+            if pb is None or pb.parent is not None:
+                parented = True
+                break
+        if parented:
+            continue
+        rest = _chain_rest_length(obj, path)
+        if rest < 1e-6:
+            continue
+        inner, outer = rest * _DETAIL_INNER, rest * _DETAIL_OUTER
+        for name in path:
+            pull = obj.pose.bones.get(PULL_PREFIX + name)
+            if pull is None or pull.constraints.get(PULL_BASE) is None:
+                continue
+            if obj.pose.bones.get(CORRECTION_PREFIX + name) is None:
+                continue
+            _drive_pull_base(obj, pull, target, pole, inner, outer)
+
+
 def ensure(obj, context, limbs='BOTH'):
     from . import create_animation_rig as rig
     jobs = list(chains(obj, limbs))
@@ -588,10 +718,36 @@ def wire(obj):
             blend = source.constraints.get(OUTPUT)
             if pull is None or blend is None:
                 continue
-            base = pull.constraints.get('SUB IK Pull Base') or pull.constraints.new('COPY_TRANSFORMS')
-            base.name = 'SUB IK Pull Base'
-            base.target, base.subtarget = obj, (CORRECTION_PREFIX + name if CORRECTION_PREFIX + name in obj.pose.bones else PREFIX + name)
+            correction = CORRECTION_PREFIX + name if CORRECTION_PREFIX + name in obj.pose.bones else None
+            if correction is not None:
+                # Solver first, matched residual second: at full influence the
+                # stack reproduces the old single-constraint result exactly,
+                # and match-installed drivers can fade the second copy toward
+                # the pure solver as controls leave the matched pose.
+                first = pull.constraints.get(SOLVER_BASE) or pull.constraints.new('COPY_TRANSFORMS')
+                first.name = SOLVER_BASE
+                first.target, first.subtarget = obj, PREFIX + name
+                first.target_space = first.owner_space = 'POSE'
+                first.influence = 1.0
+                pull.constraints.move(list(pull.constraints).index(first), 0)
+            else:
+                old = pull.constraints.get(SOLVER_BASE)
+                if old is not None:
+                    try:
+                        old.driver_remove('influence')
+                    except Exception:
+                        pass
+                    pull.constraints.remove(old)
+            base = pull.constraints.get(PULL_BASE) or pull.constraints.new('COPY_TRANSFORMS')
+            base.name = PULL_BASE
+            base.target, base.subtarget = obj, (correction or PREFIX + name)
             base.target_space = base.owner_space = 'POSE'
+            if correction is not None:
+                pull.constraints.move(list(pull.constraints).index(base), 1)
+                if not _has_driver(obj, base, 'influence'):
+                    # Pre-match or legacy rig: exact legacy result until a
+                    # match keys references and installs the fade driver.
+                    base.influence = 1.0
             blend.subtarget = pull.name
             _ensure_constraint_influence_driver(obj, source, blend, _limb_switch_prop(kind))
             blend.mute = False
@@ -1403,6 +1559,13 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
                 writer.stash_pose_bone(obj.pose.bones[name], frame)
         writer.stash_channel(con.path_from_id() + '.pole_angle', 0, frame,
                              con.pole_angle, solver[-2].name)
+        # Matched references for the detail-fade drivers. These must be the
+        # live basis channels -- the same values stash_pose_bone just keyed
+        # (placement maps through the control's rest orientation, so basis
+        # location is not world translation). Read here, after all barriers,
+        # so refs always agree with the keyed controls.
+        _stash_control_ref(writer, control, control.location, frame)
+        _stash_control_ref(writer, pole_pb, pole_pb.location, frame)
 
 
 def match(context, obj, limbs='BOTH', entire=True, key=True, clean=False, _batch=False,
@@ -1429,6 +1592,9 @@ def match(context, obj, limbs='BOTH', entire=True, key=True, clean=False, _batch
     previous_pole = {}
     writer = fcurve_bulk.PoseKeyWriter(obj) if key else None
     native_factory = None
+    if key:
+        # Reference slots must exist before the writer flush creates curves.
+        _ensure_ref_props(obj, [n for _, _, target, pole in jobs for n in (target, pole)])
     try:
         from . import ik_match_fast
         with rig.defer_pose_tool_updates(), rig._disable_autokey(context), anim_layers_compat.bind_driving_action_for_bake(obj, context), ik_match_fast.suspend_viewport_handlers():
@@ -1481,9 +1647,16 @@ def match(context, obj, limbs='BOTH', entire=True, key=True, clean=False, _batch
                     owned.update(name for entry in cache.values() if entry['foot'] for name in entry['foot'][:3])
                     owned.update(name for entry in cache.values() if entry['articulation'] for name in entry['articulation'][:2])
                     paths = tuple(obj.pose.bones[n].path_from_id() + '.' for n in owned if n in obj.pose.bones)
+                    refs = {obj.pose.bones[n].path_from_id() + '["' + prop + '"]'
+                            for _, _, target, pole in jobs for n in (target, pole)
+                            for prop in REF_PROPS if n in obj.pose.bones}
                     for fc in get_all_action_fcurves(obj.animation_data.action, id_type='OBJECT'):
                         if fc.data_path.startswith(paths):
                             fcurve_bulk.set_interpolation(fc, 'LINEAR')
+                        elif fc.data_path in refs:
+                            fcurve_bulk.set_interpolation(fc, 'LINEAR')
+            if key:
+                _install_detail_drivers(obj, jobs)
             if entire and key and clean:
                 clean_animation(obj, limbs)
             if entire and key:

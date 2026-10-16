@@ -10,7 +10,7 @@ Enable **Stretch Chain** beside an IK Stretch control to distribute the target's
 
 Under **Create IK Controls**, expand **Custom IK Bones**. Choose a setup name, root, bend bone, endpoint, and Arms/Legs switch group. The bones must lie on one parent path and cannot overlap another IK setup. Custom chains participate in matching, switching, and Bake & Remove IK. Presets are stored as JSON in Blender's version-specific user scripts directory under `presets/smash_custom_ik`.
 
-Matching samples the scene frame range. A newly loaded action, newly created controls, or an unmatched limb makes the match button appear. Matching only one frame does not mark the entire animation matched. Rematch after changing the source FK animation if you want those changes copied into IK.
+Matching samples the scene frame range. A newly loaded action, newly created controls, or an unmatched limb makes the match button appear. Matching only one frame does not mark the entire animation matched. Rematch after changing the source FK animation if you want those changes copied into IK. At the matched pose the limb carries the full FK detail; dragging a target or pole control away blends toward the pure solver over a short distance, so edited poles never inherit a stale twist from the matched pose.
 
 Position IK Controls evaluates independent limbs together to reduce scene updates, including when Entire Animation is enabled. Solver iterations, pole fitting precision, and keyframe sampling are unchanged. Rigs with external or cross-limb dependencies, unsupported drivers, or animated constraint settings use sequential matching. Interactive pose-tool refreshes are deferred until matching finishes.
 
