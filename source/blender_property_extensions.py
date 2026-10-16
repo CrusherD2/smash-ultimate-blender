@@ -444,9 +444,10 @@ class SubSceneProperties(PropertyGroup):
         description="After creating the animation rig, remove keys that sit on baked interpolation so only the keys that change the pose remain",
         default=True,
     )
+    # Legacy: idle poses now auto-detect IK; kept so old blends still load.
     idle_pose_ik_enabled: BoolProperty(
         name="IK Enabled",
-        description="Match and key existing IK controls to the idle pose at this frame",
+        description="Legacy; idle poses now auto-detect IK controls",
         default=False,
     )
     idle_pose_include_trans: BoolProperty(

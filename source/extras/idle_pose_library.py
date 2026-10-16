@@ -62,8 +62,13 @@ def refresh_idle_poses(ssp):
     ssp.idle_pose_list_index = next(
         (i for i, pose in enumerate(ssp.idle_pose_list) if pose.name == selected), 0)
 
-def apply_pose_with_options(context, pose_data_str, include_trans=True, mirrored=False, rotate_180=False, ik_enabled=False):
-    """Apply pose data with the specified options"""
+def apply_pose_with_options(context, pose_data_str, include_trans=True, mirrored=False, rotate_180=False, ik_enabled=None):
+    """Apply pose data with the specified options.
+
+    ik_enabled=None auto-detects IK controls (explicit True/False is kept
+    for back-compat with tests/scripts). Finger/custom-component controls on
+    an animation rig are always auto-detected and matched to the idle pose.
+    """
     armature = context.active_object
     current_frame = context.scene.frame_current
     
@@ -164,13 +169,46 @@ def apply_pose_with_options(context, pose_data_str, include_trans=True, mirrored
                     context, armature, bones_to_key
                 )
         
-        if ik_enabled:
-            from . import ik_channels
-            from . import create_animation_rig as rig
+        want_ik = bool(list(ik_channels.chains(armature))) if ik_enabled is None else bool(ik_enabled)
+        if want_ik:
+            from . import finger_sliders
             if list(ik_channels.chains(armature)):
-                ik_channels.match(context, armature, entire=False, key=True)
+                # Keep stale component poses out of the IK source sample,
+                # mirroring anim import. Floor contact would also bake its
+                # offset into the match, so suspend it for the solve.
+                muted_components = [(con, con.mute) for pb in armature.pose.bones for con in pb.constraints
+                                    if con.name.startswith('SUB Component ') or con.name.startswith(finger_sliders.FINGER_CON_PREFIX)]
+                floor_props = getattr(armature, 'sub_floor_contact', None) if hasattr(armature, 'sub_floor_contact') else None
+                suspend_floor = bool(floor_props is not None and getattr(floor_props, 'enabled', False))
+                try:
+                    for con, _ in muted_components:
+                        con.mute = True
+                    if suspend_floor:
+                        floor_props.enabled = False
+                    context.view_layer.update()
+                    ik_channels.match(context, armature, entire=False, key=True)
+                finally:
+                    for con, state in muted_components:
+                        try:
+                            con.mute = state
+                        except ReferenceError:
+                            pass
+                    if suspend_floor:
+                        floor_props.enabled = True
+                    context.view_layer.update()
                 rig._key_use_ik(armature, current_frame, limbs='BOTH', enabled=True)
                 rig._set_ik_enabled(context, armature, True, limbs='BOTH')
+
+        if rig.armature_has_animation_rig(armature):
+            from . import component_matching, component_workflow, finger_sliders
+            has_fingers = finger_sliders.has_finger_slider_constraints(armature)
+            has_components = component_workflow.has_components(armature)
+            if has_fingers or has_components:
+                driving, _slot = anim_layers_compat.viewport_driving_action(armature)
+                if driving is not None:
+                    component_matching.match_animation(
+                        context, armature, current_frame, current_frame,
+                        include_fingers=has_fingers, match_ik=False)
 
         # Update the view
         for area in context.screen.areas:
@@ -329,8 +367,8 @@ class SUB_OP_apply_idle_pose(Operator):
         # Get the stored pose data
         pose_data_str = context.scene["idle_pose_data"]
         
-        # Apply the pose using the helper function
-        result, message = apply_pose_with_options(context, pose_data_str, include_trans, mirrored, rotate_180, ssp.idle_pose_ik_enabled)
+        # Apply the pose using the helper function (IK/components auto-detected)
+        result, message = apply_pose_with_options(context, pose_data_str, include_trans, mirrored, rotate_180)
         
         if result == {'FINISHED'}:
             self.report({'INFO'}, message)
@@ -439,8 +477,8 @@ class SUB_OP_apply_idle_pose_from_list(Operator):
         mirrored = ssp.idle_pose_mirrored
         rotate_180 = ssp.idle_pose_180_rotate
         
-        # Apply the pose using the helper function
-        result, message = apply_pose_with_options(context, pose_data_str, include_trans, mirrored, rotate_180, ssp.idle_pose_ik_enabled)
+        # Apply the pose using the helper function (IK/components auto-detected)
+        result, message = apply_pose_with_options(context, pose_data_str, include_trans, mirrored, rotate_180)
         
         if result == {'FINISHED'}:
             self.report({'INFO'}, f"Applied '{selected_pose.name}' pose - {message.split('-')[-1].strip()}")
