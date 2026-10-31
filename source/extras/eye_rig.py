@@ -39,8 +39,13 @@ EYE_TOGGLE_TRAVEL_KEY = 'sub_eye_toggle_travel'
 # Workbench (Solid + Texture) samples the active Image Texture with the active UV
 # map and never evaluates CustomVector31. A viewport-only UV Warp modifier
 # applies the same scale/translate so eye look is visible there too.
+# The iris map is transparent outside the pupil. Solid view was showing only that
+# map, so the sclera (the other UV) disappeared. A flattened copy composites the
+# iris over the sclera color; the warp still slides it.
 SOLID_UV_NAME = '.sub_eye_solid'
 SOLID_UV_FALLBACK = '_sub_eye_solid'
+EYE_SOLID_NODE = 'SUB_EyeSolid'
+EYE_SOLID_KEY = 'sub_eye_solid_key'
 UV_WARP_NAME = 'SUB_EyeSolidWarp'
 EYE_UV_FROM = 'BL_Eye_UVFrom'
 EYE_UV_SPHERE = 'BL_Eye_UVSphere'
@@ -1039,17 +1044,207 @@ def _set_active_image_node(material, node):
     nodes.active = node
 
 
+def _linked_uv_map(node, links):
+    seen = set()
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        uv_map = getattr(current, 'uv_map', None)
+        if uv_map:
+            return uv_map
+        for link in links:
+            if link.to_node is current:
+                stack.append(link.from_node)
+    return ''
+
+
+def _image_is_data_map(image):
+    if image is None:
+        return True
+    blob = f"{getattr(image, 'name', '')} {getattr(image, 'filepath', '')}".lower()
+    if any(token in blob for token in ('nor', 'nrm', 'prm', 'cube', 'irradiance')):
+        return True
+    try:
+        space = (image.colorspace_settings.name or '').lower()
+    except Exception:
+        space = ''
+    return space in {'non-color', 'raw'}
+
+
+def _sclera_image(material):
+    """map1 color texture: the white of the eye, under the sliding iris."""
+    nodes = material.node_tree.nodes
+    links = material.node_tree.links
+    named = nodes.get('Texture0')
+    image = getattr(named, 'image', None) if named is not None else None
+    if image is not None and not _image_is_data_map(image):
+        uv_map = _linked_uv_map(named, links)
+        if uv_map in {'', 'map1'}:
+            return image
+    for node in nodes:
+        if node.type != 'TEX_IMAGE' or not node.image or node.name == EYE_SOLID_NODE:
+            continue
+        if _image_is_data_map(node.image):
+            continue
+        if _linked_uv_map(node, links) == 'map1':
+            return node.image
+    return None
+
+
+def _bright_sclera_rgb(image):
+    """Color of the bright part of the sclera map. Flat white when there is no map."""
+    if image is None:
+        return (1.0, 1.0, 1.0)
+    width, height = image.size
+    if width < 1 or height < 1:
+        return (1.0, 1.0, 1.0)
+    try:
+        import numpy as np
+        step_x = max(1, width // 96)
+        step_y = max(1, height // 96)
+        buf = np.empty(width * height * 4, dtype=np.float32)
+        image.pixels.foreach_get(buf)
+        sample = buf.reshape(height, width, 4)[::step_y, ::step_x].reshape(-1, 4)
+        opaque = sample[:, 3] > 0.35
+        if np.any(opaque):
+            sample = sample[opaque]
+        if sample.size == 0:
+            return (1.0, 1.0, 1.0)
+        lum = sample[:, 0] * 0.3 + sample[:, 1] * 0.59 + sample[:, 2] * 0.11
+        bright = sample[lum >= np.quantile(lum, 0.65)]
+        if bright.size == 0:
+            bright = sample
+        rgb = bright[:, :3].mean(axis=0)
+        return (float(rgb[0]), float(rgb[1]), float(rgb[2]))
+    except Exception:
+        return (1.0, 1.0, 1.0)
+
+
+def _flatten_iris_over_sclera(iris, fill_rgb, dest_name):
+    """Iris RGB over the sclera color, with alpha forced on so Solid view is not see-through."""
+    import numpy as np
+    width, height = iris.size
+    if width < 1 or height < 1:
+        return None
+    buf = np.empty(width * height * 4, dtype=np.float32)
+    iris.pixels.foreach_get(buf)
+    px = buf.reshape(-1, 4)
+    alpha = px[:, 3:4]
+    px[:, 0] = px[:, 0] * alpha[:, 0] + fill_rgb[0] * (1.0 - alpha[:, 0])
+    px[:, 1] = px[:, 1] * alpha[:, 0] + fill_rgb[1] * (1.0 - alpha[:, 0])
+    px[:, 2] = px[:, 2] * alpha[:, 0] + fill_rgb[2] * (1.0 - alpha[:, 0])
+    px[:, 3] = 1.0
+    image = bpy.data.images.get(dest_name)
+    if image is None or tuple(image.size) != (width, height):
+        if image is not None:
+            bpy.data.images.remove(image)
+        image = bpy.data.images.new(dest_name, width, height, alpha=True, float_buffer=True)
+    try:
+        image.colorspace_settings.name = iris.colorspace_settings.name
+    except Exception:
+        pass
+    try:
+        image.alpha_mode = 'NONE'
+    except Exception:
+        pass
+    image.pixels.foreach_set(np.ascontiguousarray(px.reshape(-1), dtype=np.float32))
+    image.update()
+    try:
+        image.gl_free()
+    except Exception:
+        pass
+    return image
+
+
+def _undo_iris_clip(material):
+    """Older solid preview set the real iris node to CLIP, which punches out the sclera."""
+    if _PREV_EXT_KEY not in material:
+        return
+    nodes = material.node_tree.nodes if material.use_nodes and material.node_tree else None
+    if nodes is not None:
+        node = nodes.get(material.get(_PREV_EXT_NODE_KEY, ''))
+        if node is not None and hasattr(node, 'extension'):
+            try:
+                node.extension = material[_PREV_EXT_KEY]
+            except Exception:
+                pass
+    del material[_PREV_EXT_KEY]
+    if _PREV_EXT_NODE_KEY in material:
+        del material[_PREV_EXT_NODE_KEY]
+
+
+def _ensure_eye_solid_node(material):
+    iris_node = _iris_image_node(material)
+    iris = getattr(iris_node, 'image', None) if iris_node is not None else None
+    if iris is None:
+        return None
+    fill = _bright_sclera_rgb(_sclera_image(material))
+    key = (
+        iris.name,
+        int(iris.size[0]),
+        int(iris.size[1]),
+        round(fill[0], 3),
+        round(fill[1], 3),
+        round(fill[2], 3),
+    )
+    nodes = material.node_tree.nodes
+    node = nodes.get(EYE_SOLID_NODE)
+    if material.get(EYE_SOLID_KEY) != repr(key) or node is None or getattr(node, 'image', None) is None:
+        image = _flatten_iris_over_sclera(iris, fill, f"SUB_EyeSolid::{material.name}")
+        if image is None:
+            return None
+        if node is None or node.type != 'TEX_IMAGE':
+            node = nodes.new('ShaderNodeTexImage')
+            node.name = EYE_SOLID_NODE
+            node.label = 'Solid View Eye'
+            node.location = (-2200, -2000)
+        node.image = image
+        material[EYE_SOLID_KEY] = repr(key)
+    try:
+        node.extension = 'EXTEND'
+        node.interpolation = 'Linear'
+    except Exception:
+        pass
+    return node
+
+
 def _apply_iris_solid_sampling(material):
-    node = _iris_image_node(material)
-    if node is None or not hasattr(node, 'extension'):
+    """Show the sclera and the iris together. UV warp on uvSet still moves the iris."""
+    if material is None or not material.use_nodes or material.node_tree is None:
+        return
+    _undo_iris_clip(material)
+    node = _ensure_eye_solid_node(material)
+    if node is None:
+        iris = _iris_image_node(material)
+        if iris is None:
+            return
+        _remember_active_texture(material)
+        _set_active_image_node(material, iris)
         return
     _remember_active_texture(material)
-    if _PREV_EXT_KEY not in material:
-        material[_PREV_EXT_KEY] = node.extension
-        material[_PREV_EXT_NODE_KEY] = node.name
-    if node.extension != 'CLIP':
-        node.extension = 'CLIP'
     _set_active_image_node(material, node)
+    try:
+        material.node_tree.update_tag()
+    except Exception:
+        pass
+    image = node.image
+    if image is None:
+        return
+    try:
+        images = list(material.texture_paint_images)
+    except Exception:
+        return
+    for index, slot_image in enumerate(images):
+        if slot_image == image:
+            try:
+                if material.paint_active_slot != index:
+                    material.paint_active_slot = index
+            except Exception:
+                pass
+            return
 
 
 def _cv31_indices_for_mat(arma, mat):
@@ -1960,7 +2155,7 @@ def _solid_preview_timer():
     if not want:
         if _eye_preview_running:
             stop_eye_preview(scene)
-        return 1.0
+        return 0.35 if _solid_texture_viewport_open() else 1.0
     if scene is None:
         return 1.0
     solid_open = _solid_texture_viewport_open()
