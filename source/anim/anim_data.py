@@ -1097,7 +1097,8 @@ def remove_visibility_drivers(context):
 def remove_anim_material_drivers(arma:bpy.types.Object):
     from ..model.material.sub_matl_data import SUB_PG_sub_matl_data
     from ..model.material.create_blender_materials_from_matl import setup_sub_matl_data_node_drivers
-    mesh_children = [child for child in arma.children if child.type == 'MESH']
+    from ..model.vis_shape_groups import iter_model_meshes
+    mesh_children = list(iter_model_meshes(arma))
     materials = {material_slot.material for mesh in mesh_children for material_slot in mesh.material_slots}
     for material in materials:
         for node in material.node_tree.nodes:

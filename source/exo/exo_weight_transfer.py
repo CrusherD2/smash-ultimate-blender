@@ -63,8 +63,12 @@ class SUB_OP_transfer_exo_weights(Operator):
         processed_meshes = 0
         transferred_groups = 0
         
+        from ..model.vis_shape_groups import is_vis_shape_group
         for obj in context.selected_objects:
-            if obj.type != 'MESH' or not obj.parent or obj.parent.type != 'ARMATURE':
+            parent = obj.parent
+            if is_vis_shape_group(parent):
+                parent = parent.parent
+            if obj.type != 'MESH' or not parent or parent.type != 'ARMATURE':
                 continue
                 
             processed_meshes += 1

@@ -135,6 +135,20 @@ def vanilla_reference_sibling(filepath, target):
     return ''
 
 
+def update_prc_export_folder(model_folder):
+    """Prefer fighter/.../motion/... over the model export folder for update.prc.
+
+    Example: fighter/mario/model/body/c64 -> fighter/mario/motion/body/c64
+    """
+    folder = Path(model_folder)
+    parts = list(folder.parts)
+    for index in range(len(parts) - 1, -1, -1):
+        if parts[index].lower() == 'model':
+            parts[index] = 'motion'
+            return Path(*parts)
+    return folder
+
+
 class SUB_OP_vanilla_update_prc_selector(Operator, ImportHelper):
     bl_idname = 'sub.vanilla_update_prc_selector'
     bl_label = 'Vanilla update.prc Selector'
@@ -486,7 +500,8 @@ def export_model(operator: bpy.types.Operator, context, directory, include_numdl
     # Temporarily remove mesh vis drivers and un-hide them for export
     if arma.animation_data is not None:
         bpy.ops.sub.vis_drivers_remove()
-    for child in arma.children:
+    from .vis_shape_groups import iter_visibility_targets
+    for child in iter_visibility_targets(arma):
         child.hide_viewport = False
         child.hide_render = False
     
@@ -500,10 +515,12 @@ def export_model(operator: bpy.types.Operator, context, directory, include_numdl
     # Users can avoid errors in generating a file by disabling export for that file.
     if include_numshb or include_numshexb or include_numatb or include_numdlb:
         # Only Mesh Objects, Skip Empty Objects
+        from .vis_shape_groups import iter_model_meshes
+        model_meshes = list(iter_model_meshes(arma))
         if ignore_underscore_meshes == 'IGNORE_STARTING_UNDERSCORE':
-            unprocessed_meshes: list[Object] = [child for child in arma.children if child.type == 'MESH' and len(child.data.vertices) > 0 and not child.name.startswith("_")] 
+            unprocessed_meshes: list[Object] = [child for child in model_meshes if len(child.data.vertices) > 0 and not child.name.startswith("_")]
         else:
-            unprocessed_meshes: list[Object] = [child for child in arma.children if child.type == 'MESH' and len(child.data.vertices) > 0] 
+            unprocessed_meshes: list[Object] = [child for child in model_meshes if len(child.data.vertices) > 0]
         
         # Remove swing meshes
         unprocessed_meshes = [mesh for mesh in unprocessed_meshes if mesh.data.sub_swing_data_linked_mesh.is_swing_mesh == False]
@@ -599,8 +616,17 @@ def export_model(operator: bpy.types.Operator, context, directory, include_numdl
                 ssbh_skel_data.save(path)
             except Exception as e:
                 operator.report({'ERROR'}, f'Failed to save .nusktb, Error="{e}" ; Traceback=\n{traceback.format_exc()}')
-        prc_path = str(folder.joinpath('update.prc'))
         if prc is not None:
+            prc_folder = update_prc_export_folder(folder)
+            if prc_folder != folder:
+                try:
+                    prc_folder.mkdir(parents=True, exist_ok=True)
+                except Exception as e:
+                    operator.report({'ERROR'}, f'Failed to create motion folder for update.prc ({prc_folder}), Error="{e}"')
+                    prc_folder = folder
+                else:
+                    operator.report({'INFO'}, f'Writing update.prc to motion folder: {prc_folder}')
+            prc_path = str(prc_folder.joinpath('update.prc'))
             try:
                 prc.save(prc_path)
             except Exception as e:

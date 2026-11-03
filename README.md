@@ -231,6 +231,7 @@ armature pairing and combined skeleton controls remain together there.
 ![Model Tools and the rest of the Ultimate tab](docs/readme/model-tools.png)
 
 - Limit Weights to 4
+- Mirror Bone (Edit Mode: HaveR mirrors to HaveL; an unsided name takes its side from the parent)
 - Mirror Vertex Groups / Mirror Mesh as Separate Object
 - Unstack UV Islands
 - Convert Shape Keys to Meshes (prefix)

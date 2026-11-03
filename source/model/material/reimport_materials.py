@@ -157,7 +157,8 @@ class SUB_OP_copy_materials_from_armature(Operator):
 
 
 def _armature_mesh_children(arma: bpy.types.Object) -> list[bpy.types.Object]:
-    return [child for child in arma.children if child.type == 'MESH']
+    from ..vis_shape_groups import iter_model_meshes
+    return list(iter_model_meshes(arma))
 
 
 def _mesh_name_key(name: str) -> str:
@@ -228,7 +229,7 @@ def reimport_materials(operator: Operator, context):
 
     ssp: SubSceneProperties = context.scene.sub_scene_properties
     arma: bpy.types.Object = ssp.material_reimport_arma 
-    mesh_objects: set[bpy.types.Object] = {child for child in arma.children if child.type == 'MESH'}
+    mesh_objects: set[bpy.types.Object] = set(_armature_mesh_children(arma))
     materials: set[bpy.types.Material] = {material_slot.material for mesh_object in mesh_objects for material_slot in mesh_object.material_slots}
     material_names: set[str] = {material.name for material in materials}
     if not would_trimmed_names_be_unique(material_names):

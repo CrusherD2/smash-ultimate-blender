@@ -23,6 +23,10 @@ def export_nutexb_from_blender_materials(operator: bpy.types.Operator, materials
     for material in materials | linked_materials:
         if has_sub_matl_data(material):
             for texture in material.sub_matl_data.textures:
+                if texture.image is None:
+                    slot = texture.param_id_name or 'texture'
+                    operator.report({'WARNING'}, f'{material.name} {slot} has no image, so it was not exported.')
+                    continue
                 if texture.image.name in generated_default_texture_name_value:
                     operator.report({'INFO'}, f'Not exporting {texture.image.name}, as it is a default texture.')
                     continue

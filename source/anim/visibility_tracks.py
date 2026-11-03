@@ -26,10 +26,8 @@ def model_visibility_names(armature_object) -> dict[str, str]:
     names = {}
     if armature_object is None:
         return names
-    meshes = sorted(
-        (child for child in armature_object.children if child.type == "MESH"),
-        key=lambda child: child.name.casefold(),
-    )
+    from ..model.vis_shape_groups import iter_model_meshes
+    meshes = sorted(iter_model_meshes(armature_object), key=lambda child: child.name.casefold())
     for mesh in meshes:
         name = visibility_name_from_mesh(mesh.name)
         if name:

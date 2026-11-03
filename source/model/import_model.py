@@ -1282,6 +1282,17 @@ def create_mesh(ssbh_model: ssbh_data_py.modl_data.ModlData, ssbh_mesh, ssbh_ske
     end = time.time()
     print(f'Created meshes in {end - start} seconds')
 
+    if armature is not None:
+        try:
+            from .vis_shape_groups import group_vis_shapes
+            summary = group_vis_shapes(armature, context)
+            if summary["groups"]:
+                print(
+                    f'Grouped {summary["meshes"]} VIS shapes into {summary["groups"]} outliner groups'
+                )
+        except Exception:
+            print(f'VIS shape grouping skipped:\n{traceback.format_exc()}')
+
     return created_meshes
 
 def import_material_images(ssbh_matl, dir):

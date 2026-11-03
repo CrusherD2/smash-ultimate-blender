@@ -32,6 +32,9 @@ for body in ('body/', ''):
     prc = f'C:/dump/fighter/mario/motion/{body}c03/update.prc'
     assert Path(model.vanilla_reference_sibling(skel, 'prc')) == Path(prc)
     assert Path(model.vanilla_reference_sibling(prc, 'skel')) == Path(skel)
+    assert model.update_prc_export_folder(f'C:/dump/fighter/mario/model/{body}c03') == Path(
+        f'C:/dump/fighter/mario/motion/{body}c03')
+assert model.update_prc_export_folder(r'C:\mods\my_costume') == Path(r'C:\mods\my_costume')
 
 bpy.ops.object.camera_add()
 obj = bpy.context.object

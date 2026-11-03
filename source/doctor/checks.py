@@ -1434,8 +1434,9 @@ def _deform_indices_for_fix(result, mesh_object):
     armature = bpy.data.objects.get(result.payload.get('armature', ''))
     if armature is None:
         armature = mesh_object.find_armature()
-    if armature is None and mesh_object.parent is not None and mesh_object.parent.type == 'ARMATURE':
-        armature = mesh_object.parent
+    if armature is None:
+        from ..model.vis_shape_groups import owning_armature
+        armature = owning_armature(mesh_object)
     bones = armature.data.bones if armature is not None else {}
     return {group.index for group in mesh_object.vertex_groups if group.name in bones}
 

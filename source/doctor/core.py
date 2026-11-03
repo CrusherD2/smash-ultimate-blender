@@ -147,17 +147,21 @@ class DoctorScene:
         active = context.active_object
         if active is not None and active.type == 'ARMATURE':
             return active
-        if active is not None and active.parent is not None and active.parent.type == 'ARMATURE':
-            return active.parent
+        if active is not None:
+            from ..model.vis_shape_groups import owning_armature
+            owner = owning_armature(active)
+            if owner is not None:
+                return owner
         return arma
 
     def _find_meshes(self):
         """The meshes the model exporter would pick up, in the order it uses."""
         if self.armature is None:
             return []
+        from ..model.vis_shape_groups import iter_model_meshes
         meshes = [
-            child for child in self.armature.children
-            if child.type == 'MESH' and len(child.data.vertices) > 0
+            child for child in iter_model_meshes(self.armature)
+            if len(child.data.vertices) > 0
         ]
         # The exporter skips swing meshes entirely.
         meshes = [

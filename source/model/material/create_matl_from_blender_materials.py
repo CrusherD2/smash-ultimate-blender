@@ -77,14 +77,22 @@ def get_sampler(sub_matl_sampler: SUB_PG_matl_sampler) -> ssbh_data_py.matl_data
 def get_samplers(samplers: list[SUB_PG_matl_sampler]) -> list[ssbh_data_py.matl_data.SamplerParam]:
     return [get_sampler(sub_matl_sampler) for sub_matl_sampler in samplers]
 
-def get_texture(sub_matl_texture: SUB_PG_matl_texture) -> ssbh_data_py.matl_data.TextureParam:
+def get_texture(sub_matl_texture: SUB_PG_matl_texture, material_label: str) -> ssbh_data_py.matl_data.TextureParam:
+    image = getattr(sub_matl_texture, 'image', None)
+    if image is None:
+        slot = sub_matl_texture.param_id_name or 'texture'
+        label = getattr(sub_matl_texture, 'ui_name', '') or slot
+        raise RuntimeError(
+            f'Material "{material_label}" has no image on {label} ({slot}). '
+            'Assign an image on that slot, or remove the slot, then export again.'
+        )
     return ssbh_data_py.matl_data.TextureParam(
         param_id=ssbh_data_py.matl_data.ParamId.from_str(sub_matl_texture.param_id_name),
-        data=sub_matl_texture.image.name
+        data=image.name
     )
 
-def get_textures(textures: list[SUB_PG_matl_texture]) -> list[ssbh_data_py.matl_data.TextureParam]:
-    return [get_texture(sub_matl_texture) for sub_matl_texture in textures]
+def get_textures(textures: list[SUB_PG_matl_texture], material_label: str) -> list[ssbh_data_py.matl_data.TextureParam]:
+    return [get_texture(sub_matl_texture, material_label) for sub_matl_texture in textures]
 
 def has_sub_matl_data(material: bpy.types.Material) -> bool:
     try:
@@ -176,7 +184,7 @@ def create_matl_entry_from_sub_matl_data(material_label: str, sub_matl_data: SUB
         vectors=get_vectors(sub_matl_data.vectors),
         rasterizer_states=get_rasterizer_states(sub_matl_data.rasterizer_states),
         samplers=get_samplers(sub_matl_data.samplers),
-        textures=get_textures(sub_matl_data.textures),
+        textures=get_textures(sub_matl_data.textures, material_label),
     )
 
 def create_matl_from_blender_materials(operator: bpy.types.Operator, blender_materials: set[bpy.types.Material]) -> ssbh_data_py.matl_data.MatlData:
