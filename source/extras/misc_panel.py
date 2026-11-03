@@ -380,6 +380,13 @@ class SUB_PT_model_tools(Panel):
         row.operator("sub.limit_weights", text="Limit Weights to 4")
 
         row = layout.row(align=True)
+        if context.mode == 'EDIT_ARMATURE':
+            row.operator("sub.mirror_bone", text="Mirror Bone")
+        else:
+            row.enabled = False
+            row.operator("sub.mirror_bone", text="Mirror Bone (Edit Mode Only)")
+
+        row = layout.row(align=True)
         if context.mode == 'OBJECT':
             row.operator("sub.mirror_vertex_groups", text="Mirror Vertex Groups")
         else:
