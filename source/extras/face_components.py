@@ -754,9 +754,14 @@ class SUB_OP_face_pose(bpy.types.Operator):
                 elif self.action == 'DELETE':
                     data.setdefault('poses', {}).pop(label, None)
                     data.get('steps',{}).pop(label,None)
+                old_face_data = c.face_data
                 c.face_data = json.dumps(data)
-                if self.action in {'NEUTRAL', 'CAPTURE', 'DELETE', 'DELETE_STEP'}:
-                    build_face(context, obj, c)
+                try:
+                    if self.action in {'NEUTRAL', 'CAPTURE', 'DELETE', 'DELETE_STEP'}:
+                        build_face(context, obj, c)
+                except Exception:
+                    c.face_data = old_face_data
+                    raise
                 if self.action in {'CAPTURE', 'CANCEL', 'NEUTRAL'}:
                     for key in ('sub_face_before_', 'sub_face_orbit_'):
                         if key + c.uid in obj:
