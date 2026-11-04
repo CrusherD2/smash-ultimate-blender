@@ -104,6 +104,7 @@ def _sample_action(context, source, dest, action, names, source_basis, dest_basi
     for frame in frames:
         context.scene.frame_set(int(frame))
         context.view_layer.update()
+        context.evaluated_depsgraph_get().update()
         evaluated = dest.evaluated_get(context.evaluated_depsgraph_get())
         for index, name in enumerate(names):
             bone = evaluated.pose.bones[name]

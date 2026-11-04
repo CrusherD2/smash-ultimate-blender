@@ -3066,7 +3066,7 @@ class BakeConstrainedActions(bpy.types.Operator):
                     clear_users_old=self.clear_users_old,
                     bone_names=constr_bone_names,
                     interp_name="LINEAR",
-                    parallel=True,
+                    parallel=False,
                     log_label="Bake Constrained",
                     use_retarget_clean=True,
                 )
