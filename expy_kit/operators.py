@@ -3057,19 +3057,43 @@ class BakeConstrainedActions(bpy.types.Operator):
                 if not actions_to_bake:
                     continue
 
-                pairs = bake_visual_actions(
-                    context,
-                    action_armature,
-                    bake_armature,
-                    actions_to_bake,
-                    fake_user_new=self.fake_user_new,
-                    clear_users_old=self.clear_users_old,
-                    bone_names=constr_bone_names,
-                    interp_name="LINEAR",
-                    parallel=True,
-                    log_label="Bake Constrained",
-                    use_retarget_clean=True,
-                )
+                try:
+                    pairs = bake_visual_actions(
+                        context,
+                        action_armature,
+                        bake_armature,
+                        actions_to_bake,
+                        fake_user_new=self.fake_user_new,
+                        clear_users_old=self.clear_users_old,
+                        bone_names=constr_bone_names,
+                        interp_name="LINEAR",
+                        parallel=True,
+                        log_label="Bake Constrained",
+                        use_retarget_clean=True,
+                    )
+                except RuntimeError as worker_error:
+                    if "workers exited without producing all clips" in str(
+                        worker_error
+                    ):
+                        # Worker subprocesses failed (e.g. background Blender
+                        # cannot start, missing display, etc.). Fall back to
+                        # live evaluation in the current process, which does
+                        # not spawn worker processes.
+                        pairs = bake_visual_actions(
+                            context,
+                            action_armature,
+                            bake_armature,
+                            actions_to_bake,
+                            fake_user_new=self.fake_user_new,
+                            clear_users_old=self.clear_users_old,
+                            bone_names=constr_bone_names,
+                            interp_name="LINEAR",
+                            parallel=False,
+                            log_label="Bake Constrained",
+                            use_retarget_clean=True,
+                        )
+                    else:
+                        raise
                 baked_total += len(pairs)
                 first_baked = pairs[0][1] if pairs else None
 
