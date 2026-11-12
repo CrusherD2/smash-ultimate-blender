@@ -350,7 +350,10 @@ class ULTIMATE_OT_add_preset_retarget(AddPresetBase, bpy.types.Operator):
 
     def pre_cb(self, context):
         if context.object and context.object.type == 'ARMATURE':
-            context.object.data.expykit_retarget.custom.sync_all_dynamic_props()
+            settings = context.object.data.expykit_retarget
+            custom = getattr(settings, "custom", None)
+            if custom is not None and hasattr(custom, "sync_all_dynamic_props"):
+                custom.sync_all_dynamic_props()
 
     def invoke(self, context, event):
         if self.remove_active or self.remove_name:

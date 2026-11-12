@@ -26,7 +26,10 @@ def _custom_bone_entry_update(item, context):
     ob = context.active_object
     if not ob or ob.type != 'ARMATURE':
         return
-    custom = ob.data.expykit_retarget.custom
+    settings = ob.data.expykit_retarget
+    custom = getattr(settings, "custom", None)
+    if custom is None:
+        return
     custom.sync_all_dynamic_props()
     custom._bump_ui()
     if context.screen:
