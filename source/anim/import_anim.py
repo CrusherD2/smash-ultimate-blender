@@ -18,6 +18,7 @@ from bpy.types import Operator, Panel, Menu
 from mathutils import Matrix, Quaternion, Vector
 from ..import_paths import walk_import_folders
 from ..model.import_model import get_blender_transform
+from ..model.vis_shape_groups import iter_model_meshes
 from ..blender_compat import assign_action, draw_progress, ensure_action_slot
 from ..addon_preferences import format_animation_name_on_import
 from .fcurve_compat import find_fcurve, new_fcurve, style_material_fcurve, style_visibility_fcurve
@@ -1398,7 +1399,7 @@ def remove_visibility_drivers(context):
 def remove_visibility_drivers_for_armature(armature_object):
     if armature_object is None:
         return
-    mesh_children = [child for child in armature_object.children if child.type == 'MESH']
+    mesh_children = list(iter_model_meshes(armature_object))
     for mesh in mesh_children:
         if not mesh.animation_data:
             continue
@@ -1883,7 +1884,7 @@ def uvtransform_to_list(uvtransform) -> list[float]:
 def setup_material_drivers(arma: bpy.types.Object):
     from ..model.export_model import trim_name
     sub_anim_data: SUB_PG_sub_anim_data = arma.data.sub_anim_properties
-    mesh_children = [child for child in arma.children if child.type == 'MESH']
+    mesh_children = list(iter_model_meshes(arma))
     materials: set[Material] = {material_slot.material for mesh in mesh_children for material_slot in mesh.material_slots}
     trimmed_material_name_to_material: dict[str, Material] = {trim_name(material.name) : material for material in materials}
     
@@ -1974,7 +1975,7 @@ def setup_visibility_drivers(arma:bpy.types.Object):
         entry.name.casefold(): index
         for index, entry in enumerate(vis_track_entries)
     }
-    mesh_children = [child for child in arma.children if child.type == 'MESH']
+    mesh_children = list(iter_model_meshes(arma))
     for mesh in mesh_children:
         true_mesh_name = visibility_name_from_mesh(mesh.name)
         entries_index = entry_indices_by_case.get(true_mesh_name.casefold())
