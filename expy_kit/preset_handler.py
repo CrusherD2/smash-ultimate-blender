@@ -67,13 +67,15 @@ def validate_preset(armature_data, separator=':'):
     for group in ('spine', 'left_arm', 'left_arm_ik', 'right_arm', 'right_arm_ik',
                     'right_leg', 'right_leg_ik', 'left_leg', 'left_leg_ik', 'face'):
 
-        trg_setting = getattr(settings, group)
+        trg_setting = getattr(settings, group, None)
+        if trg_setting is None:
+            continue
         for k, v in trg_setting.items():
             try:
                 if v not in armature_data.bones:
                     with_prefix = prefix + v
                     setattr(trg_setting, k, with_prefix if with_prefix in armature_data.bones else "")
-            except TypeError:
+            except (TypeError, AttributeError):
                 continue
                 
     custom = getattr(settings, "custom", None)
@@ -102,12 +104,14 @@ def validate_preset(armature_data, separator=':'):
         legacy_throw = getattr(custom, 'throw', '') if custom is not None else ''
         if legacy_throw:
             settings.throw = legacy_throw
-    if settings.throw and settings.throw not in armature_data.bones:
+    if getattr(settings, "throw", "") and settings.throw not in armature_data.bones:
         with_prefix = prefix + settings.throw
         settings.throw = with_prefix if with_prefix in armature_data.bones else ""
 
     finger_bones = 'meta', 'a', 'b', 'c'
-    for trg_grp in settings.left_fingers, settings.right_fingers:
+    for trg_grp in (getattr(settings, "left_fingers", None), getattr(settings, "right_fingers", None)):
+        if trg_grp is None:
+            continue
         for k, trg_finger in trg_grp.items():
             if k == 'name':  # skip Property Group name
                 continue

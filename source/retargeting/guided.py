@@ -506,7 +506,10 @@ def migrate_throw_from_custom(settings):
         return
     throw_bone = getattr(custom, 'throw', '') or ''
     if throw_bone:
-        settings.throw = throw_bone
+        try:
+            settings.throw = throw_bone
+        except AttributeError:
+            pass
 
 
 def _guided_yes_no_row(layout, step):
