@@ -56,7 +56,12 @@ def _assign_driving_action(source, action, slot_handle=None):
 
 def _reset_pose(armature):
     # Reset all rotation representations: actions may use a different one.
+    # Preserve bones with the "_RET" suffix: these are the retarget helper
+    # bones users can manually tweak (pose offsets / constraints) and those
+    # tweaks must survive every baked clip, not just the first one.
     for bone in armature.pose.bones:
+        if bone.name.endswith("_RET"):
+            continue
         bone.location = (0, 0, 0)
         bone.rotation_euler = (0, 0, 0)
         bone.rotation_quaternion = (1, 0, 0, 0)

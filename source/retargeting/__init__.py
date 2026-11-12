@@ -27,11 +27,14 @@ def ensure_armature_preset_tracked(armature_obj):
         return
 
     settings = armature_obj.data.expykit_retarget
-    if settings.active_preset or not settings.has_settings():
+    if getattr(settings, "active_preset", None) or not settings.has_settings():
         return
 
     if "smush_blender_import" in armature_obj.name.lower():
-        settings.active_preset = 'Smash.py'
+        try:
+            settings.active_preset = "Smash.py"
+        except AttributeError:
+            pass
 
 
 def get_preset_display_label(armature_obj):
@@ -42,9 +45,10 @@ def get_preset_display_label(armature_obj):
     ensure_armature_preset_tracked(armature_obj)
     settings = armature_obj.data.expykit_retarget
 
-    if settings.active_preset:
+    preset = getattr(settings, "active_preset", None)
+    if preset:
         from os.path import splitext, basename
-        return bpy.path.display_name(splitext(basename(settings.active_preset))[0], title_case=False)
+        return bpy.path.display_name(splitext(basename(preset))[0], title_case=False)
     if settings.has_settings():
         return "-- Current Settings --"
     return "Retarget Presets"
@@ -61,7 +65,11 @@ def set_armature_active_preset(armature_obj, preset_filepath):
     if not armature_obj or armature_obj.type != 'ARMATURE':
         return
     from os.path import basename
-    armature_obj.data.expykit_retarget.active_preset = basename(preset_filepath)
+    settings = armature_obj.data.expykit_retarget
+    try:
+        settings.active_preset = basename(preset_filepath)
+    except AttributeError:
+        pass
 
 def load_custom_bones_from_preset(preset_path):
     """Parse a preset file and extract custom bone definitions"""
@@ -359,7 +367,7 @@ class ULTIMATE_OT_add_preset_retarget(AddPresetBase, bpy.types.Operator):
             )
 
         if context.object and context.object.type == 'ARMATURE':
-            preset = context.object.data.expykit_retarget.active_preset
+            preset = getattr(context.object.data.expykit_retarget, "active_preset", None)
             if preset:
                 from os.path import splitext, basename
                 self.name = bpy.path.display_name(splitext(basename(preset))[0], title_case=False)
