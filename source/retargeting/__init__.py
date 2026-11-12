@@ -470,8 +470,16 @@ class ULTIMATE_OT_add_preset_retarget(AddPresetBase, bpy.types.Operator):
             file_preset.write("\n")
 
             for rna_path in self.preset_values:
-                value = eval(rna_path, namespace_globals, namespace_locals)
-                rna_recursive_attr_expand(value, rna_path, 1)
+                try:
+                    value = eval(rna_path, namespace_globals, namespace_locals)
+                except AttributeError:
+                    # Stale RetargetSettings class may lack attributes such as
+                    # 'custom' or 'active_preset'; skip them instead of crashing.
+                    continue
+                try:
+                    rna_recursive_attr_expand(value, rna_path, 1)
+                except AttributeError:
+                    continue
 
         preset_menu_class.bl_label = bpy.path.display_name(os.path.splitext(os.path.basename(filepath))[0])
 

@@ -254,19 +254,20 @@ class HumanSkeleton:
                 yield bone_name
                 
         # Legacy support for single custom bone
-        if self.custom and self.custom.name:
-            yield self.custom.name
-            
+        custom = getattr(self, "custom", None)
+        if custom and getattr(custom, "name", ""):
+            yield custom.name
+
         # Support for dynamic custom bone properties
-        if self.custom:
-            for attr_name in dir(self.custom):
+        if custom:
+            for attr_name in dir(custom):
                 # Skip methods, special attributes, and the name property
-                if (callable(getattr(self.custom, attr_name)) or 
-                    attr_name.startswith('__') or 
+                if (callable(getattr(custom, attr_name)) or
+                    attr_name.startswith('__') or
                     attr_name == 'name'):
                     continue
-                    
-                bone_name = getattr(self.custom, attr_name)
+
+                bone_name = getattr(custom, attr_name)
                 if bone_name and isinstance(bone_name, str):
                     yield bone_name
 
@@ -355,34 +356,36 @@ class HumanSkeleton:
         fingers_mapping(self.right_fingers, trg_fingers)
         
         # Legacy support for single custom bone
-        if self.custom and self.custom.name and target_skeleton.custom and target_skeleton.custom.name:
-            bone_map[self.custom.name] = target_skeleton.custom.name
-            
+        src_custom = getattr(self, "custom", None)
+        tgt_custom = getattr(target_skeleton, "custom", None)
+        if src_custom and getattr(src_custom, "name", "") and tgt_custom and getattr(tgt_custom, "name", ""):
+            bone_map[src_custom.name] = tgt_custom.name
+
         # Support for dynamic custom bone properties
-        if self.custom and target_skeleton.custom:
+        if src_custom and tgt_custom:
             # Get all custom bone properties from source and target
             src_props = {}
             trg_props = {}
-            
+
             # Process source custom properties
-            for attr_name in dir(self.custom):
-                if (callable(getattr(self.custom, attr_name)) or 
-                    attr_name.startswith('__') or 
+            for attr_name in dir(src_custom):
+                if (callable(getattr(src_custom, attr_name)) or
+                    attr_name.startswith('__') or
                     attr_name == 'name'):
                     continue
-                
-                bone_name = getattr(self.custom, attr_name)
+
+                bone_name = getattr(src_custom, attr_name)
                 if bone_name and isinstance(bone_name, str):
                     src_props[attr_name] = bone_name
-            
+
             # Process target custom properties
-            for attr_name in dir(target_skeleton.custom):
-                if (callable(getattr(target_skeleton.custom, attr_name)) or 
-                    attr_name.startswith('__') or 
+            for attr_name in dir(tgt_custom):
+                if (callable(getattr(tgt_custom, attr_name)) or
+                    attr_name.startswith('__') or
                     attr_name == 'name'):
                     continue
-                
-                bone_name = getattr(target_skeleton.custom, attr_name)
+
+                bone_name = getattr(tgt_custom, attr_name)
                 if bone_name and isinstance(bone_name, str):
                     trg_props[attr_name] = bone_name
             

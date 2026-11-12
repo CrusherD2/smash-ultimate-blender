@@ -427,10 +427,15 @@ class ClearArmatureRetarget(Operator):
         skeleton.throw = ''
         skeleton.deform_preset = '--'
         skeleton.active_preset = ''
-        skeleton.custom.name = ''
-        skeleton.custom.entries.clear()
-        skeleton.custom.ui_version += 1
-        skeleton.custom.sync_all_dynamic_props()
+        custom = getattr(skeleton, "custom", None)
+        if custom is not None:
+            custom.name = ''
+            if hasattr(custom, "entries"):
+                custom.entries.clear()
+            if hasattr(custom, "ui_version"):
+                custom.ui_version += 1
+            if hasattr(custom, "sync_all_dynamic_props"):
+                custom.sync_all_dynamic_props()
 
         return {'FINISHED'}
 
@@ -993,10 +998,11 @@ class AddCustomBone(bpy.types.Operator):
     
     def execute(self, context):
         skeleton = context.active_object.data.expykit_retarget
-        if context.active_pose_bone:
+        custom = getattr(skeleton, "custom", None)
+        if context.active_pose_bone and custom is not None and hasattr(custom, "add_bone"):
             identifier = self._clean_identifier(self.identifier)
 
-            if skeleton.custom.add_bone(identifier, context.active_pose_bone.name):
+            if custom.add_bone(identifier, context.active_pose_bone.name):
                 self.report({'INFO'}, f"Added custom bone '{identifier}'")
             else:
                 self.report({'ERROR'}, f"Failed to add custom bone '{identifier}'")
@@ -1031,7 +1037,8 @@ class RemoveCustomBone(bpy.types.Operator):
     
     def execute(self, context):
         skeleton = context.active_object.data.expykit_retarget
-        if skeleton.custom.remove_bone(self.identifier):
+        custom = getattr(skeleton, "custom", None)
+        if custom is not None and hasattr(custom, "remove_bone") and custom.remove_bone(self.identifier):
             self.report({'INFO'}, f"Removed custom bone '{self.identifier}'")
         else:
             self.report({'ERROR'}, f"Could not find custom bone '{self.identifier}'")

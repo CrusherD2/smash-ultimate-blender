@@ -275,14 +275,14 @@ class RetargetSettings(PropertyGroup):
     def has_settings(self):
         for setting in (self.spine, self.left_arm, self.left_arm_ik, self.left_fingers,
                         self.right_arm, self.right_arm_ik, self.right_fingers,
-                        self.left_leg, self.left_leg_ik, self.right_leg, self.right_leg_ik,
-                        self.custom):
+                        self.left_leg, self.left_leg_ik, self.right_leg, self.right_leg_ik):
             if setting.has_settings():
                 return True
-
-        if self.root or self.throw:
+        custom = getattr(self, "custom", None)
+        if custom is not None and hasattr(custom, "has_settings") and custom.has_settings():
             return True
-
+        if getattr(self, "root", "") or getattr(self, "throw", ""):
+            return True
         return False
 
     deform_preset: EnumProperty(items=preset_handler.iterate_presets, name="Deformation Bones")

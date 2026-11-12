@@ -76,29 +76,30 @@ def validate_preset(armature_data, separator=':'):
             except TypeError:
                 continue
                 
+    custom = getattr(settings, "custom", None)
     # Handle legacy single custom bone
-    if settings.custom.name and settings.custom.name not in armature_data.bones:
-        with_prefix = prefix + settings.custom.name
-        settings.custom.name = with_prefix if with_prefix in armature_data.bones else ""
+    if custom is not None and getattr(custom, "name", "") and custom.name not in armature_data.bones:
+        with_prefix = prefix + custom.name
+        custom.name = with_prefix if with_prefix in armature_data.bones else ""
         
     # Handle dynamic custom bone properties
-    if hasattr(settings.custom, 'get_bones'):
-        for identifier, bone_name in settings.custom.get_bones():
+    if custom is not None and hasattr(custom, 'get_bones'):
+        for identifier, bone_name in custom.get_bones():
             if bone_name and bone_name not in armature_data.bones:
                 with_prefix = prefix + bone_name
                 if with_prefix in armature_data.bones:
-                    setattr(settings.custom, identifier, with_prefix)
+                    setattr(custom, identifier, with_prefix)
                 else:
-                    setattr(settings.custom, identifier, "")
-
+                    setattr(custom, identifier, "")
+    
     # Handle root bone
-    if settings.root and settings.root not in armature_data.bones:
+    if getattr(settings, "root", "") and settings.root not in armature_data.bones:
         with_prefix = prefix + settings.root
         settings.root = with_prefix if with_prefix in armature_data.bones else ""
-
+    
     # Handle throw bone (also migrate legacy custom.throw)
     if not getattr(settings, 'throw', ''):
-        legacy_throw = getattr(settings.custom, 'throw', '') or ''
+        legacy_throw = getattr(custom, 'throw', '') if custom is not None else ''
         if legacy_throw:
             settings.throw = legacy_throw
     if settings.throw and settings.throw not in armature_data.bones:
@@ -263,12 +264,14 @@ class PresetSkeleton:
                 setattr(setting, k, getattr(trg_setting, k))
 
         # Copy custom bones - we need to handle dynamic properties
-        self.custom.name = settings.custom.name
-        
-        # Copy all custom bone properties
-        if hasattr(settings.custom, 'get_bones'):
-            for identifier, bone_name in settings.custom.get_bones():
-                setattr(self.custom, identifier, bone_name)
+        src_custom = getattr(settings, "custom", None)
+        if src_custom is not None:
+            self.custom.name = getattr(src_custom, "name", "")
+            
+            # Copy all custom bone properties
+            if hasattr(src_custom, 'get_bones'):
+                for identifier, bone_name in src_custom.get_bones():
+                    setattr(self.custom, identifier, bone_name)
 
         # Copy root bone
         self.root = settings.root
