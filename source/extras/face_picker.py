@@ -129,6 +129,10 @@ def vis_track_names_for_parts(sap, part_keys):
 
 
 def get_armature(context):
+    if _is_picker_screen(getattr(context, "screen", None)):
+        pinned = bpy.data.objects.get(_picker_armature_name)
+        if pinned is not None and pinned.type == "ARMATURE":
+            return pinned
     obj = getattr(context, "object", None)
     if obj is not None and obj.type == "ARMATURE":
         return obj
@@ -682,6 +686,12 @@ def apply_bone_expression(context, arma, expression, insert_keyframes=False):
     should_key = insert_keyframes or context.scene.tool_settings.use_keyframe_insert_auto
     if should_key and applied:
         keyframe_pose_bones(applied, context.scene.frame_current)
+    if picker.select_affected_bones and applied:
+        from ..blender_compat import set_pose_bone_select
+        affected = {bone.name for bone in applied}
+        for bone in arma.pose.bones:
+            set_pose_bone_select(bone, bone.name in affected)
+        arma.data.bones.active = applied[0].bone
     picker.active_expression_id = expression.expression_id
     new_index = next(
         (i for i, expr in enumerate(picker.expressions) if expr.expression_id == expression.expression_id),
@@ -798,7 +808,28 @@ def picker_mode_to_expression_mode(picker_mode):
 
 def expressions_for_mode(picker, picker_mode):
     target_mode = picker_mode_to_expression_mode(picker_mode)
-    return [expr for expr in picker.expressions if expression_mode(expr) == target_mode]
+    visible = [expr for expr in picker.expressions if expression_mode(expr) == target_mode]
+    return sorted(visible, key=lambda expr: expression_sort_key(expr.name, picker.organize_by))
+
+
+def expression_sort_key(name: str, organize_by: str) -> tuple[str, ...]:
+    side = name[-1] if name.endswith(('L', 'R')) else ''
+    move = name[:-1] if side else name
+    alphabetical = (name.casefold(), name)
+    if organize_by == 'SIDE':
+        return (side, move.casefold(), *alphabetical)
+    if organize_by == 'MOVE':
+        return (move.casefold(), side, *alphabetical)
+    return alphabetical
+
+
+def _update_expression_order(self, context):
+    global _picker_scroll
+    _picker_scroll = 0.0
+    for window in context.window_manager.windows:
+        for area in window.screen.areas:
+            area.tag_redraw()
+
 
 
 def bone_pose_data_from_expression(expression):
@@ -1372,10 +1403,18 @@ def _draw_picker_overlay():
 def _draw_picker_canvas(context, region, picker):
     global _picker_hits, _picker_scroll
     _picker_hits = []
-    ui = context.preferences.system.ui_scale
+    ui = context.preferences.system.ui_scale or 1.0
+    theme = context.preferences.themes[0]
+    widgets = theme.user_interface
+    background = (*theme.image_editor.space.back, 1.0)
+    button = tuple(widgets.wcol_toggle.inner)
+    selected = tuple(widgets.wcol_toggle.inner_sel)
+    text = (*widgets.wcol_toggle.text, 1.0)
+    text_selected = (*widgets.wcol_toggle.text_sel, 1.0)
+    border = tuple(widgets.wcol_toggle.outline)
     width = region.width
     height = region.height
-    _draw_rect(0, 0, width, height, (0.18, 0.18, 0.18, 1.0))
+    _draw_rect(0, 0, width, height, background)
 
     pad = 10.0 * ui
     gap = 8.0 * ui
@@ -1392,14 +1431,14 @@ def _draw_picker_canvas(context, region, picker):
     tab_w = max((width - pad * 2 - gap) * 0.5, 80.0 * ui)
     vis_active = picker is None or picker.active_mode == "VIS"
     bone_active = picker is not None and picker.active_mode == "BONE"
-    vis_color = (0.33, 0.55, 0.85, 1.0) if vis_active else (0.28, 0.28, 0.28, 1.0)
-    bone_color = (0.33, 0.55, 0.85, 1.0) if bone_active else (0.28, 0.28, 0.28, 1.0)
+    vis_color = selected if vis_active else button
+    bone_color = selected if bone_active else button
     vis_x = pad
     bone_x = pad + tab_w + gap
     _draw_rect(vis_x, y - tab_h, tab_w, tab_h, vis_color)
     _draw_rect(bone_x, y - tab_h, tab_w, tab_h, bone_color)
-    _draw_label("VIS Mesh", vis_x, y - tab_h, tab_w, tab_h, font_size)
-    _draw_label("Bone Based", bone_x, y - tab_h, tab_w, tab_h, font_size)
+    _draw_label("VIS Mesh", vis_x, y - tab_h, tab_w, tab_h, font_size, text)
+    _draw_label("Bone Based", bone_x, y - tab_h, tab_w, tab_h, font_size, text)
     _picker_hits.append({"kind": "tab_vis", "x": vis_x, "y": y - tab_h, "w": tab_w, "h": tab_h})
     _picker_hits.append({"kind": "tab_bone", "x": bone_x, "y": y - tab_h, "w": tab_w, "h": tab_h})
     y -= tab_h + gap
@@ -1408,12 +1447,29 @@ def _draw_picker_canvas(context, region, picker):
     key_x = pad
     key_y = y - bar_h + (bar_h - check) * 0.5
     keyframes = bool(picker.insert_keyframes) if picker is not None else True
-    _draw_rect(key_x, key_y, check, check, (0.12, 0.12, 0.12, 1.0))
-    _draw_outline(key_x, key_y, check, check, (0.45, 0.45, 0.45, 1.0), 1.5)
-    if keyframes:
-        _draw_rect(key_x + 3.0 * ui, key_y + 3.0 * ui, check - 6.0 * ui, check - 6.0 * ui, (0.33, 0.55, 0.85, 1.0))
-    _draw_label("Keyframes", key_x + check + 6.0 * ui, y - bar_h, 90.0 * ui, bar_h, font_size, (0.85, 0.85, 0.85, 1.0))
-    _picker_hits.append({"kind": "keyframes", "x": key_x, "y": y - bar_h, "w": check + 96.0 * ui, "h": bar_h})
+    def checkbox(x, label, enabled, hit_kind, label_width):
+        _draw_rect(x, key_y, check, check, (0.12, 0.12, 0.12, 1.0))
+        _draw_outline(x, key_y, check, check, border, 1.5)
+        if enabled:
+            _draw_rect(x + ui, key_y + ui, check - 2 * ui, check - 2 * ui, selected)
+            shader = _ui_shader()
+            shader.bind()
+            shader.uniform_float("color", text_selected)
+            batch_for_shader(shader, "LINE_STRIP", {"pos": [
+                (x + 3 * ui, key_y + 8 * ui),
+                (x + 7 * ui, key_y + 4 * ui),
+                (x + 13 * ui, key_y + 12 * ui),
+            ]}).draw(shader)
+        _draw_label(label, x + check + 6 * ui, y - bar_h, label_width, bar_h, font_size, text)
+        _picker_hits.append({"kind": hit_kind, "x": x, "y": y - bar_h,
+                             "w": check + 6 * ui + label_width, "h": bar_h})
+
+    checkbox(key_x, "Keyframes", keyframes, "keyframes", 90 * ui)
+    if picker is not None and picker.active_mode == "BONE":
+        select_x = key_x + check + 110 * ui
+        checkbox(select_x, "Select Affected Bones", picker.select_affected_bones,
+                 "select_affected_bones", 160 * ui)
+    y -= bar_h + gap
 
     columns = picker.columns if picker is not None else 3
     plus_w = 22.0 * ui
@@ -1422,20 +1478,31 @@ def _draw_picker_canvas(context, region, picker):
     plus_x = right - plus_w
     num_x = plus_x - col_w
     minus_x = num_x - plus_w
-    _draw_rect(minus_x, y - bar_h, plus_w, bar_h, (0.28, 0.28, 0.28, 1.0))
-    _draw_rect(plus_x, y - bar_h, plus_w, bar_h, (0.28, 0.28, 0.28, 1.0))
-    _draw_label("-", minus_x, y - bar_h, plus_w, bar_h, font_size)
-    _draw_label(str(columns), num_x, y - bar_h, col_w, bar_h, font_size)
-    _draw_label("+", plus_x, y - bar_h, plus_w, bar_h, font_size)
-    _draw_label("Columns", minus_x - 78.0 * ui, y - bar_h, 74.0 * ui, bar_h, font_size, (0.75, 0.75, 0.75, 1.0))
+    _draw_rect(minus_x, y - bar_h, plus_w, bar_h, button)
+    _draw_rect(plus_x, y - bar_h, plus_w, bar_h, button)
+    _draw_label("-", minus_x, y - bar_h, plus_w, bar_h, font_size, text)
+    _draw_label(str(columns), num_x, y - bar_h, col_w, bar_h, font_size, text)
+    _draw_label("+", plus_x, y - bar_h, plus_w, bar_h, font_size, text)
+    _draw_label("Columns", minus_x - 78.0 * ui, y - bar_h, 74.0 * ui, bar_h, font_size, text)
     _picker_hits.append({"kind": "columns_minus", "x": minus_x, "y": y - bar_h, "w": plus_w, "h": bar_h})
     _picker_hits.append({"kind": "columns_plus", "x": plus_x, "y": y - bar_h, "w": plus_w, "h": bar_h})
 
     y -= bar_h + gap
+    sort_x = pad + 100 * ui
+    sort_w = max(width - pad - sort_x, 1)
+    sort_labels = {"MOVE": "Move", "ALPHABETICAL": "Alphabetical", "SIDE": "Side"}
+    _draw_label("Organize by:", pad, y - bar_h, 96 * ui, bar_h, font_size, text)
+    _draw_rect(sort_x, y - bar_h, sort_w, bar_h, button)
+    _draw_label(sort_labels[picker.organize_by] if picker else "Move", sort_x,
+                y - bar_h, sort_w - 20 * ui, bar_h, font_size, text)
+    _draw_label("v", sort_x + sort_w - 20 * ui, y - bar_h, 20 * ui, bar_h, font_size, text)
+    _picker_hits.append({"kind": "organize_by", "x": sort_x, "y": y - bar_h,
+                         "w": sort_w, "h": bar_h})
+    y -= bar_h + gap
     clip_top = y
     clip_bottom = pad
     if picker is None:
-        _draw_label("Select an imported armature", pad, height * 0.5, width - pad * 2, 24.0 * ui, font_size)
+        _draw_label("Select an imported armature", pad, height * 0.5, width - pad * 2, 24.0 * ui, font_size, text)
         return
     visible_expressions = expressions_for_mode(picker, picker.active_mode)
     if not visible_expressions:
@@ -1444,7 +1511,7 @@ def _draw_picker_canvas(context, region, picker):
             if picker.active_mode == "VIS"
             else "No bone expressions yet. Use Setup in the Ultimate tab first."
         )
-        _draw_label(empty_text, pad, height * 0.5, width - pad * 2, 24.0 * ui, font_size)
+        _draw_label(empty_text, pad, height * 0.5, width - pad * 2, 24.0 * ui, font_size, text)
         return
 
     cols = max(int(picker.columns), 1)
@@ -1460,43 +1527,53 @@ def _draw_picker_canvas(context, region, picker):
     _picker_scroll = min(max(_picker_scroll, 0.0), max_scroll)
     content_top = clip_top + _picker_scroll
 
-    for index, expr in enumerate(visible_expressions):
-        row, col = divmod(index, cols)
-        cell_x = pad + col * (cell_w + gap)
-        cell_top = content_top - row * (cell_h + gap)
-        cell_y = cell_top - cell_h
-        if cell_top < clip_bottom or cell_y > clip_top:
-            continue
-        is_active = expr.expression_id == picker.active_expression_id
-        is_hover = _picker_hover == expr.expression_id
-        name_y = cell_y
-        img_y = name_y + name_h
-        if is_active:
-            _draw_outline(cell_x - 2.0, img_y - 2.0, cell_w + 4.0, img_h + 4.0, (0.33, 0.55, 0.85, 1.0), 2.5)
-        elif is_hover:
-            _draw_outline(cell_x - 1.0, img_y - 1.0, cell_w + 2.0, img_h + 2.0, (0.55, 0.55, 0.55, 1.0), 1.5)
-        image = expr.image
-        if image is not None:
-            try:
-                texture = gpu.texture.from_image(image)
-                _draw_texture_2d_compat(texture, (cell_x, img_y), cell_w, img_h)
-            except Exception:
+    _draw_outline(pad - 1, clip_bottom - 1, inner_w + 2,
+                  max(clip_top - clip_bottom, 0) + 2, border, 1)
+    previous_scissor = gpu.state.scissor_get()
+    gpu.state.scissor_test_set(True)
+    gpu.state.scissor_set(int(pad), int(clip_bottom), int(inner_w),
+                          max(int(clip_top) - int(clip_bottom), 0))
+    try:
+        for index, expr in enumerate(visible_expressions):
+            row, col = divmod(index, cols)
+            cell_x = pad + col * (cell_w + gap)
+            cell_top = content_top - row * (cell_h + gap)
+            cell_y = cell_top - cell_h
+            if cell_top < clip_bottom or cell_y > clip_top:
+                continue
+            is_active = expr.expression_id == picker.active_expression_id
+            is_hover = _picker_hover == expr.expression_id
+            name_y = cell_y
+            img_y = name_y + name_h
+            if is_active:
+                _draw_outline(cell_x - 2.0, img_y - 2.0, cell_w + 4.0, img_h + 4.0, selected, 2.5)
+            elif is_hover:
+                _draw_outline(cell_x - 1.0, img_y - 1.0, cell_w + 2.0, img_h + 2.0, (0.55, 0.55, 0.55, 1.0), 1.5)
+            image = expr.image
+            if image is not None:
+                try:
+                    texture = gpu.texture.from_image(image)
+                    _draw_texture_2d_compat(texture, (cell_x, img_y), cell_w, img_h)
+                except Exception:
+                    _draw_rect(cell_x, img_y, cell_w, img_h, (0.1, 0.1, 0.1, 1.0))
+            else:
                 _draw_rect(cell_x, img_y, cell_w, img_h, (0.1, 0.1, 0.1, 1.0))
-        else:
-            _draw_rect(cell_x, img_y, cell_w, img_h, (0.1, 0.1, 0.1, 1.0))
-        button_color = (0.25, 0.47, 0.75, 1.0) if is_active else (0.27, 0.27, 0.27, 1.0)
-        _draw_rect(cell_x, name_y, cell_w, name_h, button_color)
-        _draw_label(expr.name, cell_x, name_y, cell_w, name_h, font_size)
-        _picker_hits.append(
-            {
-                "kind": "expression",
-                "id": expr.expression_id,
-                "x": cell_x,
-                "y": cell_y,
-                "w": cell_w,
-                "h": cell_h,
-            }
-        )
+            button_color = selected if is_active else button
+            _draw_rect(cell_x, name_y, cell_w, name_h, button_color)
+            _draw_label(expr.name, cell_x, name_y, cell_w, name_h, font_size, text)
+            _picker_hits.append(
+                {
+                    "kind": "expression",
+                    "id": expr.expression_id,
+                    "x": cell_x,
+                    "y": max(cell_y, clip_bottom),
+                    "w": cell_w,
+                    "h": min(cell_top, clip_top) - max(cell_y, clip_bottom),
+                }
+            )
+    finally:
+        gpu.state.scissor_set(*previous_scissor)
+        gpu.state.scissor_test_set(False)
 
 
 def _apply_picker_hit(context, hit):
@@ -1508,6 +1585,12 @@ def _apply_picker_hit(context, hit):
     kind = hit.get("kind")
     if kind == "keyframes":
         picker.insert_keyframes = not picker.insert_keyframes
+        return True
+    if kind == "select_affected_bones":
+        picker.select_affected_bones = not picker.select_affected_bones
+        return True
+    if kind == "organize_by":
+        bpy.ops.sub.face_picker_organize("INVOKE_DEFAULT")
         return True
     if kind == "columns_minus":
         picker.columns = max(picker.columns - 1, 1)
@@ -1558,31 +1641,14 @@ def _configure_picker_area(area, window=None):
     if area.type != "IMAGE_EDITOR":
         area.type = "IMAGE_EDITOR"
     space = area.spaces.active
-    if space.type != "IMAGE_EDITOR":
-        return
-    try:
-        space.image = None
-    except Exception:
-        pass
-    for attr in (
-        "show_region_header",
-        "show_region_tool_header",
-        "show_region_ui",
-        "show_region_toolbar",
-        "show_region_hud",
-        "show_region_footer",
-    ):
-        if hasattr(space, attr):
-            setattr(space, attr, False)
-    _hide_area_regions(
-        area,
-        window,
-        ("HEADER", "TOOL_HEADER", "TOOLS", "UI", "HUD", "FOOTER", "NAVIGATION_BAR"),
-    )
-    try:
-        area.tag_redraw()
-    except Exception:
-        pass
+    space.image = None
+    for name in ("show_region_header", "show_region_tool_header", "show_region_ui",
+                 "show_region_toolbar", "show_region_hud", "show_region_footer"):
+        if hasattr(space, name):
+            setattr(space, name, False)
+    _hide_area_regions(area, window,
+                       ("HEADER", "TOOL_HEADER", "TOOLS", "UI", "HUD", "FOOTER", "NAVIGATION_BAR"))
+    area.tag_redraw()
 
 
 _configure_retries_left = 0
@@ -1762,6 +1828,21 @@ class SUB_PG_face_picker_data(PropertyGroup):
         description="Insert keyframes when applying an expression. Also happens when Auto Key is enabled",
         default=True,
     )
+    select_affected_bones: BoolProperty(
+        name="Select Affected Bones",
+        description="Select only the bones affected when applying a bone-based pose",
+        default=False,
+    )
+    organize_by: EnumProperty(
+        name="Organize by",
+        items=(
+            ("MOVE", "Move", "Keep matching names together, ignoring a trailing L or R"),
+            ("ALPHABETICAL", "Alphabetical", "Sort by the full expression name"),
+            ("SIDE", "Side", "Group left expressions together and right expressions together"),
+        ),
+        default="MOVE",
+        update=_update_expression_order,
+    )
     columns: IntProperty(name="Columns", default=3, min=1, max=6)
     setup_expanded: BoolProperty(name="Setup Expanded", default=True)
 
@@ -1850,6 +1931,24 @@ class SUB_OP_face_picker_apply(Operator):
                 self.report({"WARNING"}, f"Missing vis tracks: {', '.join(missing)}")
         else:
             self.report({"INFO"}, f"Applied {expression.name}")
+        return {"FINISHED"}
+
+
+class SUB_OP_face_picker_organize(Operator):
+    bl_idname = "sub.face_picker_organize"
+    bl_label = "Organize by"
+    bl_description = "Choose how expression thumbnails are grouped"
+    bl_options = {"INTERNAL"}
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_popup(self, width=180)
+
+    def draw(self, context):
+        picker = get_picker(get_armature(context))
+        if picker is not None:
+            self.layout.prop(picker, "organize_by", expand=True)
+
+    def execute(self, context):
         return {"FINISHED"}
 
 
@@ -2538,9 +2637,7 @@ def draw_expression_grid(layout, picker, columns, scale=6.0, picker_mode=None):
     )
     for expr in visible:
         is_active = expr.expression_id == picker.active_expression_id
-        cell = grid.column(align=True)
-        if is_active:
-            cell = cell.box()
+        cell = grid.box().column(align=True)
         icon_id = preview_icon(expr.image)
         if icon_id:
             cell.template_icon(icon_value=icon_id, scale=scale)
@@ -2562,7 +2659,12 @@ def draw_popup_picker_layout(layout, context):
     row.prop(picker, "active_mode", expand=True)
     row = layout.row(align=True)
     row.prop(picker, "insert_keyframes", text="Keyframes")
+    if picker.active_mode == "BONE":
+        row.prop(picker, "select_affected_bones", text="Select Affected Bones")
+    row = layout.row(align=True)
     row.prop(picker, "columns", text="Columns")
+    row.prop(picker, "organize_by", text="Organize by")
+    layout.separator()
     visible = expressions_for_mode(picker, picker.active_mode)
     if not visible:
         if picker.active_mode == "BONE":
@@ -2571,7 +2673,11 @@ def draw_popup_picker_layout(layout, context):
             layout.label(text="No VIS expressions yet.")
         layout.label(text="Use Setup in the Ultimate tab first.")
         return
-    draw_expression_grid(layout, picker, picker.columns, scale=7.0, picker_mode=picker.active_mode)
+    region = getattr(context, "region", None)
+    ui_scale = context.preferences.system.ui_scale or 1.0
+    width = region.width if region is not None else 460 * ui_scale
+    thumbnail_scale = max(1.0, min(10.0, (width / ui_scale - 40) / picker.columns / 20))
+    draw_expression_grid(layout, picker, picker.columns, scale=thumbnail_scale, picker_mode=picker.active_mode)
     if picker.active_expression_id:
         active = find_expression(picker, picker.active_expression_id)
         if active is not None:
@@ -2589,6 +2695,8 @@ def draw_face_picker_layout(layout, context, show_grid=True):
     header = layout.row(align=True)
     header.operator(SUB_OP_face_picker_popup.bl_idname, icon="IMAGE_DATA", text="Open Expression Window")
     header.prop(picker, "insert_keyframes", text="Keyframes")
+    if picker.active_mode == "BONE":
+        header.prop(picker, "select_affected_bones", text="Select Affected Bones")
 
     tab_row = layout.row(align=True)
     tab_row.prop(picker, "active_mode", expand=True)
@@ -2736,6 +2844,7 @@ class SUB_PT_face_picker_window(Panel):
     bl_region_type = "WINDOW"
     bl_context = "scene"
     bl_label = "Easy Facial Animation"
+    bl_options = {"HIDE_HEADER"}
     bl_order = 0
 
     @classmethod

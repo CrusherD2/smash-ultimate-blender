@@ -100,6 +100,7 @@ classes = [
     source.extras.face_picker.SUB_UL_face_picker_bone_choices,
     source.extras.face_picker.SUB_UL_face_picker_expressions,
     source.extras.face_picker.SUB_OP_face_picker_apply,
+    source.extras.face_picker.SUB_OP_face_picker_organize,
     source.extras.face_picker.SUB_OP_face_picker_canvas,
     source.extras.face_picker.SUB_OP_face_picker_popup,
     source.extras.face_picker.SUB_OP_face_picker_create_camera,

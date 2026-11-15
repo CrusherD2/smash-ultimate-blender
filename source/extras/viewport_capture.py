@@ -464,14 +464,14 @@ class PillowGifEncoder:
         return quantized
 
 
-def _new_gif_encoder(path):
+def _new_gif_encoder(path, delay_ms=GIF_FRAME_DELAY_MS):
     try:
-        return NativeGifEncoder(path)
+        return NativeGifEncoder(path, delay_ms=delay_ms)
     except RuntimeError as exc:
         if "unavailable" not in str(exc):
             raise
     try:
-        return PillowGifEncoder(path)
+        return PillowGifEncoder(path, delay_ms=delay_ms)
     except ImportError:
         raise RuntimeError(
             "GIF encoding needs the Smash Viewport plugin rebuilt, or Pillow installed "
@@ -635,12 +635,25 @@ class SUB_OP_gif_or_photo(Operator):
         default="PHOTO",
     )
 
+    gif_fps: EnumProperty(
+        name="Framerate",
+        items=(
+            ("24", "24 FPS", "Capture 24 frames per second"),
+            ("30", "30 FPS", "Capture 30 frames per second"),
+            ("60", "60 FPS", "Capture 60 frames per second"),
+        ),
+        default="30",
+    )
+
     def invoke(self, context, event):
         return context.window_manager.invoke_props_dialog(self, width=300)
 
     def draw(self, context):
         layout = self.layout
         layout.prop(self, "mode", expand=True)
+        if self.mode == "GIF":
+            layout.prop(self, "gif_fps", expand=True)
+            layout.label(text="GIF playback timing is approximate.")
         layout.label(text="Copied to clipboard.")
         layout.label(text="Temp file is deleted when Blender closes.")
 
@@ -696,7 +709,7 @@ class SUB_OP_gif_or_photo(Operator):
             return {"CANCELLED"}
         path = _new_temp_path("gif")
         try:
-            encoder = _new_gif_encoder(path)
+            encoder = _new_gif_encoder(path, delay_ms=round(1000 / int(self.gif_fps)))
         except Exception as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
@@ -705,11 +718,11 @@ class SUB_OP_gif_or_photo(Operator):
         self._gif_encoder = encoder
         self._gif_start = start
         self._gif_end = end
-        self._gif_step = GIF_FRAME_STEP
+        self._gif_step = 60 / int(self.gif_fps)
         self._gif_next = float(start)
         self._gif_original = int(scene.frame_current)
         self._gif_completed = 0
-        self._gif_total = int((end - start) / GIF_FRAME_STEP) + 1
+        self._gif_total = int((end - start) / self._gif_step) + 1
         self._gif_gl_cache = {}
         self._timer = None
 
@@ -818,8 +831,8 @@ class SUB_OP_gif_or_photo(Operator):
         for _ in range(GIF_FRAMES_PER_TICK):
             if self._gif_next > end:
                 break
-            frame = int(round(self._gif_next))
-            scene.frame_set(frame)
+            frame = int(self._gif_next)
+            scene.frame_set(frame, subframe=self._gif_next - frame)
             context.view_layer.update()
             self._gif_progress(context, self._gif_completed + 1, self._gif_total)
             captured = capture_rgba(
