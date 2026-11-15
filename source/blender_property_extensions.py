@@ -106,6 +106,19 @@ def register():
     Collection.sub_swing_collection_props = PointerProperty(
         type=sub_swing_data.SUB_PG_sub_swing_master_collection_props
     )
+    Object.sub_make_thrown = BoolProperty(
+        name="Make Character Thrown",
+        description="Link this character's rot bone to the attacker's throw bone",
+        default=False,
+        update=import_anim.update_thrown_link,
+    )
+    Object.sub_thrown_attacker = PointerProperty(
+        name="Attacker Armature",
+        description="Armature object of the character performing the throw",
+        type=Object,
+        poll=import_anim.poll_thrown_attacker,
+        update=import_anim.update_thrown_link,
+    )
     Object.sub_shpc = PointerProperty(
         type=SUB_PG_shpc_settings
     )

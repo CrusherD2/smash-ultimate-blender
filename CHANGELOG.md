@@ -10,6 +10,10 @@ The updater shows every section newer than the user's installed version, and
 the "What's New" popup shows them once after the update installs. Sections
 that aren't headed by a version number (like "Unreleased") are never shown.
 
+## 4.9.10 - 2026-11-14
+- Link a thrown character to an attacker from the Animation Importer, with an armature picker and support for Rot/Throw bone names.
+- Automatically pair forward, back, up and down throw/thrown animations in both directions using the attacker's animation folder.
+
 ## 4.8.0 - 2026-09-23
 - Drag and drop Smash files onto the 3D Viewport or Outliner to import them: model files, animations (.nuanmb/.rawanim), swing.prc, stage lighting and .shpcanim. A single drop can mix types, and animations and swing.prc go onto the model that was just imported. Also under File > Import > Smash Ultimate
 - Mirror Animation: IK controls now move to the other side with the body, and keyed IK pole angles are swapped and flipped

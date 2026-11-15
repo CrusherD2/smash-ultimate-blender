@@ -44,6 +44,51 @@ _last_anim_sync_ptr = 0
 _anim_sync_busy = False
 
 
+THROWN_CONSTRAINT_NAME = "SUB Thrown Link"
+
+
+def thrown_bone(obj: bpy.types.Object, name: str) -> bpy.types.PoseBone | None:
+    return next((bone for bone in obj.pose.bones if bone.name.casefold() == name), None)
+
+
+def poll_thrown_attacker(victim: bpy.types.Object, attacker: bpy.types.Object) -> bool:
+    if attacker.type != 'ARMATURE' or attacker == victim:
+        return False
+    seen = {victim.as_pointer()}
+    current = attacker
+    while current is not None:
+        pointer = current.as_pointer()
+        if pointer in seen:
+            return False
+        seen.add(pointer)
+        current = current.sub_thrown_attacker if current.sub_make_thrown else None
+    return True
+
+
+def update_thrown_link(victim: bpy.types.Object, context: bpy.types.Context) -> None:
+    if victim.type != 'ARMATURE':
+        return
+    bone = thrown_bone(victim, 'rot')
+    if bone is None:
+        return
+    constraint = bone.constraints.get(THROWN_CONSTRAINT_NAME)
+    attacker = victim.sub_thrown_attacker
+    enabled = (victim.sub_make_thrown and attacker is not None
+               and poll_thrown_attacker(victim, attacker) and thrown_bone(attacker, 'throw') is not None)
+    if not enabled:
+        if constraint is not None:
+            bone.constraints.remove(constraint)
+        return
+    if constraint is None:
+        constraint = bone.constraints.new('COPY_TRANSFORMS')
+        constraint.name = THROWN_CONSTRAINT_NAME
+    constraint.target = attacker
+    constraint.subtarget = thrown_bone(attacker, 'throw').name
+    constraint.target_space = 'WORLD'
+    constraint.owner_space = 'WORLD'
+    constraint.mix_mode = 'REPLACE'
+
+
 def remember_animation_folder(ssp, folder):
     if not folder:
         return
@@ -209,6 +254,83 @@ def unregister_folder_sync():
 
 
 def import_animation_file(
+    context: bpy.types.Context,
+    operator: bpy.types.Operator,
+    obj: bpy.types.Object,
+    filepath: str,
+    include_transform: bool,
+    include_material: bool,
+    include_visibility: bool,
+    first_frame: int,
+) -> bool:
+    path = Path(filepath)
+    match = re.fullmatch(r'(.*?)(thrown|throw)(f|b|hi|lw)', path.stem, re.IGNORECASE)
+    pairs = []
+    if obj.type == 'ARMATURE' and include_transform and path.suffix.lower() == '.nuanmb' and match:
+        prefix, role, direction = match.groups()
+        if role.lower() == 'throw':
+            pairs = [(obj, victim) for victim in sorted(context.scene.objects, key=lambda item: item.name)
+                     if victim.type == 'ARMATURE' and victim.sub_make_thrown
+                     and victim.sub_thrown_attacker == obj and thrown_bone(victim, 'rot') is not None
+                     and poll_thrown_attacker(victim, obj)]
+        elif (obj.sub_make_thrown and obj.sub_thrown_attacker is not None
+              and thrown_bone(obj, 'rot') is not None and poll_thrown_attacker(obj, obj.sub_thrown_attacker)):
+            pairs = [(obj.sub_thrown_attacker, obj)]
+    if not pairs:
+        return _import_animation_file(context, operator, obj, filepath, include_transform,
+                                      include_material, include_visibility, first_frame)
+
+    attacker = pairs[0][0]
+    folder = path.parent if attacker == obj else Path(bpy.path.abspath(anim_folder_for_armature(attacker)))
+    if attacker != obj and not anim_folder_for_armature(attacker):
+        operator.report({'WARNING'}, "Choose an animation folder on the attacker first.")
+        return False
+    files = {item.name.casefold(): item for item in sorted(folder.iterdir()) if item.is_file()} if folder.is_dir() else {}
+    throw_path = files.get(f'{prefix}throw{direction}.nuanmb'.casefold())
+    thrown_path = files.get(f'{prefix}thrown{direction}.nuanmb'.casefold())
+    primary = throw_path if obj == attacker else thrown_path
+    if primary is None:
+        operator.report({'WARNING'}, f"Animation not found in attacker's folder: {path.name}")
+        return False
+    targets = [(obj, primary)]
+    if obj == attacker and thrown_path is not None:
+        targets.extend((victim, thrown_path) for _, victim in pairs)
+    elif obj != attacker and throw_path is not None:
+        targets.append((attacker, throw_path))
+    else:
+        operator.report({'WARNING'}, "Paired throw animation not found in attacker's folder.")
+
+    active = context.view_layer.objects.active
+    selected = list(context.selected_objects)
+    mode = active.mode if active else 'OBJECT'
+    try:
+        if active and mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        success = True
+        for target, source in targets:
+            if target.name not in context.view_layer.objects:
+                operator.report({'WARNING'}, f"Character is not in the active view layer: {target.name}")
+                continue
+            for item in list(context.selected_objects):
+                item.select_set(False)
+            target.select_set(True)
+            context.view_layer.objects.active = target
+            success = _import_animation_file(context, operator, target, str(source), include_transform,
+                                            include_material, include_visibility, first_frame) and success
+        return success
+    finally:
+        if context.object and context.object.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        for item in list(context.selected_objects):
+            item.select_set(False)
+        for item in selected:
+            item.select_set(True)
+        context.view_layer.objects.active = active
+        if active and mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode=mode)
+
+
+def _import_animation_file(
     context: bpy.types.Context,
     operator: bpy.types.Operator,
     obj: bpy.types.Object,
@@ -929,6 +1051,21 @@ class SUB_PT_import_anim(Panel):
         obj: bpy.types.Object = context.active_object
         ssp = context.scene.sub_scene_properties
         
+        if obj and obj.type == 'ARMATURE':
+            box = layout.box()
+            box.prop(obj, "sub_make_thrown", text="Make Character Thrown")
+            if obj.sub_make_thrown:
+                box.prop(obj, "sub_thrown_attacker", text="Attacker Armature", icon='ARMATURE_DATA')
+                if thrown_bone(obj, 'rot') is None:
+                    box.label(text="Victim needs a rot bone.", icon='ERROR')
+                elif obj.sub_thrown_attacker is None:
+                    box.label(text="Choose an armature with a throw bone.", icon='INFO')
+                elif thrown_bone(obj.sub_thrown_attacker, 'throw') is None:
+                    box.label(text="Attacker needs a throw bone.", icon='ERROR')
+                elif not poll_thrown_attacker(obj, obj.sub_thrown_attacker):
+                    box.label(text="Invalid attacker or circular throw link.", icon='ERROR')
+                box.label(text="Throw/thrown selections sync from attacker folder.")
+
         # Show browse button
         row = layout.row()
         if obj is None:
