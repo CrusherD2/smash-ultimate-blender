@@ -74,3 +74,32 @@ with patch.object(eye, '_solid_texture_viewport_open', return_value=True):
     preview.sync(scene)
     assert mat.as_pointer() in preview._index['entries']
     print('SOLID_VISIBILITY_PERFORMANCE_OK')
+
+# Playback is covered by the frame handler; the timer must not repeat the work.
+with patch.object(preview, 'sync') as timer_sync:
+    with patch.object(preview, '_playing', return_value=True):
+        preview._timer()
+    assert timer_sync.call_count == 0
+    with patch.object(preview, '_playing', return_value=False):
+        preview._timer()
+    assert timer_sync.call_count == 1
+assert preview._playing() is False
+print('SOLID_TIMER_PLAYBACK_OK')
+
+# Animated materials whose color/UV inputs did not change this frame are skipped.
+with patch.object(eye, '_solid_texture_viewport_open', return_value=True):
+    obj.hide_set(False)
+    bpy.context.view_layer.update()
+    preview.sync(scene)
+    token = mat.as_pointer()
+    preview._index['entries'][token]['dynamic'] = True
+    preview.sync(scene, frame_changed=True)
+    with patch.object(preview, 'update_material', wraps=preview.update_material) as updated:
+        for _ in range(5):
+            preview.sync(scene, frame_changed=True)
+        assert not any(call.args[0] == mat for call in updated.call_args_list), updated.call_args_list
+        mat.sub_matl_data.vectors['CustomVector13'].value = (.5, .5, .5, 1)
+        preview.sync(scene, frame_changed=True)
+        assert any(call.args[0] == mat for call in updated.call_args_list)
+        assert preview._inputs[token][1][0] == (.5, .5, .5, 1)
+print('SOLID_FRAME_SKIP_OK')

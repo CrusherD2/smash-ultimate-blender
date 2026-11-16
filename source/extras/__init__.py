@@ -45,6 +45,7 @@ from . import collection_presets
 from . import ik_floor_contact
 from . import custom_ik
 from . import custom_components
+from . import performance_probe
 
 # Explicit registration function for the package
 def register():
@@ -70,6 +71,7 @@ def register():
     ik_floor_contact.register()
     custom_ik.register()
     custom_components.register()
+    performance_probe.register()
     viewport_capture.register()
     face_picker.register()
     eye_rig.register()
@@ -94,6 +96,7 @@ def unregister():
     visibility_layer.unregister()
     clipboard_image.unregister()
     custom_components.unregister()
+    performance_probe.unregister()
     custom_ik.unregister()
     face_picker.unregister()
     smash_viewport.unregister()

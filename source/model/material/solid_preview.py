@@ -15,6 +15,7 @@ _cache = {}
 _revisions = {}
 _mesh_revisions = {}
 _uv_signatures = {}
+_inputs = {}
 _dirty = set()
 _index = None
 _structure_dirty = True
@@ -220,6 +221,7 @@ def update_material(material, meshes, arma=None, scene=None, *, check_uv=True):
         textures[i][0] is not None for i in (1,3))
     transform = _eye_transform(material, arma, scene) if eye else _vector(material, 'CustomVector31', (1,1,0,0))
     first_transform = _vector(material, 'CustomVector6', (1,1,0,0))
+    _inputs[material.as_pointer()] = (eye, (diffuse, emission, final, transform, first_transform))
     # A single untinted layer is already a valid Workbench image. Avoid
     # allocating a full-size duplicate for materials that need no shader math.
     if not eye and not any(textures[i][0] for i in (1,3)) and first_transform == (1,1,0,0):
@@ -314,6 +316,25 @@ def update_material(material, meshes, arma=None, scene=None, *, check_uv=True):
         if node.extension != extension:
             node.extension = extension
     return _activate(material, node, meshes)
+
+
+def _inputs_unchanged(material, arma, scene):
+    # Textures, meshes and node edits mark materials dirty through depsgraph and
+    # msgbus, so frame-only updates need just the animated color/UV inputs.
+    cached = _inputs.get(material.as_pointer())
+    if cached is None:
+        return False
+    eye, inputs = cached
+    diffuse = _vector(material, 'CustomVector13', (1,1,1,1))
+    if diffuse != inputs[0]:
+        return False
+    emission = _vector(material, 'CustomVector3', (1,1,1,1))
+    final = _vector(material, 'CustomVector8', (1,1,1,1))
+    first_transform = _vector(material, 'CustomVector6', (1,1,0,0))
+    if (emission, final, first_transform) != (inputs[1], inputs[2], inputs[4]):
+        return False
+    transform = _eye_transform(material, arma, scene) if eye else _vector(material, 'CustomVector31', (1,1,0,0))
+    return transform == inputs[3]
 
 
 def _activate(material, node, meshes):
@@ -536,8 +557,11 @@ def sync(scene, *, frame_changed=False):
         pending = (changed.intersection(entries) | _index['activated']
                    | {token for token, entry in entries.items()
                       if entry['dynamic'] and (frame_changed or entry['poll'])})
+        forced = changed | _index['activated']
         for token in sorted(pending):
             entry = entries[token]
+            if token not in forced and _inputs_unchanged(entry['material'], entry['arma'], scene):
+                continue
             update_material(entry['material'], _index['visible_meshes'][token], entry['arma'], scene, check_uv=False)
         _engaged = True
     finally:
@@ -556,6 +580,7 @@ def _load(_dummy):
     _revisions.clear()
     _mesh_revisions.clear()
     _uv_signatures.clear()
+    _inputs.clear()
     _dirty.clear()
     _index = None
     _structure_dirty = True
@@ -609,9 +634,15 @@ def _subscribe_edits():
                                 options={'PERSISTENT'})
 
 
+def _playing():
+    wm = getattr(bpy.context, 'window_manager', None)
+    return bool(wm and any(window.screen and window.screen.is_animation_playing for window in wm.windows))
+
+
 def _timer():
     scene = getattr(bpy.context, 'scene', None)
-    if scene:
+    # During playback the frame handler already syncs every frame.
+    if scene and not _playing():
         try:
             sync(scene)
         except (ReferenceError, RuntimeError):
@@ -650,3 +681,4 @@ def unregister():
     _revisions.clear()
     _mesh_revisions.clear()
     _uv_signatures.clear()
+    _inputs.clear()
