@@ -10,6 +10,25 @@ The updater shows every section newer than the user's installed version, and
 the "What's New" popup shows them once after the update installs. Sections
 that aren't headed by a version number (like "Unreleased") are never shown.
 
+## 5.0.0 - 2026-11-16
+- Smash Viewport works on Blender's Vulkan backend: correct colors and soft edges, and it runs about as fast as OpenGL
+- Smash Viewport plays animations much faster: far less work per frame for visibility, bones and moved meshes
+- Smash Viewport: locked side/front views stay lined up with the bones and outlines while playing and zooming
+- Smash Viewport: meshes you move or drag now deform with the armature, like in Blender
+- Smash Viewport: meshes you delete in Blender disappear from the render instead of staying behind
+- Smash Viewport: material animations only affect their own material (e.g. a hair color layer no longer changes the clothes)
+- Smash Viewport warns when Blender's backend isn't OpenGL or Vulkan-ready, with the setting to change
+- Faster Solid view playback: the material texture preview no longer rebuilds every material when visibility changes, and skips unchanged frames
+- Visibility layers: load an animation's visibility and material tracks as a layer on top of the current animation (e.g. a transformation's hair color)
+- Solid view shows Smash material textures, including eye and facial expressions
+- Facial picker: better layout and sorting, stays on top while you work, and full expressions replace each other while face-part expressions combine
+- GIF and photo capture has framerate options
+- Eye look exports correctly when the animation is in NLA tweak mode
+- Applying a collection preset keeps the imported model's own materials
+- Mirror Selected Bones keeps only the mirrored bones selected
+- Faster IK matching on rigs with helper bones, and faster swing.prc export
+- New Profile Playback and Find Slow Animation Parts tools (F3 search) to see what slows playback down
+
 ## 4.9.10 - 2026-11-14
 - Link a thrown character to an attacker from the Animation Importer, with an armature picker and support for Rot/Throw bone names.
 - Automatically pair forward, back, up and down throw/thrown animations in both directions using the attacker's animation folder.
