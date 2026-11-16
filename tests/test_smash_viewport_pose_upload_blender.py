@@ -123,3 +123,36 @@ named.name = 'BodyShape'
 assert viewport.smash_gpu_id_cached(named) == ('BodyShape', 0)
 bpy.data.objects.remove(named)
 print('SMASH_VIEWPORT_CHANGE_SKIPS_OK')
+
+# Visibility work is reused while only unrelated things change, and redone when
+# a mesh's hide_viewport changes (drivers) or the scene is edited.
+rig4 = bpy.data.objects.new('Rig4', bpy.data.armatures.new('Rig4'))
+scene.collection.objects.link(rig4)
+shape = bpy.data.objects.new('ShoeShape', bpy.data.meshes.new('ShoeShape'))
+scene.collection.objects.link(shape)
+shape.parent = rig4
+viewport._vis_cache.clear()
+assert viewport.visibility_key(bpy.context, None) is not None, 'bulk hide_viewport read failed'
+real_now = viewport._collect_mesh_visibility_now
+with patch.object(viewport, '_iter_folder_smash_armatures', return_value=[rig4]), \
+     patch.object(viewport, '_collect_mesh_visibility_now', wraps=real_now) as rebuilt:
+    first = viewport._collect_mesh_visibility(bpy.context)
+    assert viewport._collect_mesh_visibility(bpy.context) == first
+    assert rebuilt.call_count == 1
+    shape.hide_viewport = True
+    hidden_state = viewport._collect_mesh_visibility(bpy.context)
+    assert rebuilt.call_count == 2
+    assert dict(zip(zip(hidden_state[0], hidden_state[1]), hidden_state[2]))[('ShoeShape', 0)] == 0
+    shape.hide_viewport = False
+    viewport._scene_edit_serial += 1  # what a depsgraph update (eye toggle, reparent) does
+    viewport._collect_mesh_visibility(bpy.context)
+    assert rebuilt.call_count == 3
+# The mesh list follows reparenting once the serial moves.
+assert [o.name for o in viewport._iter_armature_meshes(rig4)] == ['ShoeShape']
+shape.parent = None
+viewport._scene_edit_serial += 1
+assert list(viewport._iter_armature_meshes(rig4)) == []
+for obj in (shape, rig4):
+    bpy.data.objects.remove(obj)
+viewport._vis_cache.clear()
+print('SMASH_VIEWPORT_VIS_CACHE_OK')

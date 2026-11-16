@@ -22,6 +22,7 @@ with patch.object(viewport, '_loaded_folder', 'C:/model'), \
     state = dict(((name, sub), vis) for name, sub, vis in zip(*viewport._collect_mesh_visibility(bpy.context)))
     assert state == {('BodyShape', 0): 1, ('HairShape', 0): 0, ('HairShape', 1): 0}, state
     # A rig whose meshes cannot be matched must not blank the whole model.
+    viewport._scene_edit_serial += 1  # a scene edit, as the depsgraph handler records
     with patch.object(viewport, '_iter_armature_meshes', return_value=[]):
         names, _subs, _vis = viewport._collect_mesh_visibility(bpy.context)
         assert names == [], names

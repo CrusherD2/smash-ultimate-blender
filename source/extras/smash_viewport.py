@@ -128,6 +128,10 @@ _gpu_id_cache = {}
 # Loaded folder -> its (gpu name, subindex) list, for hiding meshes deleted in Blender.
 _folder_key_cache = {}
 _last_mesh_transform_fp = None
+# Bumped by every depsgraph update, undo and load. Blender sends none during plain
+# playback, so per-frame visibility only changes through hide_viewport values.
+_scene_edit_serial = 0
+_vis_cache = {}
 _fill_batch = None
 _fill_batch_size = None
 
@@ -145,6 +149,7 @@ def _clear_shade_caches():
     _numshb_object_cache.clear()
     _gpu_id_cache.clear()
     _folder_key_cache.clear()
+    _vis_cache.clear()
     _smash_arm_count = None
     _primary_arm_obj = None
     _fill_batch = None
@@ -169,6 +174,7 @@ def _clear_undo_object_caches():
     _numshb_object_cache.clear()
     _gpu_id_cache.clear()
     _folder_key_cache.clear()
+    _vis_cache.clear()
     _smash_arm_count = None
     _primary_arm_obj = None
 
@@ -1016,6 +1022,10 @@ def _sync_gpu_model_visibility(context, force=False):
     vl = getattr(context, "view_layer", None)
     space = _preview_space(context)
     primary = _primary_smash_armature(scene)
+    key = visibility_key(context, space)
+    key = key + (_id_key(primary),) if key is not None else None
+    if not force and key is not None and _vis_cache.get("models") == key:
+        return False
     start = 1 if _loaded_folder else 0
     states = []
     if _loaded_folder:
@@ -1036,6 +1046,7 @@ def _sync_gpu_model_visibility(context, force=False):
         states.append((index, vis))
     state = tuple(states)
     if not force and state == _last_model_vis_state:
+        _vis_cache["models"] = key
         return False
     for index, vis in states:
         try:
@@ -1043,6 +1054,7 @@ def _sync_gpu_model_visibility(context, force=False):
         except Exception:
             return False
     _last_model_vis_state = state
+    _vis_cache["models"] = key
     return True
 
 
@@ -1829,10 +1841,12 @@ def smash_bone_matrices(pose, world):
 
 
 def _collect_smash_bones(depsgraph, context):
+    """Bone names and their column-major Smash matrices as one float32 array."""
+    import numpy as np
     names = []
-    matrices = []
+    chunks = []
     if not _loaded_folder:
-        return names, matrices
+        return names, np.empty(0, dtype=np.float32)
     for arma in _iter_pose_armatures(depsgraph, context):
         pose = getattr(arma, "pose", None)
         if pose is None or not len(pose.bones):
@@ -1841,8 +1855,10 @@ def _collect_smash_bones(depsgraph, context):
         if not indices:
             continue
         names.extend(selected)
-        matrices.extend(smash_bone_matrices(pose, arma.matrix_world)[indices].ravel().tolist())
-    return names, matrices
+        chunks.append(smash_bone_matrices(pose, arma.matrix_world)[indices].ravel())
+    if not chunks:
+        return names, np.empty(0, dtype=np.float32)
+    return names, np.concatenate(chunks)
 
 
 def _collect_extra_bones(context):
@@ -1943,11 +1959,12 @@ def _set_camera(preview, rv3d, region, width, height, scale, space=None):
 
 def _set_bones(preview, depsgraph, context):
     global _name_keep, _name_arr_keep, _bone_name_tuple
+    import numpy as np
     names, matrices = _collect_smash_bones(depsgraph, context)
     extra_names, extra_matrices = _collect_extra_bones(context)
     if extra_names:
         names.extend(extra_names)
-        matrices.extend(extra_matrices)
+        matrices = np.concatenate([matrices, np.asarray(extra_matrices, dtype=np.float32)])
     if not names:
         return 0
     key = tuple(names)
@@ -1957,7 +1974,9 @@ def _set_bones(preview, depsgraph, context):
         _name_arr_keep = (c_char_p * len(encoded))(*encoded)
         _bone_name_tuple = key
     name_arr = _name_arr_keep
-    mat_arr = (c_float * len(matrices))(*matrices)
+    # Pass numpy's buffer directly; building a ctypes array element by element was ~2 ms.
+    matrices = np.ascontiguousarray(matrices, dtype=np.float32)
+    mat_arr = matrices.ctypes.data_as(POINTER(c_float))
     return _lib.ssbh_preview_set_world_transforms(
         preview,
         name_arr,
@@ -2180,9 +2199,15 @@ def _iter_armature_meshes(arm):
     try:
         key = ("meshes", arm.as_pointer())
     except Exception:
-        key = None
-    meshes = _memo(key, lambda: _armature_meshes_now(arm)) if key else _armature_meshes_now(arm)
-    yield from meshes
+        yield from _armature_meshes_now(arm)
+        return
+    # Parenting changes always arrive as a depsgraph update, which bumps the serial.
+    stamp = (_scene_edit_serial, len(bpy.data.objects))
+    cached = _vis_cache.get(key)
+    if cached is None or cached[0] != stamp:
+        cached = (stamp, _armature_meshes_now(arm))
+        _vis_cache[key] = cached
+    yield from cached[1]
 
 
 def _armature_meshes_now(arm):
@@ -2240,7 +2265,35 @@ def _iter_folder_smash_armatures(scene):
         pass
 
 
+def visibility_key(context, space):
+    """Everything mesh visibility depends on during playback, or None if unreadable."""
+    import numpy as np
+    scene = getattr(context, "scene", None)
+    view_layer = getattr(context, "view_layer", None)
+    try:
+        objects = scene.objects
+        hidden = np.empty(len(objects), dtype=bool)
+        objects.foreach_get("hide_viewport", hidden)
+        local = getattr(space, "local_view", None) is not None if space is not None else False
+        return (
+            _scene_edit_serial, _id_key(scene), _id_key(view_layer), _id_key(space), local,
+            _loaded_folder, len(_extra_mesh_map), tuple(_extra_gpu_order), hidden.tobytes(),
+        )
+    except Exception:
+        return None
+
+
 def _collect_mesh_visibility(context, space=None):
+    key = visibility_key(context, space)
+    cached = _vis_cache.get("mesh")
+    if key is not None and cached is not None and cached[0] == key:
+        return cached[1]
+    result = _collect_mesh_visibility_now(context, space)
+    _vis_cache["mesh"] = (key, result)
+    return result
+
+
+def _collect_mesh_visibility_now(context, space=None):
     names = []
     subindices = []
     visibles = []
@@ -3664,6 +3717,8 @@ def _preview_timer():
 
 @persistent
 def _on_scene_redraw(*args):
+    global _scene_edit_serial
+    _scene_edit_serial += 1
     if _in_mod_sync or _ignore_update:
         return
     if not _viewport_enabled():
@@ -3746,6 +3801,8 @@ def _ensure_timer():
     global _timer_running
     if _timer_running:
         return
+    # Edits made while the update handler was off never bumped the serial.
+    _vis_cache.clear()
     if _on_scene_redraw not in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.append(_on_scene_redraw)
     if _on_frame_change not in bpy.app.handlers.frame_change_post:
@@ -3756,6 +3813,7 @@ def _ensure_timer():
 def _stop_timer():
     global _timer_running
     _timer_running = False
+    _vis_cache.clear()
     for coll in (
         bpy.app.handlers.depsgraph_update_post,
         bpy.app.handlers.frame_change_post,
@@ -3932,7 +3990,8 @@ def render_cropped(preview, width, height, force):
             _, _, w, h = _blit_rect
             if w and h:
                 buf = gpu.types.Buffer("FLOAT", w * h * 4, _float_pixels[:w * h * 4])
-                _blit_tex = gpu.types.GPUTexture((w, h), format="RGBA8", data=buf)
+                # Float data into a float texture skips Blender's CPU conversion (~2x faster on Vulkan).
+                _blit_tex = gpu.types.GPUTexture((w, h), format="RGBA32F", data=buf)
     if _blit_tex is not None:
         _draw_with_state(lambda: draw_readback(_blit_tex, _blit_rect, (width, height)))
     status = f"{width}x{height} ssbh_wgpu readback"
@@ -4653,6 +4712,19 @@ def needs_smash_viewport_setup(scene=None):
 
 
 def _iter_blender_shade_meshes(context, skip_smash, space=None):
+    key = visibility_key(context, space)
+    if key is not None:
+        key = key + (bool(skip_smash), len(_extra_smash_arms), len(_extra_blender_smash))
+        cached = _vis_cache.get("shade")
+        if cached is None or cached[0] != key:
+            cached = (key, list(_iter_blender_shade_meshes_now(context, skip_smash, space)))
+            _vis_cache["shade"] = cached
+        yield from cached[1]
+        return
+    yield from _iter_blender_shade_meshes_now(context, skip_smash, space)
+
+
+def _iter_blender_shade_meshes_now(context, skip_smash, space=None):
     scene = getattr(context, "scene", None)
     objects = getattr(scene, "objects", None) if scene is not None else None
     if not objects:
