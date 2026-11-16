@@ -449,12 +449,9 @@ def _visible_entries(scene):
     view = bpy.context.view_layer if bpy.context.scene == scene else scene.view_layers[0]
     key = (scene.as_pointer(), view.as_pointer(), len(scene.objects))
     if _structure_dirty or _index is None or _index['key'] != key:
-        _index = {'key': key, 'objects': [obj for obj in scene.objects if obj.type == 'MESH'],
-                  'visible': None, 'entries': {}, 'animation': None}
-        _structure_dirty = False
-    objects = [obj for obj in _index['objects'] if obj.mode != 'EDIT' and obj.visible_get(view_layer=view)]
-    visible = tuple(obj.as_pointer() for obj in objects)
-    if visible != _index['visible']:
+        previous = _index or {}
+        catalog = previous.get('catalog', {})
+        objects = [obj for obj in scene.objects if obj.type == 'MESH']
         groups = {}
         for obj in objects:
             for slot in obj.material_slots:
@@ -463,10 +460,39 @@ def _visible_entries(scene):
                     group = groups.setdefault(mat, [])
                     if obj not in group:
                         group.append(obj)
-        _index['entries'] = {mat.as_pointer(): _entry(mat, meshes) for mat, meshes in groups.items()}
+        updated = {}
+        for mat, meshes in groups.items():
+            token = mat.as_pointer()
+            entry = catalog.get(token)
+            arma = next((mod.object for obj in meshes for mod in obj.modifiers
+                         if mod.type == 'ARMATURE' and mod.object), None)
+            if entry is None or entry['meshes'] != meshes or entry['arma'] != arma:
+                entry = _entry(mat, meshes)
+                _dirty.add(token)
+            updated[token] = entry
+        _index = {'key': key, 'objects': objects, 'catalog': updated,
+                  'visible': None, 'entries': {},
+                  'visible_meshes': previous.get('visible_meshes', {}),
+                  'activated': set(), 'animation': previous.get('animation')}
+        _structure_dirty = False
+    objects = [obj for obj in _index['objects'] if obj.mode != 'EDIT' and obj.visible_get(view_layer=view)]
+    visible = tuple(obj.as_pointer() for obj in objects)
+    _index['activated'] = set()
+    if visible != _index['visible']:
+        visible_ids = set(visible)
+        meshes = {token: [obj for obj in entry['meshes'] if obj.as_pointer() in visible_ids]
+                  for token, entry in _index['catalog'].items()}
+        meshes = {token: group for token, group in meshes.items() if group}
+        _index['activated'] = {token for token, group in meshes.items()
+                               if group != _index['visible_meshes'].get(token)}
+        for token in _index['activated']:
+            arma = next((mod.object for obj in meshes[token] for mod in obj.modifiers
+                         if mod.type == 'ARMATURE' and mod.object), None)
+            if arma != _index['catalog'][token]['arma']:
+                _dirty.add(token)
+        _index['visible_meshes'] = meshes
+        _index['entries'] = {token: _index['catalog'][token] for token in meshes}
         _index['visible'] = visible
-        _index['animation'] = None
-        _dirty.update(_index['entries'])
     return _index['entries']
 
 
@@ -485,30 +511,34 @@ def sync(scene, *, frame_changed=False):
         entries = _visible_entries(scene)
         if not _engaged:
             _dirty.update(entries)
-        changed = _dirty.intersection(entries)
+        catalog = _index['catalog']
+        changed = _dirty.intersection(catalog)
         _dirty.difference_update(changed)
-        for token in changed:
-            previous = entries[token]
-            entries[token] = _entry(previous['material'], previous['meshes'])
-        animation = _animation_key(entries, scene)
+        animation = _animation_key(catalog, scene)
         animation_changed = animation != _index['animation']
         if changed or animation_changed:
             if animation_changed:
                 # New SAP tracks or control bones can introduce inputs that did
                 # not exist when this material was first indexed.
-                for token, entry in list(entries.items()):
-                    entries[token] = _entry(entry['material'], entry['meshes'])
-                animation = _animation_key(entries, scene)
-            _classify(entries, scene)
+                changed.update(catalog)
+            for token in changed:
+                entry = catalog[token]
+                source_meshes = _index['visible_meshes'].get(token, entry['meshes'])
+                catalog[token] = _entry(entry['material'], source_meshes)
+                catalog[token]['meshes'] = entry['meshes']
+            animation = _animation_key(catalog, scene)
+            _classify(catalog, scene)
             _index['animation'] = animation
             # New action bindings can replace previously animated channels.
             if animation_changed:
                 changed.update(entries)
-        pending = changed | {token for token, entry in entries.items()
-                             if entry['dynamic'] and (frame_changed or entry['poll'])}
-        for token in pending:
+        entries.update((token, catalog[token]) for token in entries)
+        pending = (changed.intersection(entries) | _index['activated']
+                   | {token for token, entry in entries.items()
+                      if entry['dynamic'] and (frame_changed or entry['poll'])})
+        for token in sorted(pending):
             entry = entries[token]
-            update_material(entry['material'], entry['meshes'], entry['arma'], scene, check_uv=False)
+            update_material(entry['material'], _index['visible_meshes'][token], entry['arma'], scene, check_uv=False)
         _engaged = True
     finally:
         _busy = False
