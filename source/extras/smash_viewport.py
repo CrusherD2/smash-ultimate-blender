@@ -45,6 +45,7 @@ _GL_TO_WGPU_CLIP = Matrix((
 # Smash shaders are perspective-only. Locked ortho views use a long-lens
 # stand-in at this distance so lighting works; larger = closer to true ortho.
 _ORTHO_EYE_MIN = 400.0
+_ORTHO_DISTANCE_RATIO = 5000.0
 
 _lib = None
 _lib_error = ""
@@ -54,6 +55,9 @@ _loaded_arm_fp = None
 _reload_after_undo = False
 _pixels = bytearray()
 _float_pixels = None
+_blit_shader = None
+_blit_rect = None
+_presubmitted = False
 _pixel_size = (0, 0)
 _last_status = ""
 _last_error = ""
@@ -83,7 +87,6 @@ _pixel_version = 0
 _blit_tex = None
 _blit_tex_key = None
 _gpu_failed = False
-_blit_ubyte_ok = True
 _saved_mesh_filter = {}
 _applied_bg = None
 _applied_light = None
@@ -108,6 +111,7 @@ _extra_gpu_order = []
 _smash_arm_cache = {}
 _smash_arm_count = None
 _bone_name_tuple = None
+_bone_selection_cache = {}
 _mod_show_saved = {}
 _in_mod_sync = False
 _saved_in_front = {}
@@ -117,6 +121,13 @@ _saved_mesh_display = {}
 _numshb_folder_cache = {}
 _numshb_object_cache = {}
 _primary_arm_obj = None
+# Lookups reused within one preview update; cleared at its start and end.
+_frame_memo = None
+# Mesh object pointer -> (name, (gpu name, subindex)); see smash_gpu_id_cached.
+_gpu_id_cache = {}
+# Loaded folder -> its (gpu name, subindex) list, for hiding meshes deleted in Blender.
+_folder_key_cache = {}
+_last_mesh_transform_fp = None
 _fill_batch = None
 _fill_batch_size = None
 
@@ -132,6 +143,8 @@ def _clear_shade_caches():
     _smash_arm_cache.clear()
     _numshb_folder_cache.clear()
     _numshb_object_cache.clear()
+    _gpu_id_cache.clear()
+    _folder_key_cache.clear()
     _smash_arm_count = None
     _primary_arm_obj = None
     _fill_batch = None
@@ -154,6 +167,8 @@ def _clear_undo_object_caches():
     _smash_arm_cache.clear()
     _numshb_folder_cache.clear()
     _numshb_object_cache.clear()
+    _gpu_id_cache.clear()
+    _folder_key_cache.clear()
     _smash_arm_count = None
     _primary_arm_obj = None
 
@@ -189,6 +204,7 @@ def invalidate_animation_state(redraw=True):
     global _last_frame, _primary_arm_obj, _smash_arm_count, _extra_fp
     global _last_mesh_transform_state
     _last_mesh_transform_state = None
+    globals()["_last_mesh_transform_fp"] = None
     _last_pose_fp = None
     _last_pose_arm_fp = None
     _last_synced_arm_fp = None
@@ -373,6 +389,9 @@ def _bind_lib(lib):
         ("ssbh_preview_gif_add_frame", c_int, [ctypes.c_void_p, c_size_t, c_uint, c_uint]),
         ("ssbh_preview_gif_finish", c_int, []),
         ("ssbh_preview_gif_cancel", c_int, []),
+        ("ssbh_preview_render_float", c_int, [c_void_p, c_void_p, c_size_t, POINTER(c_uint)]),
+        ("ssbh_preview_submit_readback", c_int, [c_void_p]),
+        ("ssbh_preview_collect_float", c_int, [c_void_p, c_void_p, c_size_t, POINTER(c_uint)]),
     )
     for name, restype, argtypes in optional:
         if hasattr(lib, name):
@@ -455,6 +474,7 @@ def shutdown_preview():
             pass
     global _last_mesh_transform_state
     _last_mesh_transform_state = None
+    globals()["_last_mesh_transform_fp"] = None
     _preview = None
     _loaded_folder = ""
     _loaded_arm_fp = None
@@ -472,6 +492,7 @@ def shutdown_preview():
     _last_status = ""
     _blit_tex = None
     _blit_tex_key = None
+    globals()['_presubmitted'] = False
     _gpu_failed = False
     _applied_bg = None
     _applied_light = None
@@ -931,6 +952,8 @@ def _refresh_smash_arm_cache(scene):
             count = 0
     if count != _smash_arm_count:
         _smash_arm_cache.clear()
+        # Added/removed objects can reuse freed pointers; drop stale mesh ids too.
+        _gpu_id_cache.clear()
         _smash_arm_count = count
 
 
@@ -1070,11 +1093,23 @@ def _armature_matches_loaded_folder(arma, folder):
     return bool(arm_folder and _folders_match(arm_folder, folder))
 
 
+def _memo(key, compute):
+    if _frame_memo is None:
+        return compute()
+    if key not in _frame_memo:
+        _frame_memo[key] = compute()
+    return _frame_memo[key]
+
+
 def _primary_smash_armature(scene=None):
     """Armature that poses the loaded .numshb. Prefer the selected Smash character."""
-    global _primary_arm_obj
     if scene is None:
         scene = getattr(bpy.context, "scene", None)
+    return _memo(("primary", id(scene)), lambda: _find_primary_smash_armature(scene))
+
+
+def _find_primary_smash_armature(scene):
+    global _primary_arm_obj
     folder = _loaded_folder or _model_folder(scene)
     if not _folder_has_numshb(folder):
         _primary_arm_obj = None
@@ -1422,6 +1457,7 @@ def _ensure_extra_models(context):
         return False
     global _last_mesh_transform_state
     _last_mesh_transform_state = None
+    globals()["_last_mesh_transform_fp"] = None
     uploaded = {}
     smash_arms = set()
     blender_smash = set()
@@ -1672,17 +1708,23 @@ def _camera_to_smash(rv3d, region, width, height, space=None):
         cam = _view_eye(smash_view)
         pos = (float(cam.x), float(cam.y), float(cam.z), 1.0)
     else:
-        z_near = 1.0
-        z_far = 400000.0
+        depth = 1000.0
         if space is not None:
             try:
-                z_far = max(float(space.clip_end), z_near + 100.0)
+                depth = max(float(space.clip_end), 100.0)
             except Exception:
                 pass
         half_w, half_h = _ortho_half_extents(rv3d, aspect)
-        cam_dist = max(float(getattr(rv3d, "view_distance", 1.0)), _ORTHO_EYE_MIN)
+        # A nearby perspective eye magnified parts in front of the pivot and
+        # shrank parts behind it, so posed hands/feet slid off the bones. Far
+        # enough back (relative to the ortho frame) the parallax is sub-pixel;
+        # much further loses float32 precision in the view matrix.
+        cam_dist = max(float(getattr(rv3d, "view_distance", 1.0)), _ORTHO_EYE_MIN,
+                       half_h * _ORTHO_DISTANCE_RATIO, depth)
         fov_y = 2.0 * math.atan(half_h / cam_dist)
-        fov_y = min(max(fov_y, math.radians(0.05)), math.radians(120.0))
+        # Keep Blender's ortho clip range (clip_end centred on the view) for depth precision.
+        z_near = max(cam_dist - depth * 0.5, 1.0)
+        z_far = cam_dist + depth * 0.5
         smash_view = _view_at_distance(rv3d, cam_dist) @ _Y_UP_TO_Z_UP
         smash_proj = _perspective_rh(fov_y, half_w / half_h, z_near, z_far)
         cam = _view_eye(smash_view)
@@ -1749,6 +1791,43 @@ def _iter_pose_armatures(depsgraph, context):
         yield arma
 
 
+def _smash_bone_selection(pose):
+    """Indices and names of the pose bones sent to the renderer, cached per bone layout."""
+    bones = pose.bones
+    key = (pose.as_pointer(), len(bones))
+    cached = _bone_selection_cache.get(key)
+    if cached is not None:
+        return cached
+    indices = []
+    names = []
+    for index, pbone in enumerate(bones):
+        name = pbone.name
+        if _skip_smash_bone(name):
+            continue
+        bone = pbone.bone
+        if bone is not None and not bool(getattr(bone, "use_deform", True)):
+            continue
+        indices.append(index)
+        names.append(name)
+    _bone_selection_cache.clear()
+    _bone_selection_cache[key] = (indices, names)
+    return indices, names
+
+
+def smash_bone_matrices(pose, world):
+    """Column-major Smash-space world matrices for every bone, shape (n, 16)."""
+    import numpy as np
+    count = len(pose.bones)
+    # foreach_get flattens each 4x4 column by column.
+    raw = np.empty(count * 16, dtype=np.float32)
+    pose.bones.foreach_get("matrix", raw)
+    local = raw.reshape(count, 4, 4).transpose(0, 2, 1)
+    left = np.array(_Z_UP_TO_Y_UP @ world, dtype=np.float32)
+    right = np.array(_Y_MAJOR_TO_X_MAJOR, dtype=np.float32)
+    smash = left @ local @ right
+    return smash.transpose(0, 2, 1).reshape(count, 16)
+
+
 def _collect_smash_bones(depsgraph, context):
     names = []
     matrices = []
@@ -1756,19 +1835,13 @@ def _collect_smash_bones(depsgraph, context):
         return names, matrices
     for arma in _iter_pose_armatures(depsgraph, context):
         pose = getattr(arma, "pose", None)
-        if pose is None:
+        if pose is None or not len(pose.bones):
             continue
-        world = arma.matrix_world
-        for pbone in pose.bones:
-            name = pbone.name
-            if _skip_smash_bone(name):
-                continue
-            bone = pbone.bone
-            if bone is not None and not bool(getattr(bone, "use_deform", True)):
-                continue
-            smash = _Z_UP_TO_Y_UP @ (world @ pbone.matrix) @ _Y_MAJOR_TO_X_MAJOR
-            names.append(name)
-            matrices.extend(_mat4_col_major(smash))
+        indices, selected = _smash_bone_selection(pose)
+        if not indices:
+            continue
+        names.extend(selected)
+        matrices.extend(smash_bone_matrices(pose, arma.matrix_world)[indices].ravel().tolist())
     return names, matrices
 
 
@@ -1824,7 +1897,7 @@ def _pose_fingerprint(depsgraph, context):
             frame = float(scene.frame_current_final)
         except Exception:
             frame = float(getattr(scene, "frame_current", 0))
-    playing = bool(getattr(getattr(context, "screen", None), "is_animation_playing", False))
+    playing = _animation_playing(context)
     ptrs = []
     for arma in _iter_pose_armatures(depsgraph, context):
         try:
@@ -2017,11 +2090,45 @@ def _local_numshb_subindex(obj):
         return 0
 
 
+def smash_gpu_id_cached(obj):
+    """_smash_gpu_id, reused until the object is renamed or the object list changes."""
+    try:
+        ptr = obj.as_pointer()
+        name = obj.name
+    except Exception:
+        return _smash_gpu_id(obj)
+    cached = _gpu_id_cache.get(ptr)
+    if cached is not None and cached[0] == name:
+        return cached[1]
+    gpu_id = _smash_gpu_id(obj)
+    _gpu_id_cache[ptr] = (name, gpu_id)
+    return gpu_id
+
+
+def _folder_mesh_keys(folder):
+    keys = _folder_key_cache.get(folder)
+    if keys is None:
+        keys = [(_smash_mesh_object_name(name), int(sub)) for name, sub in _numshb_objects(folder)]
+        _folder_key_cache.clear()
+        _folder_key_cache[folder] = keys
+    return keys
+
+
 def _smash_mesh_keys(obj):
-    return [_smash_gpu_id(obj)]
+    return [smash_gpu_id_cached(obj)]
 
 
 def _mesh_hidden(obj, view_layer, space=None):
+    if _frame_memo is None:
+        return _mesh_hidden_now(obj, view_layer, space)
+    try:
+        key = ("hidden", obj.as_pointer(), id(view_layer), id(space))
+    except Exception:
+        return _mesh_hidden_now(obj, view_layer, space)
+    return _memo(key, lambda: _mesh_hidden_now(obj, view_layer, space))
+
+
+def _mesh_hidden_now(obj, view_layer, space=None):
     try:
         if obj.hide_get():
             return True
@@ -2068,17 +2175,19 @@ def _vis_track_map(arm, depsgraph=None):
 
 
 def _iter_armature_meshes(arm):
-    children = getattr(arm, "children", None)
-    if not children:
-        return
-    stack = list(children)
-    while stack:
-        obj = stack.pop()
-        nested = getattr(obj, "children", None)
-        if nested:
-            stack.extend(nested)
-        if getattr(obj, "type", "") == "MESH":
-            yield obj
+    # Object.children scans every object in the file, so walking it per mesh was
+    # quadratic; children_recursive builds the whole subtree in one pass.
+    try:
+        key = ("meshes", arm.as_pointer())
+    except Exception:
+        key = None
+    meshes = _memo(key, lambda: _armature_meshes_now(arm)) if key else _armature_meshes_now(arm)
+    yield from meshes
+
+
+def _armature_meshes_now(arm):
+    children = getattr(arm, "children_recursive", None) or ()
+    return [obj for obj in children if getattr(obj, "type", "") == "MESH"]
 
 
 def _gpu_mesh_hidden(obj, arm, tracks, view_layer, space):
@@ -2176,6 +2285,12 @@ def _collect_mesh_visibility(context, space=None):
         tracks = _vis_track_map(arm)
         for obj in _iter_armature_meshes(arm):
             add_obj(obj, arm, tracks)
+    # The renderer keeps every mesh from the loaded folder; meshes deleted in
+    # Blender send no state, so hide them explicitly. Skip when nothing matched
+    # (unlinked rig) so a lookup failure cannot blank the whole model.
+    if seen and _loaded_folder:
+        for key in _folder_mesh_keys(_loaded_folder):
+            seen.setdefault(key, 0)
     if _extra_mesh_map:
         objects = getattr(scene, "objects", None)
         if objects:
@@ -2237,6 +2352,9 @@ def _sync_mesh_transforms(preview, context, depsgraph):
     if setter is None:
         return False
     primary = _primary_smash_armature(context.scene)
+    fingerprint = object_matrix_fingerprint(context.scene, (preview, _id_key(primary), tuple(_extra_gpu_order)))
+    if fingerprint is not None and fingerprint == _last_mesh_transform_fp:
+        return False
     model_indices = {ptr: i for i, ptr in enumerate(_extra_gpu_order, start=1 if _loaded_folder else 0)}
     previous = _last_mesh_transform_state or {}
     current = {}
@@ -2256,7 +2374,7 @@ def _sync_mesh_transforms(preview, context, depsgraph):
         eval_obj = _evaluated_armature(obj, depsgraph)
         delta = _Z_UP_TO_Y_UP @ eval_obj.matrix_world @ arm_inverses[arm_key]
         extra = _extra_mesh_map.get(_id_key(obj))
-        name, sub = extra if extra is not None else _smash_gpu_id(obj)
+        name, sub = extra if extra is not None else smash_gpu_id_cached(obj)
         key = (preview, model_index, name, sub)
         matrix = tuple(_mat4_col_major(delta))
         current[key] = matrix
@@ -2271,7 +2389,25 @@ def _sync_mesh_transforms(preview, context, depsgraph):
         if setter(preview, indices, names, subs, matrices, count) != 0:
             raise RuntimeError(_native_error() or "Mesh transforms failed")
     _last_mesh_transform_state = current
+    globals()["_last_mesh_transform_fp"] = fingerprint
     return bool(entries)
+
+
+def object_matrix_fingerprint(scene, extra):
+    """Every object's world matrix in one bulk read; None if unavailable.
+
+    Mesh offsets only change when some object moves, so an unchanged
+    fingerprint skips rebuilding ~200 mesh matrices every frame.
+    """
+    import numpy as np
+    try:
+        objects = scene.objects
+        raw = np.empty(len(objects) * 16, dtype=np.float32)
+        objects.foreach_get("matrix_world", raw)
+        pointers = tuple(obj.as_pointer() for obj in objects)
+    except Exception:
+        return None
+    return extra, pointers, raw.tobytes()
 
 
 def _cv31_from_sap(sap, name):
@@ -3233,7 +3369,25 @@ def _camera_key(rv3d, width, height, scale):
     )
 
 
+def _animation_playing(context):
+    # Frame-change handlers run without a screen, so check every window.
+    screen = getattr(context, "screen", None)
+    if screen is not None and screen.is_animation_playing:
+        return True
+    wm = getattr(context, "window_manager", None)
+    return bool(wm and any(win.screen and win.screen.is_animation_playing for win in wm.windows))
+
+
 def _prepare_preview(context=None, depsgraph=None):
+    global _frame_memo
+    _frame_memo = {}
+    try:
+        return _prepare_preview_now(context, depsgraph)
+    finally:
+        _frame_memo = None
+
+
+def _prepare_preview_now(context=None, depsgraph=None):
     global _last_status, _last_error, _pixel_size, _last_tick_key
     global _last_pose_fp, _last_pose_arm_fp, _last_synced_arm_fp, _last_vis_state, _last_cv31_state
     global _last_cam_key, _last_frame
@@ -3258,7 +3412,7 @@ def _prepare_preview(context=None, depsgraph=None):
         frame = float(scene.frame_current_final)
     except Exception:
         frame = float(getattr(scene, "frame_current", 0))
-    playing = bool(getattr(getattr(context, "screen", None), "is_animation_playing", False))
+    playing = _animation_playing(context)
     frame_changed = _last_frame is None or abs(frame - _last_frame) > 1e-4
     size_changed = _pixel_size != (width, height) or _last_tick_key is None
     loaded = _preview is not None and bool(_loaded_folder or _extra_ok)
@@ -3299,7 +3453,9 @@ def _prepare_preview(context=None, depsgraph=None):
         if not preview:
             return None
     needs_gpu = size_changed
-    if _sync_mesh_transforms(preview, context, depsgraph):
+    # During playback the frame-change call already synced this frame's mesh
+    # transforms; extra draws of the same frame only move the camera.
+    if not (playing and not frame_changed) and _sync_mesh_transforms(preview, context, depsgraph):
         needs_gpu = True
     # Object visibility and retarget-pair state can change without changing the
     # scene object count. Always compare the cheap per-model state so a hidden
@@ -3574,9 +3730,15 @@ def _on_scene_redraw(*args):
 
 
 @persistent
-def _on_frame_change(*_args):
+def _on_frame_change(*args):
+    global _last_error
     if not _viewport_enabled():
         return
+    depsgraph = next((arg for arg in reversed(args) if hasattr(arg, "updates")), None)
+    try:
+        presubmit_frame(bpy.context, depsgraph)
+    except Exception as exc:
+        _last_error = f"Readback failed: {exc}"
     _tag_preview_redraw()
 
 
@@ -3610,39 +3772,83 @@ def _stop_timer():
         pass
 
 
-def _blit_rgba(width, height, pixels, dest_w=None, dest_h=None):
+# The renderer's readback is premultiplied sRGB bytes. Decode and un-premultiply on
+# the GPU exactly like the OpenGL present shader, so the CPU path only copies bytes.
+BLIT_VERTEX = """
+void main() {
+    uv = texCoord;
+    gl_Position = vec4(pos, 0.0, 1.0);
+}
+"""
+BLIT_FRAGMENT = """
+void main() {
+    vec4 t = texture(image, uv);
+    if (t.a < 0.001) {
+        discard;
+    }
+    vec3 encoded = clamp(t.rgb, 0.0, 1.0);
+    vec3 linear = mix(encoded / 12.92, pow((encoded + 0.055) / 1.055, vec3(2.4)),
+                      step(vec3(0.04045), encoded));
+    fragColor = vec4(linear / max(t.a, 0.001), 1.0);
+}
+"""
+
+
+def _blit_shader_get():
+    global _blit_shader
+    if _blit_shader is None:
+        import gpu
+        interface = gpu.types.GPUStageInterfaceInfo("sub_smash_blit_interface")
+        interface.smooth("VEC2", "uv")
+        info = gpu.types.GPUShaderCreateInfo()
+        info.sampler(0, "FLOAT_2D", "image")
+        info.vertex_in(0, "VEC2", "pos")
+        info.vertex_in(1, "VEC2", "texCoord")
+        info.vertex_out(interface)
+        info.fragment_out(0, "VEC4", "fragColor")
+        info.vertex_source(BLIT_VERTEX)
+        info.fragment_source(BLIT_FRAGMENT)
+        _blit_shader = gpu.shader.create_from_info(info)
+    return _blit_shader
+
+
+def upload_readback(pixels, width, height):
+    """Upload old-style readback bytes; Blender textures only accept FLOAT data."""
     import gpu
     import numpy as np
-    from gpu_extras.presets import draw_texture_2d
-
-    global _float_pixels, _blit_tex, _blit_tex_key, _blit_ubyte_ok
+    global _float_pixels
     needed = width * height * 4
-    if width < 1 or height < 1 or len(pixels) < needed:
-        return
-    dest_w = max(int(dest_w or width), 1)
-    dest_h = max(int(dest_h or height), 1)
-    tex_key = (_pixel_version, width, height)
-    texture = _blit_tex
-    if texture is None or _blit_tex_key != tex_key:
-        src = np.frombuffer(pixels, dtype=np.uint8, count=needed)
-        src = src.copy()
-        src[3::4] = 255
-        texture = None
-        if _blit_ubyte_ok:
-            try:
-                ubyte = gpu.types.Buffer("UBYTE", needed, src)
-                texture = gpu.types.GPUTexture((width, height), format="RGBA8", data=ubyte)
-            except Exception:
-                _blit_ubyte_ok = False
-                texture = None
-        if texture is None:
-            if _float_pixels is None or _float_pixels.size != needed:
-                _float_pixels = np.empty(needed, dtype=np.float32)
-            np.multiply(src, np.float32(1.0 / 255.0), out=_float_pixels)
-            buf = gpu.types.Buffer("FLOAT", needed, _float_pixels)
-            texture = gpu.types.GPUTexture((width, height), format="RGBA8", data=buf)
-        _blit_tex = texture
-        _blit_tex_key = tex_key
+    if _float_pixels is None or _float_pixels.size != needed:
+        _float_pixels = np.empty(needed, dtype=np.float32)
+    np.multiply(np.frombuffer(pixels, dtype=np.uint8, count=needed), np.float32(1.0 / 255.0),
+                out=_float_pixels)
+    buf = gpu.types.Buffer("FLOAT", needed, _float_pixels)
+    return gpu.types.GPUTexture((width, height), format="RGBA8", data=buf)
+
+
+def draw_readback(texture, rect=None, size=None):
+    """Draw readback pixels; `rect` is (x, y, w, h) top-down within a `size` (w, h) image."""
+    import gpu
+    from gpu_extras.batch import batch_for_shader
+    shader = _blit_shader_get()
+    left, right, top, bottom = -1.0, 1.0, 1.0, -1.0
+    if rect is not None:
+        x, y, w, h = rect
+        full_w, full_h = size
+        left, right = x / full_w * 2 - 1, (x + w) / full_w * 2 - 1
+        top, bottom = 1 - y / full_h * 2, 1 - (y + h) / full_h * 2
+    # Row 0 of the readback is the top of the image.
+    batch = batch_for_shader(shader, "TRI_FAN", {
+        "pos": ((left, bottom), (right, bottom), (right, top), (left, top)),
+        "texCoord": ((0, 1), (1, 1), (1, 0), (0, 0)),
+    })
+    shader.bind()
+    shader.uniform_sampler("image", texture)
+    batch.draw(shader)
+
+
+def _draw_with_state(draw):
+    import gpu
     prev_blend = "NONE"
     try:
         prev_blend = gpu.state.blend_get()
@@ -3650,25 +3856,102 @@ def _blit_rgba(width, height, pixels, dest_w=None, dest_h=None):
         pass
     gpu.state.depth_test_set("NONE")
     gpu.state.blend_set("NONE")
-    identity = Matrix.Identity(4)
-    proj = Matrix.Identity(4)
-    proj[0][0] = 2.0 / float(dest_w)
-    proj[1][1] = -2.0 / float(dest_h)
-    proj[0][3] = -1.0
-    proj[1][3] = 1.0
     try:
-        with gpu.matrix.push_pop():
-            gpu.matrix.load_projection_matrix(proj)
-            try:
-                gpu.matrix.load_matrix(identity)
-            except Exception:
-                gpu.matrix.load_identity()
-            _draw_texture_2d_compat(texture, (0, 0), dest_w, dest_h)
+        draw()
     finally:
         try:
             gpu.state.blend_set(prev_blend or "NONE")
         except Exception:
             gpu.state.blend_set("NONE")
+
+
+def readback_mode():
+    """True when frames come back through CPU readback instead of the OpenGL share."""
+    return (_lib is not None and hasattr(_lib, "ssbh_preview_collect_float")
+            and (_gpu_failed or not gl_present_supported()))
+
+
+def presubmit_frame(context, depsgraph=None):
+    """Start the Smash render as soon as a new frame is evaluated.
+
+    The GPU then renders while Blender finishes the rest of the frame, and the
+    viewport draw only collects it. Changes after this point (camera, edits)
+    make the draw render again, so the image is never older than the draw.
+    """
+    global _presubmitted, _last_error
+    if not readback_mode():
+        return False
+    prepared = _prepare_preview(context, depsgraph)
+    if prepared is None:
+        return False
+    preview, _width, _height, size_changed, _region, _rv3d, needs_gpu = prepared
+    if not (needs_gpu or size_changed or _blit_tex_key is None):
+        return False
+    if _lib.ssbh_preview_submit_readback(preview) != 0:
+        _last_error = _native_error() or "render failed"
+        _presubmitted = False
+        return False
+    _presubmitted = True
+    return True
+
+
+def render_cropped(preview, width, height, force):
+    """Render only the covered pixels; returns False if the plugin lacks it.
+
+    Exact for the current camera and pose (never an older frame), and uploads
+    just the model's bounding box instead of the whole viewport.
+    """
+    import gpu
+    import numpy as np
+    global _float_pixels, _blit_tex, _blit_tex_key, _blit_rect, _last_error, _presubmitted
+    collect = getattr(_lib, "ssbh_preview_collect_float", None)
+    if collect is None:
+        return False
+    key = ("cropped", width, height)
+    force = force or _blit_tex_key != key
+    if force or _presubmitted:
+        if force and _lib.ssbh_preview_submit_readback(preview) != 0:
+            _last_error = _native_error() or "render failed"
+            _blit_tex = _blit_tex_key = None
+            _presubmitted = False
+            return True
+        _presubmitted = False
+        needed = width * height * 4
+        if _float_pixels is None or _float_pixels.size != needed:
+            _float_pixels = np.empty(needed, dtype=np.float32)
+        rect = (c_uint * 4)()
+        rc = collect(preview, _float_pixels.ctypes.data, needed, rect)
+        if rc < 0:
+            _last_error = _native_error() or "render failed"
+            _blit_tex = _blit_tex_key = None
+            return True
+        if rc == 0:
+            _blit_rect = tuple(int(v) for v in rect)
+            _blit_tex = None
+            _blit_tex_key = key
+            _, _, w, h = _blit_rect
+            if w and h:
+                buf = gpu.types.Buffer("FLOAT", w * h * 4, _float_pixels[:w * h * 4])
+                _blit_tex = gpu.types.GPUTexture((w, h), format="RGBA8", data=buf)
+    if _blit_tex is not None:
+        _draw_with_state(lambda: draw_readback(_blit_tex, _blit_rect, (width, height)))
+    status = f"{width}x{height} ssbh_wgpu readback"
+    if _last_status != status:
+        globals()["_last_status"] = status
+    return True
+
+
+def _blit_rgba(width, height, pixels, dest_w=None, dest_h=None):
+    global _blit_tex, _blit_tex_key
+    del dest_w, dest_h
+    needed = width * height * 4
+    if width < 1 or height < 1 or len(pixels) < needed:
+        return
+    tex_key = (_pixel_version, width, height)
+    if _blit_tex is None or _blit_tex_key != tex_key:
+        _blit_tex = upload_readback(pixels, width, height)
+        _blit_tex_key = tex_key
+    _draw_with_state(lambda: draw_readback(_blit_tex))
 
 
 def update_smash_viewport(self, context):
@@ -3783,6 +4066,11 @@ def draw_smash_viewport_ui(layout, context):
     box.label(text="Uses Standard view transform (AgX washes Smash).")
     if _last_status:
         box.label(text=_last_status)
+    if sys.platform == "win32" and not gl_present_supported():
+        warn = box.column(align=True)
+        warn.label(text="Blender's GPU backend is not OpenGL,", icon="ERROR")
+        warn.label(text="so Smash Viewport uses the slower CPU copy.")
+        warn.label(text="Preferences > System > Backend: OpenGL, then restart.")
     if _last_error:
         box.label(text=_last_error, icon="ERROR")
 
@@ -4872,6 +5160,15 @@ def _draw_blender_meshes(context, depsgraph, skip_smash):
             pass
 
 
+def gl_present_supported():
+    # The fast path shares the DX12 image with an OpenGL context; Vulkan/Metal use CPU readback.
+    try:
+        import gpu
+        return gpu.platform.backend_type_get() == "OPENGL"
+    except Exception:
+        return True
+
+
 def _draw_smash_overlay(context=None, depsgraph=None):
     global _last_error, _last_status, _last_draw_mono
     try:
@@ -4906,7 +5203,7 @@ def _draw_smash_overlay_inner(context=None, depsgraph=None):
         _gpu_failed = False
     gpu_rc = -2
     flags = (1 if needs_gpu else 0) | 2
-    if not _gpu_failed:
+    if not _gpu_failed and gl_present_supported():
         try:
             gpu_rc = int(
                 _lib.ssbh_preview_present_gl(
@@ -4939,6 +5236,18 @@ def _draw_smash_overlay_inner(context=None, depsgraph=None):
             _last_error = gpu_note
     dest_w = max(int(dest_w), 1)
     dest_h = max(int(dest_h), 1)
+    try:
+        cropped = render_cropped(preview, width, height, bool(needs_gpu or size_changed))
+    except Exception as exc:
+        _last_error = f"Readback failed: {exc}"
+        cropped = False
+    if cropped:
+        _draw_blender_meshes(
+            context,
+            depsgraph,
+            skip_smash=bool(_loaded_folder) or bool(_extra_gpu_order),
+        )
+        return
     _cpu_render(preview, width, height, force=bool(needs_gpu or size_changed))
     tex_w, tex_h = _pixel_size
     if tex_w < 1 or tex_h < 1 or not _pixels:

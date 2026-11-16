@@ -27,7 +27,11 @@ addon update:
 - Linux: `native/bin/libssbh_blender_preview.so` (Vulkan)
 - macOS: `native/bin/libssbh_blender_preview.dylib` (Metal, Intel + Apple Silicon)
 
-Linux and macOS use CPU blit into the viewport (no DX/GL interop). Rebuild
+Linux and macOS use CPU blit into the viewport (no DX/GL interop). On Windows the
+DX12/OpenGL share needs Blender's OpenGL backend; with Vulkan the addon reads the
+frame back instead. That path starts rendering at frame change, waits only in the
+viewport draw, and uploads just the model's bounding box (`ssbh_preview_submit_readback`
+/ `ssbh_preview_collect_float`). Rebuild
 and replace the matching file when the crate changes.
 
 ## Build

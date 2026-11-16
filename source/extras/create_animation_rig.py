@@ -1719,6 +1719,7 @@ def _bone_ik_fk_role(bone_name, armature_obj=None):
 
 _IK_FK_APPLYING = False
 _IK_VIS_CACHE = {}
+_HAS_IK_CACHE = {}
 _IK_FK_MUTE_SYNC_PAUSED = False
 _IK_FK_FRAME_SYNC_BUSY = False
 # Frames for Switch IK/FK to ease sub_use_ik_* from old mode to new mode.
@@ -2057,6 +2058,19 @@ def _enforce_ik_fk_channel_separation(armature_obj):
 
 
 @persistent
+def _has_ik_cached(obj):
+    # Scanning the IK chains walks every bone; rigs only change when bones or
+    # custom chains are added, so key the answer on those.
+    data = obj.data
+    key = (obj.as_pointer(), data.as_pointer(), len(data.bones), obj.get('sub_custom_ik_chains', ''))
+    cached = _HAS_IK_CACHE.get(obj.name)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    result = armature_has_ik(obj)
+    _HAS_IK_CACHE[obj.name] = (key, result)
+    return result
+
+
 def _sync_ik_fk_visibility(scene, depsgraph=None):
     """Sync IK visibility / mutes / FK rest-hold only when the mode changes.
 
@@ -2087,7 +2101,7 @@ def _sync_ik_fk_visibility(scene, depsgraph=None):
                             _set_ik_bone_visibility(obj, state[index] != 'fk', kind)
                     cache[obj.name] = state
                 continue
-            if not armature_has_ik(obj):
+            if not _has_ik_cached(obj):
                 continue
             data = obj.data
             if not data.get(ARMATURE_FLAG):
@@ -3744,6 +3758,7 @@ def _pose_tool_depsgraph(_scene, _depsgraph):
 def _pose_tool_load_post(_dummy):
     _subscribe_pose_tool_msgbus()
     _IK_VIS_CACHE.clear()
+    _HAS_IK_CACHE.clear()
     _ensure_ik_drivers_on_loaded_rigs()
 
 
@@ -3892,6 +3907,7 @@ def unregister():
     if _sync_ik_fk_visibility in bpy.app.handlers.frame_change_post:
         bpy.app.handlers.frame_change_post.remove(_sync_ik_fk_visibility)
     _IK_VIS_CACHE.clear()
+    _HAS_IK_CACHE.clear()
     if bpy.app.timers.is_registered(_pose_tool_timer):
         bpy.app.timers.unregister(_pose_tool_timer)
     if bpy.app.timers.is_registered(_pose_tool_apply_soon):

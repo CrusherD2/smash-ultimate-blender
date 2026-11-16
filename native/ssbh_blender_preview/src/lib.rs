@@ -999,6 +999,67 @@ impl Preview {
         Ok((self.width, self.height, true))
     }
 
+    /// Render the current state and block until it is in `out` as floats in 0-1.
+    ///
+    /// Unlike `render`, never returns an older frame, so the image matches the
+    /// camera and pose Blender is drawing. Only the bounding box of covered
+    /// pixels is written, tightly packed from `out[0]`; uploading that instead
+    /// of the full viewport is most of the saving. Values stay as rendered
+    /// (sRGB, premultiplied, real alpha); the viewport shader decodes them.
+    /// Returns (x, y, width, height) of the box, top-down; empty when nothing drew.
+    fn render_float(&mut self, out: &mut [f32]) -> Result<[u32; 4], String> {
+        self.submit_readback()?;
+        self.collect_float(out)?
+            .ok_or_else(|| "Render was not submitted".to_string())
+    }
+
+    /// Start rendering the current state without waiting, so the GPU works
+    /// while Blender finishes the frame. Any older pending frame is dropped.
+    fn submit_readback(&mut self) -> Result<(), String> {
+        if self.render_models.is_empty() {
+            return Err("No model loaded".into());
+        }
+        self.wait_pending();
+        self.submit_frame()
+    }
+
+    /// Wait for the submitted frame; None when nothing is pending.
+    fn collect_float(&mut self, out: &mut [f32]) -> Result<Option<[u32; 4]>, String> {
+        let width = self.width as usize;
+        let height = self.height as usize;
+        if out.len() < width * height * 4 {
+            return Err(format!("Float buffer too small: need {}, got {}", width * height * 4, out.len()));
+        }
+        let Some(slot) = (0..2).find(|&i| self.slots[i].is_some()) else {
+            return Ok(None);
+        };
+        let rx = self.slots[slot].take().unwrap();
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|e| format!("GPU poll failed: {e}"))?;
+        rx.recv()
+            .map_err(|_| "Readback channel closed".to_string())?
+            .map_err(|e| format!("Map readback failed: {e:?}"))?;
+        let padded = self.output.padded_bpr as usize;
+        let rect = {
+            let mapped = self.output.readbacks[slot].slice(..).get_mapped_range();
+            let rect = covered_rect(&mapped, padded, width, height);
+            let [x, y, w, h] = rect.map(|v| v as usize);
+            let scale: [f32; 256] = std::array::from_fn(|i| i as f32 / 255.0);
+            for row in 0..h {
+                let src_start = (y + row) * padded + x * 4;
+                let src = &mapped[src_start..src_start + w * 4];
+                let dst = &mut out[row * w * 4..(row + 1) * w * 4];
+                for (d, &b) in dst.iter_mut().zip(src) {
+                    *d = scale[b as usize];
+                }
+            }
+            rect
+        };
+        self.output.readbacks[slot].unmap();
+        Ok(Some(rect))
+    }
+
     /// Submit the current pose and block until that frame is in `out`.
     fn render_wait(&mut self, out: &mut [u8]) -> Result<(u32, u32, bool), String> {
         if self.render_models.is_empty() {
@@ -1022,6 +1083,44 @@ impl Drop for Preview {
     }
 }
 
+/// Bounding box (x, y, w, h) of pixels with non-zero alpha in padded RGBA rows.
+fn covered_rect(pixels: &[u8], padded: usize, width: usize, height: usize) -> [u32; 4] {
+    let (mut x0, mut y0, mut x1, mut y1) = (width, height, 0, 0);
+    for y in 0..height {
+        let row = &pixels[y * padded..y * padded + width * 4];
+        let Some(first) = row.chunks_exact(4).position(|p| p[3] != 0) else {
+            continue;
+        };
+        let last = row.chunks_exact(4).rposition(|p| p[3] != 0).unwrap();
+        x0 = x0.min(first);
+        x1 = x1.max(last + 1);
+        y0 = y0.min(y);
+        y1 = y + 1;
+    }
+    if x1 <= x0 || y1 <= y0 {
+        return [0, 0, 0, 0];
+    }
+    [x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32]
+}
+
+#[cfg(test)]
+mod covered_rect_tests {
+    use super::covered_rect;
+
+    #[test]
+    fn finds_box_and_ignores_row_padding() {
+        // 4x3 image, 20-byte rows (4 bytes of padding with alpha set).
+        let mut pixels = vec![0u8; 20 * 3];
+        for row in pixels.chunks_exact_mut(20) {
+            row[19] = 255;
+        }
+        pixels[20 + 4 + 3] = 255; // (1, 1)
+        pixels[40 + 8 + 3] = 9; // (2, 2)
+        assert_eq!(covered_rect(&pixels, 20, 4, 3), [1, 1, 2, 2]);
+        assert_eq!(covered_rect(&vec![0u8; 60], 20, 4, 3), [0, 0, 0, 0]);
+    }
+}
+
 fn trim_blender_suffix(name: &str) -> &str {
     if name.len() >= 4 {
         let (head, tail) = name.split_at(name.len() - 4);
@@ -1038,26 +1137,24 @@ fn labels_match(entry: &str, want: &str) -> bool {
     if entry.eq_ignore_ascii_case(want) {
         return true;
     }
-    let e2 = normalize_mat_label(entry);
-    let w2 = normalize_mat_label(want);
-    if e2 == w2 {
-        return true;
-    }
-    // Anim tracks are often "Hair" while the .numatb label is "NUB_Hair".
-    // Require a '_' boundary so "Hair" does not also hit "HHair".
-    if e2.len() >= 4 && w2.len() >= 4 {
-        if suffix_token(&e2, &w2) || suffix_token(&w2, &e2) {
-            return true;
-        }
-    }
-    false
+    // Prefix aliases ("Hair" vs "NUB_Hair") normalize to the same label. A plain
+    // suffix match is not used: "alp_goku_001" would also hit "def_goku_001" and
+    // apply a hair-flash UV scroll to the clothes.
+    normalize_mat_label(entry) == normalize_mat_label(want)
 }
 
-fn suffix_token(full: &str, token: &str) -> bool {
-    if full.len() <= token.len() || !full.ends_with(token) {
-        return false;
+#[cfg(test)]
+mod labels_match_tests {
+    use super::labels_match;
+
+    #[test]
+    fn matches_aliases_but_not_other_materials_with_same_suffix() {
+        assert!(labels_match("NUB_Hair", "Hair"));
+        assert!(labels_match("hair", "Hair.001"));
+        assert!(labels_match("goku_001", "alp_goku_001"));
+        assert!(!labels_match("def_goku_001", "alp_goku_001"));
+        assert!(!labels_match("skin_goku_001", "goku_001"));
     }
-    full.as_bytes()[full.len() - token.len() - 1] == b'_'
 }
 
 fn normalize_mat_label(name: &str) -> String {
@@ -1682,6 +1779,76 @@ pub unsafe extern "C" fn ssbh_preview_set_lighting_frame(
     });
     match result {
         Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ssbh_preview_submit_readback(ptr: *mut Preview) -> i32 {
+    clear_error();
+    match catch(|| unsafe { preview_mut(ptr)? }.submit_readback()) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            -1
+        }
+    }
+}
+
+/// 0 = frame written, 1 = nothing was pending, -1 = error.
+#[no_mangle]
+pub unsafe extern "C" fn ssbh_preview_collect_float(
+    ptr: *mut Preview,
+    out_rgba: *mut f32,
+    out_len: usize,
+    out_rect: *mut u32,
+) -> i32 {
+    clear_error();
+    let result = catch(|| {
+        if out_rgba.is_null() || out_rect.is_null() {
+            return Err("Null output pointer".into());
+        }
+        let preview = unsafe { preview_mut(ptr)? };
+        let out = unsafe { std::slice::from_raw_parts_mut(out_rgba, out_len) };
+        preview.collect_float(out)
+    });
+    match result {
+        Ok(Some(rect)) => {
+            unsafe { std::ptr::copy_nonoverlapping(rect.as_ptr(), out_rect, 4) };
+            0
+        }
+        Ok(None) => 1,
+        Err(err) => {
+            set_error(err);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ssbh_preview_render_float(
+    ptr: *mut Preview,
+    out_rgba: *mut f32,
+    out_len: usize,
+    out_rect: *mut u32,
+) -> i32 {
+    clear_error();
+    let result = catch(|| {
+        if out_rgba.is_null() || out_rect.is_null() {
+            return Err("Null output pointer".into());
+        }
+        let preview = unsafe { preview_mut(ptr)? };
+        let out = unsafe { std::slice::from_raw_parts_mut(out_rgba, out_len) };
+        preview.render_float(out)
+    });
+    match result {
+        Ok(rect) => {
+            unsafe { std::ptr::copy_nonoverlapping(rect.as_ptr(), out_rect, 4) };
+            0
+        }
         Err(err) => {
             set_error(err);
             -1
