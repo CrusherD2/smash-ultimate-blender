@@ -65,6 +65,12 @@ assert ik.toe_articulation(obj, CHAIN) == ('ToeBendIKL', ik.PREFIX + 'ToeBasisL'
 assert ik.create_controls(bpy.context, obj, 'LEGS') == 1
 controls = rig._ik_control_bone_names(obj, 'LEGS')
 assert {'FootRollIKL', 'ToeIKL', 'ToeBendIKL'} <= set(controls), controls
+toe_control = obj.data.bones['ToeIKL']
+source_toe = obj.data.bones['Toe2L']
+assert abs(toe_control.length / source_toe.length - 1.15) < 1e-5
+assert (toe_control.head_local - source_toe.head_local).length < 1e-6
+assert ((toe_control.tail_local - toe_control.head_local).normalized().dot(
+    (source_toe.tail_local - source_toe.head_local).normalized()) > .99999)
 
 # Hiding follows the mode: FK bones go while the leg is in IK...
 fk_names, ik_names = rig._off_mode_bone_names(obj, 'LEGS')
@@ -72,6 +78,21 @@ assert 'Toe2L' in fk_names and 'FootRollIKL' in ik_names
 assert rig.off_mode_hiding_enabled(obj)
 assert all(obj.data.bones[name].hide for name in ('LegL', 'KneeL', 'FootL'))
 assert not any(obj.data.bones[name].hide for name in ik_names)
+
+# The endpoint checkbox reveals only regular Foot/Toe bones, immediately.
+endpoints = ('FootL', 'Toe1L', 'Toe2L')
+assert all(obj.data.bones[name].hide for name in endpoints)
+obj.data.sub_hide_ik_foot_toe = False
+assert not any(obj.data.bones[name].hide for name in endpoints)
+assert all(obj.data.bones[name].hide for name in ('LegL', 'KneeL'))
+obj.data.bones['Toe1L']['sub_component_hidden'] = True
+obj.data.sub_hide_ik_foot_toe = True
+obj.data.sub_hide_ik_foot_toe = False
+assert obj.data.bones['Toe1L'].hide
+del obj.data.bones['Toe1L']['sub_component_hidden']
+obj.data.sub_hide_ik_foot_toe = True
+assert all(obj.data.bones[name].hide for name in endpoints)
+assert not obj.data.bl_rna.properties['sub_hide_ik_foot_toe'].is_animatable
 
 # ...the toggle brings everything back...
 assert bpy.ops.sub.toggle_off_mode_bones() == {'FINISHED'}
@@ -90,6 +111,7 @@ bpy.context.view_layer.update()
 rig.set_off_mode_bones_hidden(obj, True, 'LEGS')
 assert all(obj.data.bones[name].hide for name in ik_names)
 assert not any(obj.data.bones[name].hide for name in ('LegL', 'KneeL', 'FootL'))
+assert not any(obj.data.bones[name].hide for name in endpoints)
 discard(obj)
 
 addon_utils.disable(MODULE, default_set=False, handle_error=on_error)

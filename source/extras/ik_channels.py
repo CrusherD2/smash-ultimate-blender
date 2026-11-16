@@ -430,6 +430,10 @@ def _drive_pull_base(obj, pull, target, pole, inner, outer):
         live(('glx', 'gly', 'glz')[axis], target, axis)
     for axis in range(3):
         ref(('grx', 'gry', 'grz')[axis], target, axis)
+    driver.expression = _detail_driver_expression(inner, outer)
+
+
+def _detail_driver_expression(inner, outer):
     span = max(outer - inner, 1e-6)
 
     def num(value):
@@ -441,9 +445,53 @@ def _drive_pull_base(obj, pull, target, pole, inner, outer):
         dist = 'sqrt((' + cx + '-' + rx + ')**2+(' + cy + '-' + ry + ')**2+(' + cz + '-' + rz + ')**2)'
         return '1-min(max((' + dist + '-' + num(inner) + ')/' + num(span) + ',0),1)'
 
-    driver.expression = ('min(' + weight('plx', 'ply', 'plz', 'prx', 'pry', 'prz') + ','
-                         + weight('glx', 'gly', 'glz', 'grx', 'gry', 'grz') + ')')
+    return ('min(' + weight('plx', 'ply', 'plz', 'prx', 'pry', 'prz') + ','
+                   + weight('glx', 'gly', 'glz', 'grx', 'gry', 'grz') + ')')
 
+
+def _detail_driver_specs(obj, jobs, owners):
+    """Exact generated fade drivers whose inputs stay in their owner's island."""
+    specs = {}
+    for _, names, target, pole in jobs:
+        path = limb_path(obj, names)
+        if not path or any(obj.pose.bones[n].parent for n in (target, pole)):
+            continue
+        rest = _chain_rest_length(obj, path)
+        if rest < 1e-6:
+            continue
+        inputs = {}
+        for bone, live, reference in ((pole, ('plx', 'ply', 'plz'), ('prx', 'pry', 'prz')),
+                                      (target, ('glx', 'gly', 'glz'), ('grx', 'gry', 'grz'))):
+            base = 'pose.bones[' + json.dumps(bone) + ']'
+            for axis in range(3):
+                inputs[live[axis]] = base + '.location[' + str(axis) + ']'
+                inputs[reference[axis]] = base + '["' + REF_PROPS[axis] + '"]'
+        expression = _detail_driver_expression(rest * _DETAIL_INNER, rest * _DETAIL_OUTER)
+        for name in path:
+            pull = obj.pose.bones.get(PULL_PREFIX + name)
+            if pull is None or owners.get(pull.name) is None:
+                continue
+            if any(owners.get(n) != owners[pull.name] for n in (target, pole)):
+                continue
+            con = pull.constraints.get(PULL_BASE)
+            if (con is not None and con.type == 'COPY_TRANSFORMS'
+                    and con.target == obj and con.subtarget == CORRECTION_PREFIX + name):
+                specs[con.path_from_id() + '.influence'] = (expression, inputs)
+    return specs
+
+
+def _matches_detail_driver(obj, curve, spec):
+    expression, inputs = spec
+    driver = curve.driver
+    return (
+        curve.array_index == 0 and driver.type == 'SCRIPTED'
+        and not driver.use_self and driver.expression == expression
+        and len(driver.variables) == len(inputs)
+        and {var.name for var in driver.variables} == set(inputs)
+        and all(var.type == 'SINGLE_PROP' and var.targets[0].id == obj
+                and var.targets[0].data_path == inputs[var.name]
+                for var in driver.variables)
+    )
 
 def _install_detail_drivers(obj, jobs):
     """(Re)build correction-fade drivers for freshly matched chains."""
@@ -535,6 +583,7 @@ def ensure(obj, context, limbs='BOTH'):
             roll.roll = foot.roll
             toe_control = bones.get(toe_name) or bones.new(toe_name)
             toe_control.head, toe_control.tail, toe_control.roll = toe.head, toe.tail, toe.roll
+            toe_control.length = toe.length * 1.15
             output = bones.get(output_name) or bones.new(output_name)
             output.head, output.tail, output.roll = foot.head, foot.tail, foot.roll
             output.length = max(foot.length * .35, .1)
@@ -1047,6 +1096,37 @@ def clean_animation(obj, limbs='BOTH', tolerance=1e-4):
     return removed
 
 
+def _inherit_helper_islands(obj, owners):
+    """Include downstream HLPB readers without admitting feedback into a chain."""
+    from .rig_export import _is_helper_constraint
+
+    # An unowned ancestor is an input to the original FK/solver hierarchy,
+    # not a downstream helper. Never promote it based on what it reads.
+    ancestors = {parent.name for name in owners if name in obj.pose.bones
+                 for parent in obj.pose.bones[name].parent_recursive}
+    changed = True
+    while changed:
+        changed = False
+        for bone in obj.pose.bones:
+            if bone.name in owners or bone.name in ancestors:
+                continue
+            if bone.parent and bone.parent.name in owners:
+                owners[bone.name] = owners[bone.parent.name]
+                changed = True
+                continue
+            if not bone.constraints or not all(
+                    _is_helper_constraint(con) and con.target == obj
+                    for con in bone.constraints):
+                continue
+            inputs = {owners[con.subtarget] for con in bone.constraints
+                      if con.subtarget in owners}
+            if len(inputs) == 1:
+                owners[bone.name] = inputs.pop()
+                changed = True
+    # The regular audit still checks EVERY constraint/driver and rejects
+    # cross-island readers, external targets and any upstream feedback.
+
+
 def _dependency_audit(obj, jobs, separate):
     """Owner map for the rig's dependency islands, or None if it is not closed.
 
@@ -1105,6 +1185,7 @@ def _dependency_audit(obj, jobs, separate):
             parent = parent.parent
         if parent is not None:
             owners[bone.name] = owners[parent.name]
+    _inherit_helper_islands(obj, owners)
     props = {'sub_use_ik_arms', 'sub_use_ik_legs',
              'sub_ik_stretch_arms', 'sub_ik_stretch_legs',
              'sub_ik_stretch_chain_arms', 'sub_ik_stretch_chain_legs',
@@ -1123,7 +1204,12 @@ def _dependency_audit(obj, jobs, separate):
             if '.constraints[' in curve.data_path:
                 if curve.data_path not in pole_paths:
                     return diag.reject(guard, 'animated_constraint')
+    detail_specs = _detail_driver_specs(obj, all_jobs, owners)
     for curve in obj.animation_data.drivers if obj.animation_data else ():
+        if curve.data_path in detail_specs:
+            if not _matches_detail_driver(obj, curve, detail_specs[curve.data_path]):
+                return diag.reject(guard, 'modified_detail_driver')
+            continue
         driver = curve.driver
         if not curve.data_path.endswith('.influence') or not driver.variables:
             return diag.reject(guard, 'pose_driver')

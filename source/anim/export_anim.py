@@ -1361,9 +1361,18 @@ def _export_model_anim_fast_steps(context, operator: bpy.types.Operator, arma: b
             bone_name_to_scale_values[bone_name] = [Scale(1.0, 1.0, 1.0) for _ in range(nframes)]
             operator.report({'INFO'}, f"Added missing bone '{bone_name}' to animation export data")
 
+        excluded_bone_paths = tuple(
+            bone.path_from_id()
+            for bone in arma.pose.bones
+            if bone.name not in export_names
+        )
         object_level_transform_reported = False
         for fcurve in get_all_action_fcurves(arma.animation_data.action):
             yield
+            # Control custom properties (for example IK sub_match channels) are
+            # intentionally omitted along with their bones, not invalid curves.
+            if fcurve.data_path.startswith(excluded_bone_paths):
+                continue
             regex = r'pose\.bones\[\"(.*)\"\]\.(.*)'
             matches = re.match(regex, fcurve.data_path)
             if matches is None: # A fcurve in the action that isn't a bone transform, such as the user keyframing the Armature Object itself.

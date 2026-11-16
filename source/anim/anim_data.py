@@ -3,6 +3,8 @@ import sys
 import inspect
 
 import bpy
+import mathutils
+from mathutils import Vector, Matrix
 
 from bpy.types import Panel, Operator, UIList, Menu, PropertyGroup, Armature
 from bpy.props import (
@@ -132,8 +134,8 @@ def sync_sap_action_handler(scene):
         
         # If we found a matching SAP action and it's different from current, switch to it
         if expected_sap_action and expected_sap_action != current_sap_action:
-            from ..blender_compat import assign_action
-            assign_action(obj.data.animation_data, expected_sap_action)
+            from ..extras.visibility_layer import set_base
+            set_base(obj.data.animation_data, expected_sap_action)
             current_sap_action = expected_sap_action
             try:
                 from ..extras.eye_rig import ensure_eye_live_preview, match_eye_look_from_material
@@ -330,8 +332,8 @@ class SUB_OP_sync_sap_action(Operator):
         expected_sap_action = bpy.data.actions.get(expected_sap_action_name)
         
         if expected_sap_action:
-            from ..blender_compat import assign_action
-            assign_action(obj.data.animation_data, expected_sap_action)
+            from ..extras.visibility_layer import set_base
+            set_base(obj.data.animation_data, expected_sap_action)
             self.report({'INFO'}, f"Synced SAP action to: {expected_sap_action_name}")
         else:
             self.report({'WARNING'}, f"No matching SAP action found: {expected_sap_action_name}")
@@ -1024,7 +1026,8 @@ class SUB_OP_insert_all_vis_entry_keyframes(Operator):
         arma: bpy.types.Object = context.object
         sap: SUB_PG_sub_anim_data = arma.data.sub_anim_properties
         for index, vis_entry in enumerate(sap.vis_track_entries):
-            arma.data.keyframe_insert(data_path=f'sub_anim_properties.vis_track_entries[{index}].value', group='Visibility')
+            from ..extras.visibility_layer import keyframe_base_property
+            keyframe_base_property(arma.data, data_path=f'sub_anim_properties.vis_track_entries[{index}].value', group='Visibility')
         if arma.data.animation_data is not None:
             style_visibility_action(arma.data.animation_data.action, create_spacer=True)
         return {'FINISHED'}
@@ -1089,6 +1092,182 @@ class SUB_OP_organize_vis_entries_by_move(Operator):
         
         refresh_visibility_drivers(context)
         return {'FINISHED'}
+
+class SUB_OP_offset_bone_in_all_anims(Operator):
+    """Offset a bone in all animations loaded on the selected armature"""
+    bl_idname = 'sub.offset_bone_in_all_anims'
+    bl_label = 'Offset Bone in All Animations'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    bone_name: StringProperty(name="Bone Name", default="")
+    offset_axis: EnumProperty(
+        name="Axis",
+        items=[
+            ('X', 'X', 'X axis'),
+            ('Y', 'Y', 'Y axis'),
+            ('Z', 'Z', 'Z axis'),
+        ],
+        default='X',
+    )
+    offset_space: EnumProperty(
+        name="Space",
+        items=[
+            ('LOCAL', 'Local', 'Offset in bone local space'),
+            ('GLOBAL', 'Global', 'Offset in world space'),
+        ],
+        default='LOCAL',
+    )
+    offset_amount: FloatProperty(name="Amount", default=0.0, step=0.1)
+
+    def invoke(self, context, event):
+        if context.object and context.object.type == 'ARMATURE':
+            arma = context.object
+            if context.active_pose_bone:
+                self.bone_name = context.active_pose_bone.name
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "bone_name", text="Bone Name")
+        layout.prop(self, "offset_space", text="Space")
+        layout.prop(self, "offset_axis", text="Axis")
+        layout.prop(self, "offset_amount", text="Amount")
+
+class SUB_OP_offset_bone_in_all_anims(Operator):
+    """Offset a bone in all animations loaded on the selected armature"""
+    bl_idname = 'sub.offset_bone_in_all_anims'
+    bl_label = 'Offset Bone in All Animations'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    bone_name: StringProperty(name="Bone Name", default="")
+    offset_axis: EnumProperty(
+        name="Axis",
+        items=[
+            ('X', 'X', 'X axis'),
+            ('Y', 'Y', 'Y axis'),
+            ('Z', 'Z', 'Z axis'),
+        ],
+        default='X',
+    )
+    offset_space: EnumProperty(
+        name="Space",
+        items=[
+            ('LOCAL', 'Local', 'Offset in bone local space'),
+            ('GLOBAL', 'Global', 'Offset in world space'),
+        ],
+        default='LOCAL',
+    )
+    offset_amount: FloatProperty(name="Amount", default=0.0, step=0.1)
+
+    def invoke(self, context, event):
+        if context.object and context.object.type == 'ARMATURE':
+            arma = context.object
+            if context.active_pose_bone:
+                self.bone_name = context.active_pose_bone.name
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "bone_name", text="Bone Name")
+        layout.prop(self, "offset_space", text="Space")
+        layout.prop(self, "offset_axis", text="Axis")
+        layout.prop(self, "offset_amount", text="Amount")
+
+    def execute(self, context):
+        from .fcurve_compat import (
+            get_all_action_fcurves,
+            action_matches_armature,
+            _POSE_BONE_NAME,
+            get_or_create_fcurves,
+            action_frame_range_safe,
+        )
+
+        # Find the armature with the bone - search ALL armatures in scene
+        arma = None
+        bone_name = self.bone_name
+        for ob in bpy.data.objects:
+            if ob.type == 'ARMATURE' and bone_name in ob.data.bones:
+                arma = ob
+                break
+
+        if arma is None:
+            self.report({'ERROR'}, f"Bone '{bone_name}' not found in any armature")
+            return {'CANCELLED'}
+
+        # Compute offset in armature-local space
+        if self.offset_space == 'GLOBAL':
+            armature_matrix = arma.matrix_world
+            offset_world = Vector((0, 0, 0))
+            if self.offset_axis == 'X':
+                offset_world.x = self.offset_amount
+            elif self.offset_axis == 'Y':
+                offset_world.y = self.offset_amount
+            else:
+                offset_world.z = self.offset_amount
+            offset_local = (armature_matrix.inverted() @ Matrix.Translation(offset_world)).to_translation()
+        else:
+            offset_local = Vector((0, 0, 0))
+            if self.offset_axis == 'X':
+                offset_local.x = self.offset_amount
+            elif self.offset_axis == 'Y':
+                offset_local.y = self.offset_amount
+            else:
+                offset_local.z = self.offset_amount
+
+        axis_index = 'XYZ'.index(self.offset_axis)
+        offset_value = offset_local[axis_index]
+
+        # Collect all actions that animate this armature
+        modified_count = 0
+        for action in bpy.data.actions:
+            if not action_matches_armature(action, arma):
+                continue
+
+            fcurves = get_all_action_fcurves(action, id_type='ARMATURE')
+            target_fcurve = None
+            for fc in fcurves:
+                match = _POSE_BONE_NAME.match(fc.data_path or '')
+                if match and match.group(1) == bone_name and fc.array_index == axis_index:
+                    target_fcurve = fc
+                    break
+
+            # If no fcurve exists for this bone/axis, create one
+            if target_fcurve is None:
+                # Get start/end frame from the action
+                start, end = action_frame_range_safe(action)
+                start = int(start)
+                end = int(end)
+                frames = np.arange(start, max(start, end) + 1, dtype=float)
+
+                target_fcurve = get_or_create_fcurves(
+                    action,
+                    f'pose.bones["{bone_name}"]',
+                    index=axis_index,
+                    action_group=bone_name,
+                    id_type='ARMATURE',
+                )
+
+                # Add keyframes at start and end with the offset value
+                target_fcurve.keyframe_points.add(2)
+                target_fcurve.keyframe_points[0].co = (float(start), float(offset_value))
+                target_fcurve.keyframe_points[1].co = (float(end), float(offset_value))
+                target_fcurve.update()
+                modified_count += 1
+                continue
+
+            # Apply offset to all keyframe points
+            for kp in target_fcurve.keyframe_points:
+                kp.co[1] += offset_value
+            target_fcurve.update()
+            modified_count += 1
+
+        if modified_count == 0:
+            self.report({'WARNING'}, f"No animations found animating bone '{bone_name}'")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, f"Offset '{bone_name}' {self.offset_axis} by {self.offset_amount} in {modified_count} animation(s)")
+        return {'FINISHED'}
+
 
 def remove_visibility_drivers(context):
     from .import_anim import remove_visibility_drivers_for_armature
@@ -1302,11 +1481,21 @@ def dummy_update(self, context):
     '''
     This is needed to force blender to update the driver values when updating via a modal.
     '''
+    from ..extras.visibility_layer import (
+        is_refreshing_visibility_layers, is_playing_animation, schedule_visibility_layers,
+    )
+    # Frame evaluation must not queue another refresh or restyle the timeline.
+    if is_refreshing_visibility_layers() or is_playing_animation():
+        return
+    schedule_visibility_layers(self.id_data)
     if not bpy.app.timers.is_registered(_style_visibility_soon):
         bpy.app.timers.register(_style_visibility_soon, first_interval=0.05)
 
 
 def _style_visibility_soon():
+    from ..extras.visibility_layer import is_playing_animation
+    if is_playing_animation():
+        return None
     try:
         apply_dopesheet_key_colors()
         for obj in bpy.data.objects:
@@ -1359,10 +1548,10 @@ class SUB_PG_mat_track_property(PropertyGroup):
         items=mat_sub_types, 
         default='VECTOR',)
     custom_vector: FloatVectorProperty(name='Custom Vector', size=4, update=dummy_update, subtype='COLOR_GAMMA', soft_min=0.0, soft_max=1.0)
-    custom_bool: BoolProperty(name='Custom Bool')
-    custom_float: FloatProperty(name='Custom Float')
-    pattern_index: IntProperty(name='Pattern Index', subtype='UNSIGNED')
-    texture_transform: FloatVectorProperty(name='Texture Transform', size=5)
+    custom_bool: BoolProperty(name='Custom Bool', update=dummy_update)
+    custom_float: FloatProperty(name='Custom Float', update=dummy_update)
+    pattern_index: IntProperty(name='Pattern Index', subtype='UNSIGNED', update=dummy_update)
+    texture_transform: FloatVectorProperty(name='Texture Transform', size=5, update=dummy_update)
 
 class SUB_PG_mat_track(PropertyGroup):
     name: StringProperty(

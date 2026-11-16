@@ -607,7 +607,7 @@ def _apply_bone_collections(armature, data, bone_match, collection_match, report
             collection.assign(bone)
 
 
-def apply_preset(preset, armature, context):
+def apply_preset(preset, armature, context, *, apply_materials=True):
     props = context.scene.sub_collection_presets
     sections = preset.get("sections", {})
     preview = preview_preset(preset, armature, context)
@@ -658,7 +658,7 @@ def apply_preset(preset, armature, context):
                 unmatched.objects.link(obj)
                 report["objects_moved"].append(obj.name)
 
-    if props.use_materials:
+    if apply_materials and props.use_materials:
         for preset_name, materials in sections.get("materials", {}).items():
             obj = bpy.data.objects.get(object_map.get(preset_name, ""))
             if not obj or obj.type != 'MESH':
@@ -874,7 +874,8 @@ def auto_apply_model_preset(context, armature, model_folder, operator):
         operator.report({'WARNING'}, "Collection preset auto-apply skipped: multiple presets link to this model folder")
         return
     preset = presets[0]
-    report = apply_preset(preset, armature, context)
+    # Blender duplicate suffixes cannot identify source meshes for material overrides.
+    report = apply_preset(preset, armature, context, apply_materials=False)
     context.scene.sub_collection_presets.last_report = format_report(preset, report, applied=True)
     operator.report({'INFO'}, f"Auto-applied collection preset {preset.get('name', 'Unnamed')!r}")
 

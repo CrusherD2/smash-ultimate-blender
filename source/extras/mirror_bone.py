@@ -244,17 +244,25 @@ def mirror_selected_bones(armature):
 
     if mirrored_bones:
         bones.active = mirrored_bones[-1][1]
+        # Deselect the source bones so only the mirrored ones stay selected
+        for plan, _bone in mirrored_bones:
+            src = bones.get(plan.source_name)
+            if src is not None:
+                src.select = False
+                src.select_head = False
+                src.select_tail = False
     mirrored = [(plan.source_name, plan.mirror_name) for plan, _bone in mirrored_bones]
     return mirrored, skipped, warnings
 
 
 class SUB_OP_mirror_bone(Operator):
     bl_idname = "sub.mirror_bone"
-    bl_label = "Mirror Bone"
+    bl_label = "Mirror Selected Bones"
     bl_description = (
         "Mirror the selected edit bones across X. HaveR becomes HaveL and is parented "
         "to the other side of its parent (HandR -> HandL). A bone named Item parented "
-        "to HandR is renamed ItemR and mirrored as ItemL"
+        "to HandR is renamed ItemR and mirrored as ItemL. The source bones are deselected "
+        "and the mirrored ones stay selected."
     )
     bl_options = {'REGISTER', 'UNDO'}
 

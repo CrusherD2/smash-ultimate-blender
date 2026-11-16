@@ -48,6 +48,8 @@ def known_handlers():
 # runs once per depsgraph update, which matching performs thousands of times.
 SUSPENDED_HANDLERS = (
     ('source.anim.motion_list_ui', 'motion_list_auto_sync_handler'),
+    ('source.model.material.solid_preview', '_frame'),
+    ('source.model.material.solid_preview', '_changed'),
     ('source.extras.stage_tools.light_nuanmb', '_stage_light_depsgraph_update'),
     ('source.retargeting', 'auto_detect_smash_armature'),
 )

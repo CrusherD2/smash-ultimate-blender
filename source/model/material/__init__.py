@@ -13,7 +13,8 @@ from . import matl_params
 from . import operators
 from . import reimport_materials
 from . import sub_matl_data
-from . import ui    
+from . import ui
+from . import solid_preview
 
 import bpy
 

@@ -7,6 +7,7 @@ from . import smash_viewport
 from . import finger_sliders
 from . import face_picker
 from . import misc_panel
+from . import visibility_layer
 from . import set_linear_vertex_color
 from . import create_ik_arms
 from . import create_ik_armsandlegs
@@ -47,6 +48,7 @@ from . import custom_components
 
 # Explicit registration function for the package
 def register():
+    visibility_layer.register()
     clipboard_image.register()
     # Register reset_animation first to ensure it's available for the panel
     reset_animation.register()
@@ -89,6 +91,7 @@ def register():
     ik_pole_alignment.register()
     
 def unregister():
+    visibility_layer.unregister()
     clipboard_image.unregister()
     custom_components.unregister()
     custom_ik.unregister()

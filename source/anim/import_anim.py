@@ -380,7 +380,12 @@ def _import_animation_file(
             )
             success = True
         if success and active_limbs and (is_raw or include_transform):
-            _refresh_imported_ik(context, obj, active_limbs, preserve_controls=is_raw)
+            # The full animation-rig wrapper already matched this newly imported
+            # action. Still restore switches below, but do not solve it twice.
+            already_matched = bool(not is_raw and obj.animation_data.action
+                                   and obj.animation_data.action.get('sub_rig_import_matched'))
+            _refresh_imported_ik(context, obj, active_limbs, preserve_controls=is_raw,
+                                 already_matched=already_matched)
         if success:
             refresh_smash_viewport()
         return success
@@ -390,7 +395,8 @@ def _import_animation_file(
             bpy.ops.object.mode_set(mode=old_mode, toggle=False)
 
 
-def _refresh_imported_ik(context, obj, active_limbs, *, preserve_controls=False):
+def _refresh_imported_ik(context, obj, active_limbs, *, preserve_controls=False,
+                         already_matched=False):
     """Match new FK motion for enabled limbs without overwriting raw IK edits."""
     from ..extras import create_animation_rig as rig, ik_channels, anim_layers_compat
     from .fcurve_compat import get_fcurves_for_assigned_slot
@@ -407,35 +413,12 @@ def _refresh_imported_ik(context, obj, active_limbs, *, preserve_controls=False)
                 continue
             wanted.append(kind)
         if wanted:
-            # Live Floor Contact redirects the IK solver through driven
-            # contact targets, so matching with it on bakes the floor
-            # offset into the feet. Suspend it for the match, then restore.
-            floor_props = getattr(obj, 'sub_floor_contact', None) if hasattr(obj, 'sub_floor_contact') else None
-            suspend_floor = bool(floor_props is not None and getattr(floor_props, 'enabled', False))
-            if suspend_floor:
-                floor_props.enabled = False
-                try:
-                    obj.update_tag()
-                except Exception:
-                    pass
-                context.view_layer.update()
-            try:
-                # One sweep covering every eligible limb. match() walks the whole
-                # clip per call, so asking per kind sampled and solved the entire
-                # animation twice on an arms-and-legs rig. _batch additionally lets
-                # the limbs it can prove independent share depsgraph evaluations --
-                # it defaults off, so this path had been taking the slowest branch.
-                ik_channels.match(context, obj,
-                                  'BOTH' if len(wanted) > 1 else wanted[0],
-                                  entire=True, key=True, _batch=True)
-            finally:
-                if suspend_floor:
-                    floor_props.enabled = True
-                    try:
-                        obj.update_tag()
-                    except Exception:
-                        pass
-                    context.view_layer.update()
+            from ..extras.rig_import_match import suspend_floor_contact
+            if not already_matched:
+                with suspend_floor_contact(context, obj):
+                    ik_channels.match(context, obj,
+                                      'BOTH' if len(wanted) > 1 else wanted[0],
+                                      entire=True, key=True, _batch=True)
             for kind in wanted:
                 rig._key_use_ik(obj, context.scene.frame_start, limbs=kind, enabled=True)
                 rig._set_ik_enabled(context, obj, True, limbs=kind)
@@ -1607,7 +1590,7 @@ def import_model_anim(context, filepath, include_transform_track, include_materi
 def _import_model_anim(context: bpy.types.Context, filepath: str,
                       include_transform_track, include_material_track,
                       include_visibility_track, first_blender_frame,
-                      armature_object: bpy.types.Object | None = None):
+                      armature_object: bpy.types.Object | None = None, visibility_layer=False):
     # Load the anim data first with ssbh_data_py since blender setup relies on data from it
     ssbh_anim_data = ssbh_data_py.anim_data.read_anim(filepath)
     # Blender Action setup
@@ -1624,24 +1607,33 @@ def _import_model_anim(context: bpy.types.Context, filepath: str,
         arma.data.animation_data_create()
 
     action_name = format_animation_name_on_import(Path(filepath).stem, '.nuanmb', context)
-    bone_action = bpy.data.actions.new(action_name)
-    sap_action = bpy.data.actions.new(f"{arma.name} {bone_action.name} SAP Data")
+    base_sap_action = arma.data.animation_data.action
+    if arma.data.animation_data.use_tweak_mode:
+        arma.data.animation_data.use_tweak_mode = False
+    arma.data.animation_data.action_influence = 1.0
+    bone_action = arma.animation_data.action if visibility_layer else bpy.data.actions.new(action_name)
+    sap_action = bpy.data.actions.new(f"{arma.name} {action_name} SAP Data")
     try:
-        bone_action["sub_anim_source_path"] = str(Path(filepath).resolve())
+        if not visibility_layer:
+            bone_action["sub_anim_source_path"] = str(Path(filepath).resolve())
         sap_action["sub_anim_source_path"] = str(Path(filepath).resolve())
     except Exception:
-        bone_action["sub_anim_source_path"] = filepath
+        if not visibility_layer:
+            bone_action["sub_anim_source_path"] = filepath
         sap_action["sub_anim_source_path"] = filepath
-    ensure_action_slot(bone_action, arma)
+    if not visibility_layer:
+        ensure_action_slot(bone_action, arma)
     ensure_action_slot(sap_action, arma.data)
-    assign_action(arma.animation_data, bone_action)
+    if not visibility_layer:
+        assign_action(arma.animation_data, bone_action)
 
     # Blender frame range setup
     scene = context.scene
     # Ensure we're using integers for frame calculation
     frame_count = int(ssbh_anim_data.final_frame_index + 1)
-    scene.frame_start = first_blender_frame
-    scene.frame_end = scene.frame_start + frame_count - 1
+    if not visibility_layer:
+        scene.frame_start = first_blender_frame
+        scene.frame_end = scene.frame_start + frame_count - 1
     # Convenience dict for group gathering
     name_to_group_dict = {group.group_type.name : group for group in ssbh_anim_data.groups}
     # Transform group import stuff
@@ -1821,7 +1813,7 @@ def _import_model_anim(context: bpy.types.Context, filepath: str,
                 vis_entry.value = bool_value
                 arma.data.keyframe_insert(
                     data_path=data_path,
-                    frame=scene.frame_start + index,
+                    frame=first_blender_frame + index,
                     group='Visibility',
                 )
                 last_value = bool_value
@@ -1848,7 +1840,7 @@ def _import_model_anim(context: bpy.types.Context, filepath: str,
                         fcurve.keyframe_points.add(count=len(vector_index_values))
                         frame_and_value_flattened = []
                         for index, value in enumerate(vector_index_values):
-                            frame_and_value_flattened.extend([scene.frame_start + index, value])
+                            frame_and_value_flattened.extend([first_blender_frame + index, value])
                         fcurve.keyframe_points.foreach_set('co', frame_and_value_flattened)
                         fcurve.update()
                         style_material_fcurve(fcurve)
@@ -1858,7 +1850,7 @@ def _import_model_anim(context: bpy.types.Context, filepath: str,
                     fcurve.keyframe_points.add(count=len(track.values))
                     frame_and_value_flattened = []
                     for index, value in enumerate(track.values):
-                        frame_and_value_flattened.extend([scene.frame_start + index, value])
+                        frame_and_value_flattened.extend([first_blender_frame + index, value])
                     fcurve.keyframe_points.foreach_set('co', frame_and_value_flattened)
                     fcurve.update()
                     style_material_fcurve(fcurve)
@@ -1868,7 +1860,7 @@ def _import_model_anim(context: bpy.types.Context, filepath: str,
                     fcurve.keyframe_points.add(count=len(track.values))
                     frame_and_value_flattened = []
                     for index, value in enumerate(track.values):
-                        frame_and_value_flattened.extend([scene.frame_start + index, value])
+                        frame_and_value_flattened.extend([first_blender_frame + index, value])
                     fcurve.keyframe_points.foreach_set('co', frame_and_value_flattened)
                     fcurve.update()
                     style_material_fcurve(fcurve)
@@ -1878,7 +1870,7 @@ def _import_model_anim(context: bpy.types.Context, filepath: str,
                     fcurve.keyframe_points.add(count=len(track.values))
                     frame_and_value_flattened = []
                     for index, value in enumerate(track.values):
-                        frame_and_value_flattened.extend([scene.frame_start + index, value])
+                        frame_and_value_flattened.extend([first_blender_frame + index, value])
                     fcurve.keyframe_points.foreach_set('co', frame_and_value_flattened)
                     fcurve.update()
                     style_material_fcurve(fcurve)
@@ -1899,7 +1891,7 @@ def _import_model_anim(context: bpy.types.Context, filepath: str,
                         fcurve.keyframe_points.add(count=len(vector_index_values))
                         frame_and_value_flattened = []
                         for index, value in enumerate(vector_index_values):
-                            frame_and_value_flattened.extend([scene.frame_start + index, value])
+                            frame_and_value_flattened.extend([first_blender_frame + index, value])
                         fcurve.keyframe_points.foreach_set('co', frame_and_value_flattened)
                         fcurve.update()
                         style_material_fcurve(fcurve)
@@ -1913,8 +1905,12 @@ def _import_model_anim(context: bpy.types.Context, filepath: str,
         setup_material_drivers(arma)
 
     # Assign actions (and slots on Blender 4.4+ / 5.x).
-    assign_action(arma.animation_data, bone_action)
-    assign_action(arma.data.animation_data, sap_action)
+    from ..extras.visibility_layer import install_layer, set_base
+    if visibility_layer:
+        install_layer(arma.data.animation_data, base_sap_action, sap_action, first_blender_frame)
+    else:
+        assign_action(arma.animation_data, bone_action)
+        set_base(arma.data.animation_data, sap_action)
 
     from .anim_data import mark_sap_sync_known
     mark_sap_sync_known(arma)

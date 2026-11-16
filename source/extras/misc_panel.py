@@ -438,6 +438,13 @@ class SUB_PT_model_tools(Panel):
             row.operator("sub.connect_bone_chain", text="Connect Bone Chain (Select Bones)")
 
         row = layout.row(align=True)
+        if context.mode == 'EDIT_ARMATURE' and context.selected_bones:
+            row.operator("sub.mirror_bone", text="Mirror Selected Bones")
+        else:
+            row.enabled = False
+            row.operator("sub.mirror_bone", text="Mirror Selected Bones (Edit Armature, Select Bones)")
+
+        row = layout.row(align=True)
         selected_objects = context.selected_objects or []
         active = context.active_object
         has_armature = bool(
@@ -503,6 +510,8 @@ class SUB_PT_misc_utilities(Panel):
         layout.use_property_split = False
 
         layout.operator("sub.append_param_labels", text="Append New Hashes", icon="FILE_TICK")
+        from .visibility_layer import draw_visibility_layers
+        draw_visibility_layers(layout, context)
         ssp = context.scene.sub_scene_properties
 
         layout.separator()

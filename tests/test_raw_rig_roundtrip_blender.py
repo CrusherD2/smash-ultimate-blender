@@ -76,6 +76,12 @@ with tempfile.TemporaryDirectory() as folder:
     obj=bpy.data.objects.new('Clean',data)
     scene.collection.objects.link(obj)
     assert raw.import_raw_animation(bpy.context,obj,rawpath)
+    # Reimport through the user entry point with IK already present/enabled.
+    # Serialized controls and switch keys must survive automatic refresh.
+    bpy.context.view_layer.objects.active=obj
+    obj.select_set(True)
+    assert importer.import_animation_file(bpy.context,SimpleNamespace(report=lambda *args:None),
+                                         obj,rawpath,True,True,True,1)
     actual=snapshot()
     for f,poses in expected.items():
         for n,wanted in poses.items():

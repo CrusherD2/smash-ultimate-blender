@@ -56,6 +56,8 @@ def register():
     # Register texture conversion tools
     from .source.model.material import texture
     texture.register()
+    from .source.model.material import solid_preview
+    solid_preview.register()
 
     # User-level ParamLabels.csv (%APPDATA%/Smash Ultimate Labels)
     try:
@@ -138,6 +140,8 @@ def unregister():
     unregister_node_categories('CUSTOM_ULTIMATE_NODES')
     
     # Unregister texture conversion tools
+    from .source.model.material import solid_preview
+    solid_preview.unregister()
     texture.unregister()
 
     # Unregister updater components

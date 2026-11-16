@@ -102,11 +102,11 @@ def _resolve_eye_bool(arma, bone_name, fallback):
 def eye_meshes(arma):
     from ..model.export_model import trim_name
     found = []
-    for child in arma.children:
+    for child in arma.children_recursive:
         if child.type != 'MESH' or not child.material_slots:
             continue
         mat = child.material_slots[0].material
-        if mat is not None and trim_name(mat.name) in EYE_TRACKS:
+        if mat is not None and re.match(r'^Eye[LR](?:$|[_.]|D)', trim_name(mat.name)):
             found.append(child)
     return found
 
@@ -1540,6 +1540,10 @@ def _ensure_eye_uv_warps(arma):
     from ..model.export_model import trim_name
     for mesh_obj in eye_meshes(arma):
         mat = mesh_obj.material_slots[0].material if mesh_obj.material_slots else None
+        from ..model.material import solid_preview
+        if _solid_texture_viewport_open() and solid_preview.update_eye(mesh_obj, arma):
+            any_ok = True
+            continue
         side = trim_name(mat.name) if mat else ''
         if side not in EYE_TRACKS:
             continue
@@ -1561,8 +1565,12 @@ def _set_eye_uv_warps_viewport(scene, enabled):
         for mesh_obj in eye_meshes(arma):
             mod = mesh_obj.modifiers.get(UV_WARP_NAME)
             if mod is not None and mod.type == 'UV_WARP':
-                if bool(getattr(mod, "show_viewport", False)) != enabled:
-                    mod.show_viewport = enabled
+                mat = mesh_obj.material_slots[0].material if mesh_obj.material_slots else None
+                from ..model.material import solid_preview
+                managed = mat and solid_preview.PREVIOUS in mat
+                visible = enabled and not managed
+                if bool(getattr(mod, "show_viewport", False)) != visible:
+                    mod.show_viewport = visible
                 if bool(getattr(mod, "show_render", True)):
                     mod.show_render = False
 
@@ -1876,7 +1884,7 @@ def _set_eye_cv31_drivers_for_preview(arma, live):
         _ensure_eye_uv_warps(arma)
     from ..model.export_model import trim_name
     mats = {}
-    for child in arma.children:
+    for child in arma.children_recursive:
         if child.type != 'MESH':
             continue
         for slot in child.material_slots:

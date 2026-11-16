@@ -115,6 +115,8 @@ def _draw_ik_fk_switch_rows(layout, arm):
         op.limbs = kind
         op.set_enabled = True
         op.enable_ik = enable_ik
+        if kind == 'LEGS':
+            row.prop(arm.data, 'sub_hide_ik_foot_toe', text='Hide Foot/Toe')
     _draw_ik_stretch_rows(layout, arm, has_arms, has_legs)
     if animation_needs_ik_match(arm):
         row = layout.row(align=True)

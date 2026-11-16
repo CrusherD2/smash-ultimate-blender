@@ -2160,19 +2160,24 @@ def new_prc_list(list_name):
 def new_prc_struct():
     return pyprc.param.struct([])
 
-def new_prc_hash(hash_name: str|int, hash_value: str|int):
+def new_prc_hash(hash_name: str|int, hash_value: str|int, _collect_labels=None):
     regex = r"^0x[\da-f]{10}$"
     if isinstance(hash_name, str):
-        add_hash_label(hash_name)
         matches = re.match(regex, hash_name)
         if matches is not None:
             hash_name = int(hash_name, base=16)
 
     if isinstance(hash_value, str):
-        add_hash_label(hash_value)
         matches = re.match(regex, hash_value)
         if matches is not None:
             hash_value = int(hash_value, base=16)
+
+    # Collect labels for batch writing at end of export (avoid per-call file I/O)
+    if _collect_labels is not None:
+        if isinstance(hash_name, str) and not re.match(regex, hash_name):
+            _collect_labels.add(hash_name)
+        if isinstance(hash_value, str) and not re.match(regex, hash_value):
+            _collect_labels.add(hash_value)
 
     return pyprc.param.struct([
         (pyprc.hash(hash_name), pyprc.param.hash(pyprc.hash(hash_value)))
@@ -2196,51 +2201,77 @@ def extend_struct(struct, new_thing):
 
 class PrcStruct():
     _prc_struct = None
+    _pending = None
     def __init__(self, params: list = []):
         self._prc_struct = pyprc.param.struct([])
-        for param in params:
-            self += param
+        self._pending = list(params)
+    def _flush(self):
+        if self._pending is not None:
+            flat_items = []
+            for p in self._pending:
+                flat_items.extend(list(p))
+            self._prc_struct.set_struct(flat_items)
+            self._pending = None
     def __iter__(self):
+        self._flush()
         return self._prc_struct.__iter__()
     def __iadd__(self, other):
-        self.extend_struct(other)
+        if self._pending is not None:
+            self._pending.append(other)
+        else:
+            self._prc_struct.extend_struct(other)
         return self
     def __repr__(self):
         return self._prc_struct.__repr__()
     def get_param(self):
+        self._flush()
         return self._prc_struct
     def extend_struct(self, new_prc_param):
-        self._prc_struct.set_struct(list(self._prc_struct) + list(new_prc_param))
+        self.__iadd__(new_prc_param)
         return self
     def save(self, path):
+        self._flush()
         self._prc_struct.save(path)
 
 class PrcList(PrcStruct):
-    def __init__(self, list_name: str):
-        add_hash_label(list_name)
+    def __init__(self, list_name: str, _collect_labels=None):
+        if _collect_labels is not None and isinstance(list_name, str):
+            _collect_labels.add(list_name)
         self._prc_struct = pyprc.param.struct([
             (pyprc.hash(list_name), pyprc.param.list([]))
         ])
+        self._pending = []
+    def _flush(self):
+        if self._pending is not None:
+            items = [p.get_param() if hasattr(p, 'get_param') else p for p in self._pending]
+            self.get_prc_list().set_list(items)
+            self._pending = None
     def __iadd__(self, other):
-        self.extend_list(other)
+        if self._pending is not None:
+            self._pending.append(other)
+        else:
+            cur = self.get_prc_list_as_py_list()
+            cur.append(other.get_param() if hasattr(other, 'get_param') else other)
+            self.get_prc_list().set_list(cur)
         return self
     def get_prc_list(self):
         return list(self._prc_struct)[0][1]
     def get_prc_list_as_py_list(self):
         return list(self.get_prc_list())
     def extend_list(self, new_prc_param: PrcStruct):
-        self.get_prc_list().set_list(self.get_prc_list_as_py_list() + [new_prc_param.get_param()])
+        self.__iadd__(new_prc_param)
         return self
 
 class PrcHash40():
     _prc_param = None
-    def __init__(self, hash_value):
+    def __init__(self, hash_value, _collect_labels=None):
         if isinstance(hash_value, str):
-            add_hash_label(hash_value)
-            regex = r"0x[\da-f]{10}"
-            matches = re.match(regex, hash_value)
+            matches = re.match(r"0x[\da-f]{10}", hash_value)
             if matches is not None:
                 hash_value = int(hash_value, base=16)
+
+        if _collect_labels is not None and isinstance(hash_value, str) and not re.match(r"0x[\da-f]{10}", hash_value):
+            _collect_labels.add(hash_value)
 
         self._prc_param = pyprc.param.hash(pyprc.hash(hash_value))
     def get_param(self):
@@ -2267,8 +2298,10 @@ def swing_prc_export(operator: Operator, context: Context, filepath: str):
     arma_data: bpy.types.Armature = context.object.data
     ssd: SUB_PG_sub_swing_data = arma_data.sub_swing_data
     prc_root = PrcStruct()
+    # Collect all unique labels for batch writing to ParamLabels.csv at the end
+    _collect_labels = set()
     # Add 'swingbones' list
-    swing_bone_chains_list = PrcList('swingbones')
+    swing_bone_chains_list = PrcList('swingbones', _collect_labels)
     for swing_bone_chain in ssd.swing_bone_chains:
         '''
         swing_bone_chain_struct  = PrcStruct()
@@ -2283,11 +2316,11 @@ def swing_prc_export(operator: Operator, context: Context, filepath: str):
         if swing_bone_chain.has_unk_8 == True:
             swing_bone_chain_struct += new_prc_byte(0x0f7316a113, swing_bone_chain.unk_8)
         '''
-        swing_bone_param_list    = PrcList('params')
+        swing_bone_param_list    = PrcList('params', _collect_labels)
         swing_bone_chain_struct  = PrcStruct([
-            new_prc_hash('name', swing_bone_chain.name),
-            new_prc_hash('start_bonename', swing_bone_chain.start_bone_name.lower()),
-            new_prc_hash('end_bonename', swing_bone_chain.end_bone_name.lower()),
+            new_prc_hash('name', swing_bone_chain.name, _collect_labels),
+            new_prc_hash('start_bonename', swing_bone_chain.start_bone_name.lower(), _collect_labels),
+            new_prc_hash('end_bonename', swing_bone_chain.end_bone_name.lower(), _collect_labels),
             swing_bone_param_list,
             new_prc_byte('isskirt', swing_bone_chain.is_skirt),
             new_prc_int('rotateorder', swing_bone_chain.rotate_order),
@@ -2314,7 +2347,7 @@ def swing_prc_export(operator: Operator, context: Context, filepath: str):
             swing_bone_params_struct += new_prc_byte('groundhit', swing_bone.ground_hit)
             swing_bone_params_struct += new_prc_float('windaffect', swing_bone.wind_affect)
             '''
-            collision_list = PrcList('collisions')
+            collision_list = PrcList('collisions', _collect_labels)
             swing_bone_params_struct = PrcStruct([
                 new_prc_float('airresistance', swing_bone.air_resistance),
                 new_prc_float('waterresistance', swing_bone.water_resistance),
@@ -2345,19 +2378,19 @@ def swing_prc_export(operator: Operator, context: Context, filepath: str):
                     c = ssd.capsules[swing_bone_collision.collision_index]
                 elif swing_bone_collision.collision_type == 'PLANE':
                     c = ssd.planes[swing_bone_collision.collision_index]
-                collision_list += PrcHash40(c.name)
+                collision_list += PrcHash40(c.name, _collect_labels)
             if len(swing_bone.collisions) == 0:
-                collision_list += PrcHash40("")
+                collision_list += PrcHash40("", _collect_labels)
             swing_bone_param_list += swing_bone_params_struct
         swing_bone_chains_list += swing_bone_chain_struct
     prc_root += swing_bone_chains_list
 
     # add spheres
-    spheres_list = PrcList('spheres')
+    spheres_list = PrcList('spheres', _collect_labels)
     for sphere in ssd.spheres:
         spheres_list += PrcStruct([
-            new_prc_hash('name', sphere.name),
-            new_prc_hash('bonename', sphere.bone.lower()),
+            new_prc_hash('name', sphere.name, _collect_labels),
+            new_prc_hash('bonename', sphere.bone.lower(), _collect_labels),
             new_prc_float('cx', sphere.offset.y),
             new_prc_float('cy', -sphere.offset.x),
             new_prc_float('cz', sphere.offset.z),
@@ -2366,12 +2399,12 @@ def swing_prc_export(operator: Operator, context: Context, filepath: str):
     prc_root += spheres_list
     
     # add ovals
-    ovals_list = PrcList('ovals')
+    ovals_list = PrcList('ovals', _collect_labels)
     for oval in ssd.ovals:
         ovals_list += PrcStruct([
-            new_prc_hash('name', oval.name),
-            new_prc_hash('start_bonename', oval.start_bone_name.lower()),
-            new_prc_hash('end_bonename', oval.end_bone_name.lower()),
+            new_prc_hash('name', oval.name, _collect_labels),
+            new_prc_hash('start_bonename', oval.start_bone_name.lower(), _collect_labels),
+            new_prc_hash('end_bonename', oval.end_bone_name.lower(), _collect_labels),
             new_prc_float('radius', oval.radius),
             new_prc_float('start_offset_x',  oval.start_offset.y),
             new_prc_float('start_offset_y', -oval.start_offset.x),
@@ -2383,11 +2416,11 @@ def swing_prc_export(operator: Operator, context: Context, filepath: str):
     prc_root += ovals_list
 
     # add ellipsoids
-    ellipsoids_list = PrcList('ellipsoids')
+    ellipsoids_list = PrcList('ellipsoids', _collect_labels)
     for ellipsoid in ssd.ellipsoids:
         ellipsoids_list += PrcStruct([
-            new_prc_hash('name', ellipsoid.name),
-            new_prc_hash('bonename', ellipsoid.bone_name.lower()),
+            new_prc_hash('name', ellipsoid.name, _collect_labels),
+            new_prc_hash('bonename', ellipsoid.bone_name.lower(), _collect_labels),
             new_prc_float('cx',  ellipsoid.offset.y),
             new_prc_float('cy', -ellipsoid.offset.x),
             new_prc_float('cz',  ellipsoid.offset.z),
@@ -2401,12 +2434,12 @@ def swing_prc_export(operator: Operator, context: Context, filepath: str):
     prc_root += ellipsoids_list
 
     # add capsules
-    capsules_list = PrcList('capsules')
+    capsules_list = PrcList('capsules', _collect_labels)
     for capsule in ssd.capsules:
         capsules_list += PrcStruct([
-            new_prc_hash('name', capsule.name),
-            new_prc_hash('start_bonename', capsule.start_bone_name.lower()),
-            new_prc_hash('end_bonename', capsule.end_bone_name.lower()),
+            new_prc_hash('name', capsule.name, _collect_labels),
+            new_prc_hash('start_bonename', capsule.start_bone_name.lower(), _collect_labels),
+            new_prc_hash('end_bonename', capsule.end_bone_name.lower(), _collect_labels),
             new_prc_float('start_offset_x',  capsule.start_offset.y),
             new_prc_float('start_offset_y', -capsule.start_offset.x),
             new_prc_float('start_offset_z',  capsule.start_offset.z),
@@ -2419,11 +2452,11 @@ def swing_prc_export(operator: Operator, context: Context, filepath: str):
     prc_root += capsules_list
 
     # add planes
-    planes_list = PrcList('planes')
+    planes_list = PrcList('planes', _collect_labels)
     for plane in ssd.planes:
         planes_list += PrcStruct([
-            new_prc_hash('name', plane.name),
-            new_prc_hash('bonename', plane.bone_name.lower()),
+            new_prc_hash('name', plane.name, _collect_labels),
+            new_prc_hash('bonename', plane.bone_name.lower(), _collect_labels),
             new_prc_float('nx',  plane.ny),
             new_prc_float('ny',  -plane.nx),
             new_prc_float('nz',  plane.nz),
@@ -2432,11 +2465,11 @@ def swing_prc_export(operator: Operator, context: Context, filepath: str):
     prc_root += planes_list
 
     # add connections
-    connections_list = PrcList('connections')
+    connections_list = PrcList('connections', _collect_labels)
     for connection in ssd.connections:
         connections_list += PrcStruct([
-            new_prc_hash('start_bonename', connection.start_bone_name.lower()),
-            new_prc_hash('end_bonename', connection.end_bone_name.lower()),
+            new_prc_hash('start_bonename', connection.start_bone_name.lower(), _collect_labels),
+            new_prc_hash('end_bonename', connection.end_bone_name.lower(), _collect_labels),
             new_prc_float('radius', connection.radius),
             new_prc_float('length', connection.length),
         ])
@@ -2445,7 +2478,7 @@ def swing_prc_export(operator: Operator, context: Context, filepath: str):
     # add swing bone collisions lists
     for swing_bone_chain in ssd.swing_bone_chains:
         for swing_bone in swing_bone_chain.swing_bones:
-            swing_bone_collision_list = PrcList(swing_bone.name.lower() + 'col')
+            swing_bone_collision_list = PrcList(swing_bone.name.lower() + 'col', _collect_labels)
             #for collision in swing_bone.collisions:
                 #swing_bone_collision_list += PrcHash40(collision.target_collision_name)
             swing_bone_collision: SUB_PG_swing_bone_collision
@@ -2460,69 +2493,13 @@ def swing_prc_export(operator: Operator, context: Context, filepath: str):
                     c = ssd.capsules[swing_bone_collision.collision_index]
                 elif swing_bone_collision.collision_type == 'PLANE':
                     c = ssd.planes[swing_bone_collision.collision_index]
-                swing_bone_collision_list += PrcHash40(c.name)
+                swing_bone_collision_list += PrcHash40(c.name, _collect_labels)
             prc_root += swing_bone_collision_list
 
-    # Save all hashes used in the export to ParamLabels.csv
-    operator.report({'INFO'}, "Saving hashes to ParamLabels.csv...")
-    
-    # Save swing bone chain hashes
-    for swing_bone_chain in ssd.swing_bone_chains:
-        # Chain name
-        add_hash_to_param_labels(swing_bone_chain.name, swing_bone_chain.name)
-        # Start and end bone names (lowercase as used in PRC)
-        add_hash_to_param_labels(swing_bone_chain.start_bone_name.lower(), swing_bone_chain.start_bone_name.lower())
-        add_hash_to_param_labels(swing_bone_chain.end_bone_name.lower(), swing_bone_chain.end_bone_name.lower())
-        
-        # Individual bone names and collision list hashes
-        for swing_bone in swing_bone_chain.swing_bones:
-            bone_lower = swing_bone.name.lower()
-            add_hash_to_param_labels(bone_lower, bone_lower)
-            # Collision list hash (bone_name + "col")
-            collision_hash = bone_lower + "col"
-            add_hash_to_param_labels(collision_hash, collision_hash)
-    
-    # Save collision hashes
-    for sphere in ssd.spheres:
-        add_hash_to_param_labels(sphere.name, sphere.name)
-        add_hash_to_param_labels(sphere.bone.lower(), sphere.bone.lower())
-    
-    for oval in ssd.ovals:
-        add_hash_to_param_labels(oval.name, oval.name)
-        add_hash_to_param_labels(oval.start_bone_name.lower(), oval.start_bone_name.lower())
-        add_hash_to_param_labels(oval.end_bone_name.lower(), oval.end_bone_name.lower())
-    
-    for ellipsoid in ssd.ellipsoids:
-        add_hash_to_param_labels(ellipsoid.name, ellipsoid.name)
-        add_hash_to_param_labels(ellipsoid.bone_name.lower(), ellipsoid.bone_name.lower())
-    
-    for capsule in ssd.capsules:
-        add_hash_to_param_labels(capsule.name, capsule.name)
-        add_hash_to_param_labels(capsule.start_bone_name.lower(), capsule.start_bone_name.lower())
-        add_hash_to_param_labels(capsule.end_bone_name.lower(), capsule.end_bone_name.lower())
-    
-    for plane in ssd.planes:
-        add_hash_to_param_labels(plane.name, plane.name)
-        add_hash_to_param_labels(plane.bone_name.lower(), plane.bone_name.lower())
-    
-    for connection in ssd.connections:
-        add_hash_to_param_labels(connection.start_bone_name.lower(), connection.start_bone_name.lower())
-        add_hash_to_param_labels(connection.end_bone_name.lower(), connection.end_bone_name.lower())
-    
-    # Save standard PRC structure hashes
-    standard_hashes = [
-        'swingbones', 'spheres', 'ovals', 'ellipsoids', 'capsules', 'planes', 'connections',
-        'name', 'start_bonename', 'end_bonename', 'params', 'bonename', 'collisions',
-        'isskirt', 'rotateorder', 'curverotatex', 'airresistance', 'waterresistance',
-        'minanglez', 'maxanglez', 'minangley', 'maxangley', 'collisionsizetip', 'collisionsizeroot',
-        'frictionrate', 'goalstrength', 'inertialmass', 'localgravity', 'fallspeedscale',
-        'groundhit', 'windaffect', 'cx', 'cy', 'cz', 'radius', 'start_offset_x', 'start_offset_y',
-        'start_offset_z', 'end_offset_x', 'end_offset_y', 'end_offset_z', 'rx', 'ry', 'rz',
-        'sx', 'sy', 'sz', 'start_radius', 'end_radius', 'nx', 'ny', 'nz', 'distance', 'length'
-    ]
-    
-    for hash_label in standard_hashes:
-        add_hash_to_param_labels(hash_label, hash_label)
+    # Batch-write all collected labels to ParamLabels.csv once (instead of per-call file I/O)
+    if _collect_labels:
+        from ..param_labels import batch_add_hash_labels
+        batch_add_hash_labels(_collect_labels)
 
     prc_root.save(filepath)
 

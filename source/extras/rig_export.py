@@ -38,13 +38,29 @@ def export_bone_names(obj):
     ]
 
 
+def _is_helper_constraint(constraint):
+    # These imported HLPB constraints are evaluated by the game. Their presence
+    # alone must not turn a sparse animation into a full skeleton bake.
+    return (
+        constraint.type == 'COPY_ROTATION'
+        and constraint.name.startswith('nuHelperBoneRotateInterp')
+    ) or (
+        constraint.type == 'DAMPED_TRACK'
+        and constraint.name.startswith('nuHelperBoneRotateAim')
+    )
+
+
 def needs_bake(obj):
     from .create_animation_rig import armature_has_animation_rig, armature_has_ik
 
     return (
         armature_has_animation_rig(obj)
         or armature_has_ik(obj)
-        or any(pb.constraints for pb in obj.pose.bones)
+        or any(
+            not _is_helper_constraint(constraint)
+            for pb in obj.pose.bones
+            for constraint in pb.constraints
+        )
         or bool(obj.animation_data and obj.animation_data.drivers)
     )
 
@@ -68,6 +84,7 @@ def temporary_rig_bake(
             o.animation_data is not None,
             o.animation_data.action if o.animation_data else None,
             o.animation_data.action_slot if o.animation_data else None,
+            o.animation_data.use_tweak_mode if o.animation_data else False,
         )
         for o in owners
     ]
@@ -151,6 +168,8 @@ def temporary_rig_bake(
                                 material_writer.stash_channel(
                                     path, axis, frame, pupil, name
                                 )
+            if obj.animation_data.use_tweak_mode:
+                obj.animation_data.use_tweak_mode = False
             writer.flush(action)
             assign_action(obj.animation_data, action)
             if material_writer:
@@ -165,15 +184,25 @@ def temporary_rig_bake(
                 for fc in list(get_all_action_fcurves(sap, id_type='ARMATURE')):
                     if (fc.data_path, fc.array_index) in material_writer._channels:
                         remove_fcurve(sap, fc, id_type='ARMATURE')
+                if obj.data.animation_data.use_tweak_mode:
+                    obj.data.animation_data.use_tweak_mode = False
                 material_writer.flush(sap)
                 assign_action(obj.data.animation_data, sap)
             yield
     finally:
-        for owner, existed, action, slot in original:
+        for owner, existed, action, slot, tweak_mode in original:
             if existed:
+                if owner.animation_data.use_tweak_mode:
+                    owner.animation_data.use_tweak_mode = False
                 assign_action(owner.animation_data, action)
                 if action is not None and slot is not None:
                     owner.animation_data.action_slot = slot
+                if tweak_mode:
+                    from .visibility_layer import edit_base_strip, has_layers
+                    if has_layers(owner.animation_data):
+                        edit_base_strip(owner.animation_data)
+                    else:
+                        owner.animation_data.use_tweak_mode = True
             elif owner.animation_data:
                 owner.animation_data_clear()
         for action in temporary:

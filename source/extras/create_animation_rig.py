@@ -793,9 +793,9 @@ def _set_collection_visible(armature_data, name, visible):
                     break
     if collection is None:
         return
-    if hasattr(collection, 'is_solo') and not visible:
+    if hasattr(collection, 'is_solo') and not visible and collection.is_solo:
         collection.is_solo = False
-    if hasattr(collection, 'is_visible'):
+    if hasattr(collection, 'is_visible') and collection.is_visible != visible:
         collection.is_visible = visible
 
 
@@ -1494,6 +1494,30 @@ def set_off_mode_bones_hidden(armature_obj, hidden, limbs='BOTH'):
     armature_obj.update_tag()
 
 
+def _set_ik_foot_toe_visibility(armature_obj, limbs):
+    """Keep the regular foot endpoints independently accessible while posing IK."""
+    if limbs not in ('LEGS', 'BOTH'):
+        return
+    from . import ik_channels
+
+    hidden = (armature_obj.data.sub_hide_ik_foot_toe
+              and _effective_limb_ik_factor(armature_obj, 'LEGS') >= 1.0 - _FK_ON_EPSILON)
+    for _kind, names, _target, _pole in ik_channels.chains(armature_obj, 'LEGS'):
+        for name in (names[-1], *ik_channels.connected_toe_bones(armature_obj, names)):
+            bone = armature_obj.data.bones[name]
+            hide = hidden or bool(bone.get('sub_component_hidden'))
+            if bone.hide != hide:
+                bone.hide = hide
+
+
+def _update_hide_ik_foot_toe(self, context):
+    obj = _object_for_armature_data(self, context)
+    if obj is not None:
+        _IK_VIS_CACHE.pop(obj.name, None)
+        _set_ik_bone_visibility(obj, _effective_limb_ik_factor(obj, 'LEGS') > _FK_ON_EPSILON, 'LEGS')
+        obj.update_tag()
+
+
 def _set_ik_bone_visibility(armature_obj, visible, limbs='BOTH', respect_override=True):
     # The automatic mode sync must not undo an explicit "show every bone".
     if respect_override and not off_mode_hiding_enabled(armature_obj):
@@ -1523,6 +1547,7 @@ def _set_ik_bone_visibility(armature_obj, visible, limbs='BOTH', respect_overrid
                         bone.hide = not visible
         if visible:
             _set_collection_visible(armature_obj.data, 'IK Bones', True)
+        _set_ik_foot_toe_visibility(armature_obj, limbs)
         return
     from .apply_ik_animation import collect_fk_bone_names
     for kind in ('ARMS', 'LEGS'):
@@ -1549,6 +1574,7 @@ def _set_ik_bone_visibility(armature_obj, visible, limbs='BOTH', respect_overrid
         if not bone.hide:
             any_ik_visible = True
     _set_collection_visible(armature_obj.data, "IK Bones", any_ik_visible)
+    _set_ik_foot_toe_visibility(armature_obj, limbs)
     for name in selected:
         pose_bone = armature_obj.pose.bones.get(name)
         if pose_bone is not None:
@@ -2051,9 +2077,14 @@ def _sync_ik_fk_visibility(scene, depsgraph=None):
                 state = (obj.data.as_pointer(), len(obj.data.bones),
                          _ik_mode_bucket(obj.data.sub_use_ik_arms),
                          _ik_mode_bucket(obj.data.sub_use_ik_legs))
-                if cache.get(obj.name) != state:
-                    for kind in ('ARMS', 'LEGS'):
-                        _set_ik_bone_visibility(obj, _effective_limb_ik_factor(obj, kind) > _FK_ON_EPSILON, kind)
+                previous = cache.get(obj.name)
+                if previous != state:
+                    same_rig = previous is not None and len(previous) == 4 and previous[:2] == state[:2]
+                    for index, kind in enumerate(('ARMS', 'LEGS'), start=2):
+                        if same_rig and previous[index] == state[index]:
+                            continue
+                        if armature_has_ik(obj, kind):
+                            _set_ik_bone_visibility(obj, state[index] != 'fk', kind)
                     cache[obj.name] = state
                 continue
             if not armature_has_ik(obj):
@@ -3762,7 +3793,8 @@ def _unregister_ik_fk_props():
         for name in ("sub_use_ik", "sub_use_ik_arms", "sub_use_ik_legs",
                      "sub_ik_stretch_arms", "sub_ik_stretch_legs",
                      "sub_ik_stretch_chain_arms", "sub_ik_stretch_chain_legs",
-                     "sub_ik_arm_pull", "sub_ik_progressive_scale_arms", "sub_ik_progressive_scale_legs"):
+                     "sub_ik_arm_pull", "sub_ik_progressive_scale_arms", "sub_ik_progressive_scale_legs",
+                     "sub_hide_ik_foot_toe"):
             if hasattr(cls, name):
                 try:
                     delattr(cls, name)
@@ -3772,6 +3804,13 @@ def _unregister_ik_fk_props():
 
 def register():
     _unregister_ik_fk_props()
+    bpy.types.Armature.sub_hide_ik_foot_toe = bpy.props.BoolProperty(
+        name='Hide Foot/Toe',
+        description='Hide regular Foot and Toe bones in full IK; FK and Show All Limb Bones reveal them',
+        default=True,
+        options=set(),
+        update=_update_hide_ik_foot_toe,
+    )
     bpy.types.Bone.sub_ik_arm_pull = bpy.props.FloatProperty(
         name='ArmIK Pull',
         description='Pull this arm chain toward its ArmIK control without scaling',

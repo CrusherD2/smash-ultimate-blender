@@ -113,7 +113,12 @@ def track_part_keys(name):
 def expression_part_keys(expression):
     keys = set()
     for track in getattr(expression, "tracks", []) or []:
-        keys |= track_part_keys(getattr(track, "name", ""))
+        name = getattr(track, "name", "")
+        parts = track_part_keys(name)
+        # Whole-form meshes and mixed setups are not isolated mouth/eye expressions.
+        if "baseform" in tokenize_track_name(name) or not parts:
+            return set()
+        keys |= parts
     return keys
 
 
@@ -150,7 +155,7 @@ _suppress_apply = False
 FACE_PICKER_SCREEN_KEY = "sub_face_picker_window"
 FACE_PICKER_HWND_KEY = "sub_face_picker_hwnd"
 _topmost_timer_running = False
-_HWND_TOPMOST = -1
+_HWND_NOTOPMOST = -2
 _SWP_NOSIZE = 0x0001
 _SWP_NOMOVE = 0x0002
 _SWP_NOACTIVATE = 0x0010
@@ -627,7 +632,9 @@ def set_visibility_tracks(arma, enable_names, managed_names, insert_keyframes=Fa
             entry.value = new_value
             changed += 1
         if insert_keyframes:
-            arma.data.keyframe_insert(
+            from .visibility_layer import keyframe_base_property
+            keyframe_base_property(
+                arma.data,
                 data_path=f"sub_anim_properties.vis_track_entries[{index}].value",
                 group="Visibility",
             )
@@ -651,7 +658,7 @@ def apply_vis_expression(context, arma, expression, insert_keyframes=False):
     enable = [track.name for track in expression.tracks if track.name]
     missing = [name for name in enable if vis_entry_by_name(sap, name) is None]
     part_keys = expression_part_keys(expression)
-    if part_keys:
+    if part_keys and part_keys != {"face"}:
         # Partial expressions only swap the face parts they name, e.g. Mouth.
         managed = vis_track_names_for_parts(sap, part_keys)
         managed.update(enable)
@@ -932,6 +939,7 @@ def clear_expressions(picker):
             if image.users <= 1:
                 bpy.data.images.remove(image)
     picker.expressions.clear()
+    picker.updating_expression_id = ""
     picker.active_expression_index = 0
     picker.active_expression_id = ""
 
@@ -1071,7 +1079,15 @@ def configure_square_camera(cam_data, ortho_scale):
 def _win32_user32():
     if sys.platform != "win32":
         return None
-    return ctypes.windll.user32
+    user32 = ctypes.windll.user32
+    user32.GetForegroundWindow.restype = ctypes.wintypes.HWND
+    user32.GetWindow.argtypes = (ctypes.wintypes.HWND, ctypes.c_uint)
+    user32.GetWindow.restype = ctypes.wintypes.HWND
+    user32.GetWindowLongPtrW.argtypes = (ctypes.wintypes.HWND, ctypes.c_int)
+    user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+    user32.SetWindowLongPtrW.argtypes = (ctypes.wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t)
+    user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+    return user32
 
 
 def _win32_process_hwnds():
@@ -1155,20 +1171,52 @@ def _match_hwnd_to_blender_window(window, candidates=None):
     return best
 
 
-def _set_hwnd_always_on_top(hwnd):
+def _main_picker_window(context):
+    windows = [window for window in context.window_manager.windows
+               if window.screen is not None and not window.screen.get(FACE_PICKER_SCREEN_KEY)]
+    return next((window for window in windows
+                 if any(area.type == "VIEW_3D" for area in window.screen.areas)),
+                windows[0] if windows else None)
+
+
+def _set_hwnd_owner(hwnd, owner):
     user32 = _win32_user32()
-    if user32 is None or not _hwnd_is_valid(hwnd):
+    if user32 is None or hwnd == owner or not _hwnd_is_valid(hwnd) or not _hwnd_is_valid(owner):
         return False
-    user32.SetWindowPos(
-        ctypes.c_void_p(hwnd),
-        ctypes.c_void_p(_HWND_TOPMOST),
-        0,
-        0,
-        0,
-        0,
-        _SWP_NOSIZE | _SWP_NOMOVE | _SWP_NOACTIVATE,
-    )
+    changed = int(user32.GetWindow(hwnd, 4) or 0) != owner
+    if changed:
+        user32.SetWindowLongPtrW(hwnd, -8, owner)
+    if changed or user32.GetWindowLongPtrW(hwnd, -20) & 0x00000008:
+        user32.SetWindowPos(
+            ctypes.c_void_p(hwnd), ctypes.c_void_p(_HWND_NOTOPMOST),
+            0, 0, 0, 0, _SWP_NOSIZE | _SWP_NOMOVE | _SWP_NOACTIVATE,
+        )
     return True
+
+
+def _focus_picker_owner(context):
+    user32 = _win32_user32()
+    picker_window = find_face_picker_window(context)
+    hwnd = _hwnd_from_screen(picker_window) if picker_window is not None else 0
+    if user32 is None or not hwnd or int(user32.GetForegroundWindow() or 0) != hwnd:
+        return
+    owner = int(user32.GetWindow(hwnd, 4) or 0)
+    if _hwnd_is_valid(owner):
+        user32.SetForegroundWindow(ctypes.c_void_p(owner))
+
+
+def _toggle_picker_playback(context):
+    window = _main_picker_window(context)
+    if window is None:
+        return False
+    area = next((area for area in window.screen.areas if area.type == "VIEW_3D"), None)
+    if area is None:
+        return False
+    region = next((region for region in area.regions if region.type == "WINDOW"), None)
+    if region is None:
+        return False
+    with context.temp_override(window=window, area=area, region=region):
+        return bpy.ops.screen.animation_play() == {"FINISHED"}
 
 
 def _pin_picker_window(window, new_hwnds=None):
@@ -1188,7 +1236,12 @@ def _pin_picker_window(window, new_hwnds=None):
         hwnd = _match_hwnd_to_blender_window(window)
     if hwnd:
         _store_hwnd(window, hwnd)
-        _set_hwnd_always_on_top(hwnd)
+        main = _main_picker_window(bpy.context)
+        if main is not None:
+            candidates = [candidate for candidate in _win32_process_hwnds() if candidate != hwnd]
+            owner = _match_hwnd_to_blender_window(main, candidates=candidates)
+            if owner:
+                _set_hwnd_owner(hwnd, owner)
 
 
 def _keep_picker_on_top():
@@ -1611,6 +1664,7 @@ def _apply_picker_hit(context, hit):
         if expression is None:
             return False
         apply_expression(context, arma, expression, picker.insert_keyframes)
+        _focus_picker_owner(context)
         return True
     return False
 
@@ -1818,6 +1872,8 @@ class SUB_PG_face_picker_data(PropertyGroup):
     backup_resolution_x: IntProperty(default=0)
     backup_resolution_y: IntProperty(default=0)
     backup_resolution_stored: BoolProperty(default=False)
+    updating_expression_id: StringProperty(default="", options={"SKIP_SAVE"})
+    update_thumbnail: BoolProperty(name="Update thumbnail", default=False)
     new_expression_name: StringProperty(name="Expression Name", default="")
     track_choices: CollectionProperty(type=SUB_PG_face_picker_track_choice)
     track_choices_index: IntProperty(name="Track Choice Index", default=0)
@@ -1997,6 +2053,9 @@ class SUB_OP_face_picker_canvas(Operator):
         current = getattr(context, "window", None)
         if current is None or current.as_pointer() != window.as_pointer():
             return {"PASS_THROUGH"}
+        if event.type == "SPACE" and event.value == "PRESS":
+            if _toggle_picker_playback(context):
+                return {"RUNNING_MODAL"}
         area = _picker_editor_area(window)
         region = _picker_window_region(area)
         if area is None or region is None:
@@ -2394,7 +2453,12 @@ class SUB_OP_face_picker_add(Operator):
                 self.report({"ERROR"}, "Assign at least one visibility track")
                 return {"CANCELLED"}
 
-        expr_id = unique_expression_id(picker, sanitize_id(name))
+        updating = bool(picker.updating_expression_id)
+        expr = find_expression(picker, picker.updating_expression_id) if updating else None
+        if updating and expr is None:
+            self.report({"ERROR"}, "The expression being updated no longer exists")
+            return {"CANCELLED"}
+        expr_id = expr.expression_id if updating else unique_expression_id(picker, sanitize_id(name))
         if picker.active_mode == "BONE":
             apply_smash_pose_data(
                 arma,
@@ -2405,29 +2469,39 @@ class SUB_OP_face_picker_add(Operator):
             set_visibility_tracks(arma, set(tracks), managed_track_names(picker, tracks), insert_keyframes=False)
 
         image = None
-        try:
-            image = capture_expression_thumbnail(
-                context,
-                arma,
-                expr_id,
-                picker.camera_size or DEFAULT_CAMERA_SIZE,
-            )
-        except Exception as exc:
-            self.report({"WARNING"}, f"Added without thumbnail: {exc}")
+        capture = not updating or picker.update_thumbnail
+        if capture:
+            try:
+                image = capture_expression_thumbnail(
+                    context,
+                    arma,
+                    expr_id,
+                    picker.camera_size or DEFAULT_CAMERA_SIZE,
+                )
+            except Exception as exc:
+                if updating:
+                    self.report({"ERROR"}, f"Thumbnail update failed: {exc}")
+                    return {"CANCELLED"}
+                self.report({"WARNING"}, f"Added without thumbnail: {exc}")
 
-        expr = picker.expressions.add()
-        expr.expression_id = expr_id
+        if not updating:
+            expr = picker.expressions.add()
+            expr.expression_id = expr_id
         expr.name = name
-        expr.image_path = ""
-        expr.image = image
+        if capture:
+            expr.image_path = ""
+            expr.image = image
         if picker.active_mode == "BONE":
             set_expression_bone_data(expr, bones, arma)
         else:
             set_expression_vis_data(expr, tracks)
-        picker.active_expression_index = len(picker.expressions) - 1
+        picker.active_expression_index = next(
+            i for i, item in enumerate(picker.expressions) if item.expression_id == expr_id
+        )
         picker.active_expression_id = expr_id
+        picker.updating_expression_id = ""
         picker.new_expression_name = ""
-        self.report({"INFO"}, f"Added expression '{name}'")
+        self.report({"INFO"}, f"{'Updated' if updating else 'Added'} expression '{name}'")
         return {"FINISHED"}
 
 
@@ -2450,6 +2524,8 @@ class SUB_OP_face_picker_remove(Operator):
         if index < 0 or index >= len(picker.expressions):
             return {"CANCELLED"}
         expr = picker.expressions[index]
+        if picker.updating_expression_id == expr.expression_id:
+            picker.updating_expression_id = ""
         if picker.active_expression_id == expr.expression_id:
             picker.active_expression_id = ""
         if expr.image is not None:
@@ -2464,8 +2540,9 @@ class SUB_OP_face_picker_remove(Operator):
 
 class SUB_OP_face_picker_load_selected(Operator):
     bl_idname = "sub.face_picker_load_selected"
-    bl_label = "Load Expression Into Setup"
-    bl_description = "Copy the selected expression's tracks back into the setup checklist"
+    bl_label = "Update Controlled Expressions"
+    bl_description = "Load the selected expression into setup and keep updating until Finish Updating Expression is pressed"
+    bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
     def poll(cls, context):
@@ -2482,6 +2559,7 @@ class SUB_OP_face_picker_load_selected(Operator):
         expr = picker.expressions[index]
         picker.new_expression_name = expr.name
         picker.active_expression_id = expr.expression_id
+        picker.updating_expression_id = expr.expression_id
         if expression_mode(expr) == EXPRESSION_MODE_BONE:
             picker.active_mode = "BONE"
             ensure_bone_choices(arma)
@@ -2786,7 +2864,11 @@ def draw_face_picker_layout(layout, context, show_grid=True):
         track_col.operator(SUB_OP_face_picker_clear_tracks.bl_idname, icon="X", text="")
 
     col.operator(SUB_OP_face_picker_preview.bl_idname, icon="HIDE_OFF" if picker.active_mode == "VIS" else "BONE_DATA")
-    col.operator(SUB_OP_face_picker_add.bl_idname, icon="ADD")
+    if picker.updating_expression_id:
+        col.operator(SUB_OP_face_picker_add.bl_idname, text="Finish Updating Expression", icon="CHECKMARK")
+        col.prop(picker, "update_thumbnail")
+    else:
+        col.operator(SUB_OP_face_picker_add.bl_idname, icon="ADD")
 
     col.separator()
     col.label(text="Saved Expressions")
@@ -2804,7 +2886,7 @@ def draw_face_picker_layout(layout, context, show_grid=True):
     )
     expr_col = row.column(align=True)
     expr_col.operator(SUB_OP_face_picker_remove.bl_idname, icon="REMOVE", text="")
-    expr_col.operator(SUB_OP_face_picker_load_selected.bl_idname, icon="IMPORT", text="")
+    expr_col.operator(SUB_OP_face_picker_load_selected.bl_idname, icon="FILE_REFRESH", text="")
     expr_col.operator(SUB_OP_face_picker_recapture.bl_idname, icon="RENDER_STILL", text="")
 
     if visible_expressions and 0 <= picker.active_expression_index < len(picker.expressions):

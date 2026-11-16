@@ -1,6 +1,26 @@
 ﻿"""Automatically fit existing animation-rig controls after a transform import."""
+from contextlib import contextmanager
 import bpy
 from . import create_animation_rig as rig
+
+
+
+@contextmanager
+def suspend_floor_contact(context, obj):
+    """Match original FK motion rather than an already floor-adjusted target."""
+    props = getattr(obj, 'sub_floor_contact', None)
+    enabled = bool(props is not None and props.enabled)
+    try:
+        if enabled:
+            props.enabled = False
+            obj.update_tag()
+            context.view_layer.update()
+        yield
+    finally:
+        if enabled:
+            props.enabled = True
+            obj.update_tag()
+            context.view_layer.update()
 
 
 def import_with_matching(importer, context, filepath, transforms, materials, visibility, first, obj=None):
@@ -49,7 +69,8 @@ def match_imported_animation(context,obj):
             try:
                 for con,_ in muted:
                     con.mute=True
-                ik_channels.match(context,obj,entire=True,key=True)
+                with suspend_floor_contact(context, obj):
+                    ik_channels.match(context,obj,entire=True,key=True,_batch=True)
             finally:
                 for con,state in muted:
                     con.mute=state

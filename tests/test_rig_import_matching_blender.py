@@ -47,7 +47,19 @@ with tempfile.TemporaryDirectory() as folder:
         for pb in obj.pose.bones:
             if pb.name.startswith('BL_') or pb.name.startswith('FootIK'):
                 pb.location=(.4,.2,.1)
-        importer.import_model_anim(bpy.context,path,True,False,False,1,obj)
+        calls=[]
+        original_match=ik.match
+        def counted_match(*args,**kwargs):
+            calls.append(kwargs.get('_batch',False))
+            return original_match(*args,**kwargs)
+        ik.match=counted_match
+        try:
+            assert importer.import_animation_file(bpy.context,SimpleNamespace(report=lambda *args:None),
+                                                 obj,path,True,False,False,1)
+        finally:
+            ik.match=original_match
+        assert calls==[True], calls
+        assert rig.armature_ik_is_enabled(obj,'LEGS')
         assert obj.animation_data.action.get('sub_rig_import_matched')
         actual=snapshot()
         for f,poses in expected.items():
@@ -67,3 +79,17 @@ with tempfile.TemporaryDirectory() as folder:
         for n in names:
             assert max(abs(actual[f][n][i][j]-poses[n][i][j]) for i in range(4) for j in range(4))<3e-4,(f,n)
 print('AUTOMATIC IMPORT MATCH: IK, FINGERS, COMPONENTS, REIMPORT AND BAKE PASSED')
+
+# Floor-contact suspension must restore the user setting on failed matches too.
+matching=importlib.import_module(MODULE+'.source.extras.rig_import_match')
+floor=SimpleNamespace(enabled=True)
+fake_obj=SimpleNamespace(sub_floor_contact=floor,update_tag=lambda:None)
+fake_context=SimpleNamespace(view_layer=SimpleNamespace(update=lambda:None))
+try:
+    with matching.suspend_floor_contact(fake_context,fake_obj):
+        assert not floor.enabled
+        raise ValueError('failed match')
+except ValueError:
+    pass
+assert floor.enabled
+print('IMPORT FLOOR STATE RESTORATION PASSED')

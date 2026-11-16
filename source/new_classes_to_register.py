@@ -171,6 +171,7 @@ classes = [
     source.anim.anim_data.SUB_OP_insert_all_vis_entry_keyframes,
     source.anim.anim_data.SUB_OP_organize_vis_entries_alphabetically,
     source.anim.anim_data.SUB_OP_organize_vis_entries_by_move,
+    source.anim.anim_data.SUB_OP_offset_bone_in_all_anims,
     source.anim.anim_data.SUB_MT_vis_entry_context_menu,
     source.anim.anim_data.SUB_MT_mat_entry_context_menu,
     source.anim.anim_data.SUB_PG_vis_track_entry,
