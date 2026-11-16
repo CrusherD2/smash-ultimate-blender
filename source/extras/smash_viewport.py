@@ -45,7 +45,7 @@ _GL_TO_WGPU_CLIP = Matrix((
 # Smash shaders are perspective-only. Locked ortho views use a long-lens
 # stand-in at this distance so lighting works; larger = closer to true ortho.
 _ORTHO_EYE_MIN = 400.0
-_ORTHO_DISTANCE_RATIO = 5000.0
+_ORTHO_PIXELS_TO_DISTANCE = 50.0
 
 _lib = None
 _lib_error = ""
@@ -1682,33 +1682,25 @@ def _view_eye(matrix):
         return matrix.translation.copy()
 
 
-def _view_at_distance(rv3d, cam_dist):
-    """Same look as Blender, camera pulled back along the view axis."""
-    blender_view = rv3d.view_matrix.copy()
-    pivot = rv3d.view_location.copy()
+def ortho_focus_depth(rv3d):
+    """View-space depth of the character's hip, or None when there is no character.
+
+    Side views look along the axis Smash fighters move on, so the character is
+    usually far in front of or behind Blender's view pivot during a move.
+    """
+    arm = _primary_smash_armature()
+    if arm is None:
+        return None
     try:
-        offset = blender_view.inverted().translation - pivot
+        pose = arm.pose
+        bone = pose.bones.get("Hip") or pose.bones.get("Trans") if pose is not None else None
+        point = arm.matrix_world @ (bone.head if bone is not None else Vector((0.0, 0.0, 0.0)))
+        return float((rv3d.view_matrix @ point).z)
     except Exception:
-        offset = Vector((0.0, 0.0, 0.0))
-    if offset.length > 1e-6:
-        direction = offset.normalized()
-    else:
-        try:
-            direction = blender_view.inverted().to_3x3() @ Vector((0.0, 0.0, 1.0))
-        except Exception:
-            direction = Vector((0.0, 1.0, 0.0))
-        if direction.length < 1e-6:
-            direction = Vector((0.0, 1.0, 0.0))
-        else:
-            direction.normalize()
-    new_cam = pivot + direction * cam_dist
-    rot = blender_view.to_3x3()
-    new_view = rot.to_4x4()
-    new_view.translation = -(rot @ new_cam)
-    return new_view
+        return None
 
 
-def _camera_to_smash(rv3d, region, width, height, space=None):
+def _camera_to_smash(rv3d, region, width, height, space=None, focus_depth=None):
     """Orbit uses Blender's matrices. Locked ortho uses a long-lens perspective
     that matches the ortho frame at the look-at plane (Smash cannot light ortho).
     Blender's view_distance / overlays are not written.
@@ -1727,17 +1719,24 @@ def _camera_to_smash(rv3d, region, width, height, space=None):
             except Exception:
                 pass
         half_w, half_h = _ortho_half_extents(rv3d, aspect)
-        # A nearby perspective eye magnified parts in front of the pivot and
-        # shrank parts behind it, so posed hands/feet slid off the bones. Far
-        # enough back (relative to the ortho frame) the parallax is sub-pixel;
-        # much further loses float32 precision in the view matrix.
-        cam_dist = max(float(getattr(rv3d, "view_distance", 1.0)), _ORTHO_EYE_MIN,
-                       half_h * _ORTHO_DISTANCE_RATIO, depth)
+        view_distance = float(getattr(rv3d, "view_distance", 1.0))
+        # Smash can only render perspective. Parallax of a point dz off the pivot
+        # plane is dz / cam_dist of its screen offset, so the distance scales with
+        # the viewport size (not the zoom): ~0.5 px even 50 units off the plane.
+        cam_dist = max(view_distance, _ORTHO_EYE_MIN, depth,
+                       _ORTHO_PIXELS_TO_DISTANCE * max(width, height))
         fov_y = 2.0 * math.atan(half_h / cam_dist)
-        # Keep Blender's ortho clip range (clip_end centred on the view) for depth precision.
         z_near = max(cam_dist - depth * 0.5, 1.0)
         z_far = cam_dist + depth * 0.5
-        smash_view = _view_at_distance(rv3d, cam_dist) @ _Y_UP_TO_Z_UP
+        # The fake perspective is exact on one plane; put that plane through the
+        # character, not Blender's pivot (view space looks down -Z).
+        plane = -view_distance if focus_depth is None else focus_depth
+        # Pull Blender's own view matrix back along its view axis by changing only
+        # the depth term. Rebuilding it from a far-away eye position rounded the
+        # screen-space translation in float32 and shifted the model when zoomed in.
+        pulled = rv3d.view_matrix.copy()
+        pulled[2][3] -= cam_dist + plane
+        smash_view = pulled @ _Y_UP_TO_Z_UP
         smash_proj = _perspective_rh(fov_y, half_w / half_h, z_near, z_far)
         cam = _view_eye(smash_view)
         pos = (float(cam.x), float(cam.y), float(cam.z), 1.0)
@@ -1942,7 +1941,8 @@ def _pose_fingerprint(depsgraph, context):
 
 
 def _set_camera(preview, rv3d, region, width, height, scale, space=None):
-    view, proj, pos = _camera_to_smash(rv3d, region, width, height, space)
+    focus = None if _is_persp_proj(rv3d) else ortho_focus_depth(rv3d)
+    view, proj, pos = _camera_to_smash(rv3d, region, width, height, space, focus)
     view_arr = (c_float * 16)(*view)
     proj_arr = (c_float * 16)(*proj)
     pos_arr = (c_float * 4)(*pos)
@@ -2423,9 +2423,11 @@ def _sync_mesh_transforms(preview, context, depsgraph):
         arm_key = _id_key(arm)
         if arm_key not in arm_inverses:
             eval_arm = _evaluated_armature(arm, depsgraph)
-            arm_inverses[arm_key] = eval_arm.matrix_world.inverted_safe() @ _Y_UP_TO_Z_UP
+            arm_inverses[arm_key] = _Z_UP_TO_Y_UP @ eval_arm.matrix_world.inverted_safe()
         eval_obj = _evaluated_armature(obj, depsgraph)
-        delta = _Z_UP_TO_Y_UP @ eval_obj.matrix_world @ arm_inverses[arm_key]
+        # The renderer applies this in armature rest space before skinning, like
+        # Blender's armature modifier, so it is the mesh relative to its armature.
+        delta = arm_inverses[arm_key] @ eval_obj.matrix_world @ _Y_UP_TO_Z_UP
         extra = _extra_mesh_map.get(_id_key(obj))
         name, sub = extra if extra is not None else smash_gpu_id_cached(obj)
         key = (preview, model_index, name, sub)
@@ -3419,7 +3421,13 @@ def _camera_key(rv3d, width, height, scale):
         round(vm[2][3], 4),
         round(float(getattr(rv3d, "view_distance", 0.0)), 4),
         round(float(getattr(rv3d, "view_camera_zoom", 0.0)), 4),
+        # Ortho: the fake camera follows the character's depth (see ortho_focus_depth).
+        None if _is_persp_proj(rv3d) else _round_or_none(ortho_focus_depth(rv3d)),
     )
+
+
+def _round_or_none(value):
+    return None if value is None else round(value, 2)
 
 
 def _animation_playing(context):

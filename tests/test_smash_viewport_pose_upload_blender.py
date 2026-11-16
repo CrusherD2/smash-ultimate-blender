@@ -156,3 +156,32 @@ for obj in (shape, rig4):
     bpy.data.objects.remove(obj)
 viewport._vis_cache.clear()
 print('SMASH_VIEWPORT_VIS_CACHE_OK')
+
+# A moved mesh is sent relative to its armature, so a moved/rotated armature
+# with an unmoved mesh sends identity and a moved mesh sends only its own offset.
+rig5 = bpy.data.objects.new('Rig5', bpy.data.armatures.new('Rig5'))
+scene.collection.objects.link(rig5)
+hand = bpy.data.objects.new('HandShape', bpy.data.meshes.new('HandShape'))
+scene.collection.objects.link(hand)
+hand.parent = rig5
+hand.modifiers.new('Armature', 'ARMATURE').object = rig5
+rig5.matrix_world = Matrix.Translation((4, -3, 2)) @ Euler((0, 0, 1.2)).to_matrix().to_4x4()
+bpy.context.view_layer.update()
+sent = []
+fake_lib = SimpleNamespace(ssbh_preview_set_mesh_transforms=lambda p, idx, names, subs, mats, count: sent.append([mats[i] for i in range(16 * count)]) or 0)
+with patch.object(viewport, '_lib', fake_lib), \
+     patch.object(viewport, '_primary_smash_armature', return_value=rig5), \
+     patch.object(viewport, '_last_mesh_transform_state', None), \
+     patch.object(viewport, '_last_mesh_transform_fp', None):
+    viewport._sync_mesh_transforms(1, bpy.context, bpy.context.evaluated_depsgraph_get())
+    identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+    assert max(abs(a - b) for a, b in zip(sent[-1], identity)) < 1e-5, sent[-1]
+    hand.matrix_world = rig5.matrix_world @ Matrix.Translation((1, 0, 0))  # dragged 1 unit along the rig's X
+    bpy.context.view_layer.update()
+    viewport._sync_mesh_transforms(1, bpy.context, bpy.context.evaluated_depsgraph_get())
+    moved = Matrix([sent[-1][c * 4:c * 4 + 4] for c in range(4)]).transposed()
+    expected = viewport._Z_UP_TO_Y_UP @ Matrix.Translation((1, 0, 0)) @ viewport._Y_UP_TO_Z_UP
+    assert all(abs(moved[r][c] - expected[r][c]) < 1e-5 for r in range(4) for c in range(4)), moved
+for obj in (hand, rig5):
+    bpy.data.objects.remove(obj)
+print('SMASH_VIEWPORT_MESH_OFFSET_OK')

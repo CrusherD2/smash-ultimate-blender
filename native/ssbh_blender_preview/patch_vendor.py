@@ -15,15 +15,29 @@ def patch(root, file, old, new):
 def main():
     root = Path(__file__).resolve().parent.parent / "vendor/ssbh_wgpu/ssbh_wgpu/src"
     patch(root, "shader/skinning.wgsl", "parent_index: vec4<i32>\n", "parent_index: vec4<i32>,\n    object_transform: mat4x4<f32>,\n    normal_transform: mat4x4<f32>,\n")
-    patch(root, "shader/skinning.wgsl", "    var out: VertexInput0;", """    position = (mesh_object_info.object_transform * vec4(position, 1.0)).xyz;
-    normal = (mesh_object_info.normal_transform * vec4(normal, 0.0)).xyz;
-    tangent = (mesh_object_info.object_transform * vec4(tangent, 0.0)).xyz;
-    var out: VertexInput0;""")
+    # Blender moves an object's rest geometry and then lets the armature deform it,
+    # so the object transform goes before parenting/skinning, not after.
+    patch(root, "shader/skinning.wgsl", """    var position = vertex.position0.xyz;
+    var normal = vertex.normal0.xyz;
+    var tangent = vertex.tangent0.xyz;
+""", """    let rest_position = (mesh_object_info.object_transform * vec4(vertex.position0.xyz, 1.0)).xyz;
+    let rest_normal = (mesh_object_info.normal_transform * vec4(vertex.normal0.xyz, 0.0)).xyz;
+    let rest_tangent = (mesh_object_info.object_transform * vec4(vertex.tangent0.xyz, 0.0)).xyz;
+    var position = rest_position;
+    var normal = rest_normal;
+    var tangent = rest_tangent;
+""")
+    patch(root, "shader/skinning.wgsl", "(transforms.transforms[bone_index] * vec4(vertex.position0.xyz, 1.0)",
+          "(transforms.transforms[bone_index] * vec4(rest_position, 1.0)")
+    patch(root, "shader/skinning.wgsl", "(transforms.transforms_inv_transpose[bone_index] * vec4(vertex.normal0.xyz, 0.0)",
+          "(transforms.transforms_inv_transpose[bone_index] * vec4(rest_normal, 0.0)")
+    patch(root, "shader/skinning.wgsl", "(transforms.transforms_inv_transpose[bone_index] * vec4(vertex.tangent0.xyz, 0.0)",
+          "(transforms.transforms_inv_transpose[bone_index] * vec4(rest_tangent, 0.0)")
     patch(root, "model.rs", "    mesh_object_info_bind_group: crate::shader::skinning::bind_groups::BindGroup2,", """    mesh_object_info_bind_group: crate::shader::skinning::bind_groups::BindGroup2,
     mesh_object_info_buffer: wgpu::Buffer,
     parent_index: i32,""")
     patch(root, "model.rs", "struct BoneRenderData {", """impl RenderMesh {
-    /// Apply Blender object movement after skeletal deformation.
+    /// Move the mesh like Blender: in armature rest space, before deformation.
     pub fn set_object_transform(&self, queue: &wgpu::Queue, transform: glam::Mat4) {
         queue.write_buffer(&self.mesh_object_info_buffer, 0, bytemuck::bytes_of(
             &crate::shader::skinning::MeshObjectInfo {
