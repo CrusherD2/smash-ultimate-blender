@@ -150,6 +150,14 @@ class AnimationImportFile(PropertyGroup):
         description="Include this animation when importing selected animations",
         default=False,
     )
+    # Same checkmark under another name; the list swaps to it after a scroll (see SUB_UL_animation_import_list).
+    selected_twin: BoolProperty(
+        name="Selected",
+        description="Include this animation when importing selected animations",
+        get=lambda self: self.selected,
+        set=lambda self, value: setattr(self, "selected", value),
+        options={'SKIP_SAVE'},
+    )
 
 class IdlePoseItem(PropertyGroup):
     is_custom: BoolProperty(default=False)
@@ -170,11 +178,15 @@ bpy.utils.register_class(ModelImportItem)
 bpy.utils.register_class(AnimationImportFolder)
 bpy.utils.register_class(AnimationImportFile)
 
+def _update_animation_list_index(self, _context):
+    import_anim.select_clicked_animation_row(self)
+
+
 class VisibilityAnimationBrowser(PropertyGroup):
     animation_import_folders: CollectionProperty(type=AnimationImportFolder)
     animation_import_folder_path: StringProperty(subtype='DIR_PATH')
     animation_import_files: CollectionProperty(type=AnimationImportFile)
-    animation_import_files_index: IntProperty(default=0)
+    animation_import_files_index: IntProperty(default=0, update=_update_animation_list_index)
     animation_import_selection_anchor: StringProperty(options={'HIDDEN'})
     related_animations_expanded: BoolProperty(default=True)
 
@@ -425,7 +437,8 @@ class SubSceneProperties(PropertyGroup):
     smash_viewport_expanded: BoolProperty(name="Smash Viewport", default=False)
     animation_import_files_index: IntProperty(
         name="Animation Import Files Index",
-        default=0
+        default=0,
+        update=_update_animation_list_index,
     )
     raw_animation_import_folder_path: StringProperty(
         name="Raw Animation Import Folder Path",

@@ -267,7 +267,7 @@ def draw_visibility_folder(layout, context) -> None:
     box.template_list('SUB_UL_animation_import_list', 'visibility_layers', ssp,
                       'animation_import_files', ssp, 'animation_import_files_index', rows=5)
     box.label(text='Drag checkboxes to include or exclude')
-    box.label(text='Name: select  Ctrl: toggle  Shift: range', icon='INFO')
+    box.label(text='Click a name to select it; tick boxes to pick several', icon='INFO')
     row = box.row(align=True)
     for label, select in (('Select All', True), ('Deselect All', False)):
         op = row.operator('sub.select_all_animation_imports', text=label)

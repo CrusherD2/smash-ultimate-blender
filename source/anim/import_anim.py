@@ -94,6 +94,20 @@ def animation_browser_state(context, visibility=False):
     return ssp.visibility_animation_browser if visibility else ssp
 
 
+def set_animation_list_index(state, index):
+    """Move the list's active row without the click-to-select update."""
+    state["animation_import_files_index"] = index
+
+
+def select_clicked_animation_row(state):
+    """Clicking a row selects only that animation."""
+    from .selection import select_range
+    index = state.animation_import_files_index
+    if 0 <= index < len(state.animation_import_files):
+        state.animation_import_selection_anchor = select_range(
+            state.animation_import_files, 'selected', index, state.animation_import_selection_anchor)
+
+
 def remember_animation_folder(ssp, folder):
     if not folder:
         return
@@ -108,7 +122,7 @@ def fill_animation_import_list(ssp, folder):
     remember_animation_folder(ssp, ssp.animation_import_folder_path)
     remember_animation_folder(ssp, folder)
     ssp.animation_import_files.clear()
-    ssp.animation_import_files_index = 0
+    set_animation_list_index(ssp, 0)
     if not folder or not os.path.isdir(folder):
         ssp.animation_import_folder_path = folder or ""
         return 0
@@ -127,7 +141,7 @@ def fill_animation_import_list(ssp, folder):
         anim_item.path = str(Path(folder) / anim_file)
         anim_item.selected = False
         count += 1
-    ssp.animation_import_files_index = 0
+    set_animation_list_index(ssp, 0)
     return count
 
 
@@ -493,32 +507,39 @@ def import_animation_paths(context, operator, filepaths):
     return imported, failed
 
 
+_list_draw_passes = {}
+
+
+def _checkbox_property(ui_list, data, index):
+    """'selected', or its twin for the whole redraw that follows a scroll.
+
+    After a wheel scroll Blender matches each new button to an old one. The checkbox
+    of a row that stayed visible would match its old self and shift that matching, so
+    the click under a still mouse would land one row off. A twin can't match.
+    """
+    from .selection import visible_list_indices
+    order = list(visible_list_indices(ui_list, data.animation_import_files))
+    position = order.index(index) if index in order else 0
+    key = (data.as_pointer(), ui_list.list_id)
+    state = _list_draw_passes.get(key)
+    if state is None or position <= state["last"]:
+        scrolled = state is not None and position != state["first"]
+        twin = (not state["twin"]) if scrolled else bool(state and state["twin"])
+        state = _list_draw_passes[key] = {"first": position, "last": position, "twin": twin}
+    state["last"] = position
+    return "selected_twin" if state["twin"] else "selected"
+
+
 class SUB_UL_animation_import_list(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        from .selection import visible_list_indices
-        visible = ','.join(map(str, visible_list_indices(self, data.animation_import_files)))
-        layout.operator_context = 'INVOKE_DEFAULT'
+        # Names are plain text so a click lands on the list row, which selects it.
+        # Blender routes the first click after a wheel scroll correctly only for the row.
         if self.layout_type in {'DEFAULT', 'COMPACT'}:
-            layout.prop(item, "selected", text="")
-            op = layout.operator(
-                SUB_OP_toggle_animation_import_selection.bl_idname,
-                text=item.name,
-                icon='ACTION',
-                depress=item.selected,
-            )
-            op.index = index
-            op.visible_indices = visible
-            op.visibility = data == context.scene.sub_scene_properties.visibility_animation_browser
+            layout.prop(item, _checkbox_property(self, data, index), text="")
+            layout.label(text=item.name, icon='ACTION')
         elif self.layout_type in {'GRID'}:
             layout.alignment = 'CENTER'
-            op = layout.operator(
-                SUB_OP_toggle_animation_import_selection.bl_idname,
-                text=item.name,
-                depress=item.selected,
-            )
-            op.index = index
-            op.visible_indices = visible
-            op.visibility = data == context.scene.sub_scene_properties.visibility_animation_browser
+            layout.label(text=item.name)
 
 
 class SUB_OP_toggle_animation_import_selection(Operator):
@@ -545,7 +566,7 @@ class SUB_OP_toggle_animation_import_selection(Operator):
             visible_indices=[int(i) for i in self.visible_indices.split(',') if i] or None,
             shift=event.shift, toggle=event.ctrl or event.oskey or (self.toggle and not event.shift),
         )
-        ssp.animation_import_files_index = self.index
+        set_animation_list_index(ssp, self.index)
         return {'FINISHED'}
 
     def execute(self, context):
@@ -555,7 +576,7 @@ class SUB_OP_toggle_animation_import_selection(Operator):
             return {'CANCELLED'}
         ssp.animation_import_selection_anchor = select_range(
             ssp.animation_import_files, 'selected', self.index, ssp.animation_import_selection_anchor, toggle=self.toggle)
-        ssp.animation_import_files_index = self.index
+        set_animation_list_index(ssp, self.index)
         return {'FINISHED'}
 
 
@@ -1121,7 +1142,7 @@ class SUB_PT_import_anim(Panel):
                     box.label(text="Drag checkboxes to include or exclude")
                     help_row = box.row()
                     help_row.scale_y = 0.8
-                    help_row.label(text="Name: select  Ctrl: toggle  Shift: range", icon='INFO')
+                    help_row.label(text="Click a name to select it; tick boxes to pick several", icon='INFO')
 
                     row = box.row(align=True)
                     op = row.operator(SUB_OP_select_all_animation_imports.bl_idname, text="Select All")

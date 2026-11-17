@@ -3542,6 +3542,10 @@ def _prepare_preview_now(context=None, depsgraph=None):
     skip_scene_walk = loaded and not size_changed and not count_changed
     if not skip_scene_walk:
         _refresh_smash_arm_cache(scene)
+        # _model_folder returns the loaded folder as-is, so also require an armature
+        # that still uses it; otherwise a deleted character keeps drawing.
+        if _loaded_folder and not _primary_smash_armature(scene):
+            shutdown_preview()
         folder = _model_folder(scene)
         has_smash = _folder_has_numshb(folder)
         if _loaded_folder and (not has_smash or folder != _loaded_folder):

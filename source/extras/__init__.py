@@ -46,6 +46,7 @@ from . import ik_floor_contact
 from . import custom_ik
 from . import custom_components
 from . import performance_probe
+from . import smash_toolbar
 
 # Explicit registration function for the package
 def register():
@@ -72,6 +73,7 @@ def register():
     custom_ik.register()
     custom_components.register()
     performance_probe.register()
+    smash_toolbar.register()
     viewport_capture.register()
     face_picker.register()
     eye_rig.register()
@@ -96,6 +98,7 @@ def unregister():
     visibility_layer.unregister()
     clipboard_image.unregister()
     custom_components.unregister()
+    smash_toolbar.unregister()
     performance_probe.unregister()
     custom_ik.unregister()
     face_picker.unregister()

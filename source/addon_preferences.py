@@ -1,6 +1,6 @@
 import bpy
 import os
-from bpy.props import BoolProperty, CollectionProperty, IntProperty, StringProperty
+from bpy.props import BoolProperty, CollectionProperty, FloatVectorProperty, IntProperty, StringProperty
 from bpy.types import AddonPreferences, PropertyGroup
 
 
@@ -15,6 +15,24 @@ class SUB_PG_param_labels_path(PropertyGroup):
         default="",
         subtype="FILE_PATH",
     )
+
+
+class SUB_PG_toolbar_button(PropertyGroup):
+    label: StringProperty(name="Label", default="", description='Text shown on this Smash Toolbar button')
+    idname: StringProperty(name="Operator", default="", description='Tool this button runs')
+    props: StringProperty(name="Settings", default="{}", description='Button settings saved when it was added')
+    icon: StringProperty(name="Icon", default="", description='Icon shown when this button is displayed as an icon')
+    show_icon: BoolProperty(name="Display as Icon", default=False, description='Show this Smash Toolbar button as an icon instead of text')
+    is_group: BoolProperty(name="Group", default=False, description='This entry is a group that holds other Smash Toolbar buttons')
+    uid: StringProperty(name="Group ID", default="", description='Stable name buttons use to refer to this group')
+    group: StringProperty(name="In Group", default="", description='Group this button belongs to; empty when it sits on the bar itself')
+    color: FloatVectorProperty(name="Color", subtype='COLOR_GAMMA', size=3, min=0.0, max=1.0,
+                               default=(0.27, 0.52, 0.92), description='Color mark shown on this group')
+    expanded: BoolProperty(name="Open", default=False, description="Show this group's buttons on the bar")
+    prop_owner: StringProperty(name="Setting Owner", default="",
+                               description='Where a setting button reads from: SCENE, OBJECT, OBJECT_DATA or WINDOW_MANAGER')
+    prop_base: StringProperty(name="Setting Path", default="", description='Path from the owner to the data holding the setting')
+    prop_name: StringProperty(name="Setting", default="", description='Setting shown by this button')
 
 
 class SUB_PG_model_export_path(PropertyGroup):
@@ -52,6 +70,7 @@ class SUB_AddonPreferences(AddonPreferences):
     default_model_export_folder: StringProperty(name="Default Model Export Folder", subtype='DIR_PATH',
         description='Initial model export destination when no per-model folder is configured')
     model_export_paths: CollectionProperty(type=SUB_PG_model_export_path)
+    toolbar_buttons: CollectionProperty(type=SUB_PG_toolbar_button)
 
     param_labels_paths: CollectionProperty(type=SUB_PG_param_labels_path)
     param_labels_paths_index: IntProperty(default=0)
@@ -178,6 +197,7 @@ class SUB_AddonPreferences(AddonPreferences):
 CLASSES = (
     SUB_PG_param_labels_path,
     SUB_PG_model_export_path,
+    SUB_PG_toolbar_button,
     SUB_OP_model_export_path,
     SUB_AddonPreferences,
 )

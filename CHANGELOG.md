@@ -10,6 +10,14 @@ The updater shows every section newer than the user's installed version, and
 the "What's New" popup shows them once after the update installs. Sections
 that aren't headed by a version number (like "Unreleased") are never shown.
 
+## 5.0.4 - 2026-11-16
+- New Smash Toolbar editor: pick "Smash Toolbar" in any area's editor menu and fill it with your favorite buttons (right-click a button > Add to Smash Toolbar)
+- Toolbar buttons can show as text or icons, be reordered or removed, and be put in color-coded groups that open to the right
+- Settings (toggles, checkboxes, sliders, dropdowns) can be added to the toolbar too
+- Animation Importer and Idle Pose Library lists can go on the toolbar: scroll and click to import or apply, or open a bigger searchable list with the arrow
+- Animation Importer: clicking an animation now selects the one under the mouse on the first click, even right after scrolling
+- Smash Viewport: deleting an armature and its children now removes its model right away
+
 ## 5.0.3 - 2026-11-16
 - New hand and foot IK controls point the same way as the hand/foot they control and are a bit longer, instead of pointing straight up
 
