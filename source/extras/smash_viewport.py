@@ -1807,7 +1807,8 @@ def _iter_pose_armatures(depsgraph, context):
 def _smash_bone_selection(pose):
     """Indices and names of the pose bones sent to the renderer, cached per bone layout."""
     bones = pose.bones
-    key = (pose.as_pointer(), len(bones))
+    # Reparenting in Edit Mode reorders pose bones without changing the pose pointer or count.
+    key = (pose.as_pointer(), tuple(bones.keys()))
     cached = _bone_selection_cache.get(key)
     if cached is not None:
         return cached
@@ -4926,25 +4927,14 @@ def _armature_pose_key(arm):
             round(q.z, 3),
             round(q.w, 3),
         ))
-    step = max(1, count // 40)
-    for index in range(0, count, step):
-        try:
-            pbone = bones[index]
-        except Exception:
-            continue
-        if _skip_smash_bone(pbone.name):
-            continue
-        t = pbone.matrix.translation
-        q = pbone.matrix.to_quaternion()
-        parts.append((
-            index,
-            round(t.x, 3),
-            round(t.y, 3),
-            round(t.z, 3),
-            round(q.x, 3),
-            round(q.y, 3),
-            round(q.z, 3),
-        ))
+    # Hash every bone: sampling missed bones that moved only through a reparent.
+    import numpy as np
+    raw = np.empty(count * 16, dtype=np.float32)
+    try:
+        bones.foreach_get("matrix", raw)
+        parts.append(hash(raw.tobytes()))
+    except Exception:
+        pass
     try:
         active = arm.data.bones.active
     except Exception:
