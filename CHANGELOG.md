@@ -10,6 +10,9 @@ The updater shows every section newer than the user's installed version, and
 the "What's New" popup shows them once after the update installs. Sections
 that aren't headed by a version number (like "Unreleased") are never shown.
 
+## 5.0.2 - 2026-11-16
+- Smash Viewport: changing a bone's parent no longer twists the rendered model until you undo or move a bone
+
 ## 5.0.1 - 2026-11-16
 - Smash Viewport: two copies of the same model both render, and each keeps its own bone edits no matter which one is selected
 - Smash Viewport matches Blender in Edit Mode and after editing armature bones
