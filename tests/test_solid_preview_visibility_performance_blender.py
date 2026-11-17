@@ -42,7 +42,7 @@ with patch.object(eye, '_solid_texture_viewport_open', return_value=True):
         assert classified.call_count == 0, classified.call_count
         assert published.call_count == 0, published.call_count
         assert all(call.args[0] != body_material for call in updated.call_args_list)
-        assert updated.call_count == 20, updated.call_count
+        assert updated.call_count == 0, updated.call_count
         print(f'VISIBILITY PERFORMANCE: 20 switches, {elapsed:.4f}s; '
               '0 material reindexes, 0 classifications, 0 texture uploads, 0 unrelated updates')
     # A shared material must still refresh when its visible mesh membership changes.
@@ -103,3 +103,55 @@ with patch.object(eye, '_solid_texture_viewport_open', return_value=True):
         assert any(call.args[0] == mat for call in updated.call_args_list)
         assert preview._inputs[token][1][0] == (.5, .5, .5, 1)
 print('SOLID_FRAME_SKIP_OK')
+
+# hide_viewport drivers re-evaluate geometry, unlike the hide_set path above.
+with patch.object(eye, '_solid_texture_viewport_open', return_value=True), \
+     patch.object(preview, '_playing', return_value=True):
+    obj.hide_set(False)
+    other.hide_set(False)
+    other.data.materials[0] = alternate
+    bpy.context.view_layer.update()
+    preview._structure_dirty = True
+    for frame in range(4):
+        obj.hide_viewport = frame % 2 == 0
+        other.hide_viewport = frame % 2 != 0
+        bpy.context.view_layer.update()
+        preview.sync(scene, frame_changed=True)
+    with patch.object(preview, '_entry', wraps=preview._entry) as indexed, \
+         patch.object(preview, '_classify', wraps=preview._classify) as classified, \
+         patch.object(preview, '_publish', wraps=preview._publish) as published:
+        for frame in range(20):
+            obj.hide_viewport = frame % 2 == 0
+            other.hide_viewport = frame % 2 != 0
+            bpy.context.view_layer.update()
+            preview.sync(scene, frame_changed=True)
+        assert indexed.call_count == 0, indexed.call_count
+        assert classified.call_count == 0, classified.call_count
+        assert published.call_count == 0, published.call_count
+    assert preview._deferred_edits
+with patch.object(eye, '_solid_texture_viewport_open', return_value=True):
+    preview.sync(scene)
+    assert not preview._deferred_edits
+print('SOLID_HIDE_VIEWPORT_PLAYBACK_OK')
+
+# A never-shown expression must be baked before its first visibility key.
+cold = obj.copy()
+cold.data = obj.data.copy()
+cold.name = 'Never shown expression'
+scene.collection.objects.link(cold)
+cold_material = mat.copy()
+cold_material.name = 'Never shown expression material'
+cold.data.materials[0] = cold_material
+cold.hide_viewport = True
+with patch.object(eye, '_solid_texture_viewport_open', return_value=True):
+    bpy.context.view_layer.update()
+    preview._load(None)
+    preview.sync(scene)
+    assert cold_material.as_pointer() in preview._cache
+    with patch.object(preview, '_playing', return_value=True), \
+         patch.object(preview, '_publish', wraps=preview._publish) as published:
+        cold.hide_viewport = False
+        bpy.context.view_layer.update()
+        preview.sync(scene, frame_changed=True)
+        assert published.call_count == 0, published.call_count
+print('SOLID_COLD_VISIBILITY_OK')

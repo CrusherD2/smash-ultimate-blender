@@ -17,6 +17,7 @@ _mesh_revisions = {}
 _uv_signatures = {}
 _inputs = {}
 _dirty = set()
+_deferred_edits = set()
 _index = None
 _structure_dirty = True
 _engaged = False
@@ -518,7 +519,7 @@ def _visible_entries(scene):
 
 
 def sync(scene, *, frame_changed=False):
-    global _busy, _engaged, _needs_restore
+    global _busy, _engaged, _needs_restore, _structure_dirty
     if _busy or bpy.app.is_job_running('RENDER'):
         return
     from ...extras import eye_rig
@@ -529,10 +530,17 @@ def sync(scene, *, frame_changed=False):
         return
     _busy = True
     try:
+        if _deferred_edits and not _playing():
+            _structure_dirty = True
+            for token in _deferred_edits:
+                _mesh_revisions[token] = _mesh_revisions.get(token, 0) + 1
+            if _index:
+                _dirty.update(_index['catalog'])
+            _deferred_edits.clear()
         entries = _visible_entries(scene)
-        if not _engaged:
-            _dirty.update(entries)
         catalog = _index['catalog']
+        if not _engaged:
+            _dirty.update(catalog)
         changed = _dirty.intersection(catalog)
         _dirty.difference_update(changed)
         animation = _animation_key(catalog, scene)
@@ -554,15 +562,22 @@ def sync(scene, *, frame_changed=False):
             if animation_changed:
                 changed.update(entries)
         entries.update((token, catalog[token]) for token in entries)
-        pending = (changed.intersection(entries) | _index['activated']
+        # Prepare hidden expressions too, before their first visibility key.
+        pending = (changed | _index['activated']
                    | {token for token, entry in entries.items()
                       if entry['dynamic'] and (frame_changed or entry['poll'])})
-        forced = changed | _index['activated']
         for token in sorted(pending):
-            entry = entries[token]
-            if token not in forced and _inputs_unchanged(entry['material'], entry['arma'], scene):
-                continue
-            update_material(entry['material'], _index['visible_meshes'][token], entry['arma'], scene, check_uv=False)
+            entry = catalog[token]
+            if token not in changed and _inputs_unchanged(entry['material'], entry['arma'], scene):
+                if token in _index['activated']:
+                    node = entry['material'].node_tree.nodes.active
+                    if node is not None:
+                        _activate(entry['material'], node, _index['visible_meshes'][token])
+                        continue
+                else:
+                    continue
+            meshes = _index['visible_meshes'].get(token, entry['meshes'])
+            update_material(entry['material'], meshes, entry['arma'], scene, check_uv=False)
         _engaged = True
     finally:
         _busy = False
@@ -582,6 +597,7 @@ def _load(_dummy):
     _uv_signatures.clear()
     _inputs.clear()
     _dirty.clear()
+    _deferred_edits.clear()
     _index = None
     _structure_dirty = True
     _engaged = False
@@ -596,6 +612,7 @@ def _changed(_scene, depsgraph):
         return
     entries = _index['entries'] if _index else {}
     trees = {entry['material'].node_tree.as_pointer(): token for token, entry in entries.items()}
+    playing = _playing()
     for update in depsgraph.updates:
         data = update.id.original
         token = data.as_pointer()
@@ -603,14 +620,27 @@ def _changed(_scene, depsgraph):
             _revisions[token] = _revisions.get(token, 0) + 1
             _dirty.update(entries)
         elif isinstance(data, bpy.types.Material):
+            if playing:
+                _deferred_edits.add(token)
+                continue
             _dirty.add(token)
         elif isinstance(data, bpy.types.NodeTree) and token in trees:
+            if playing:
+                _deferred_edits.add(token)
+                continue
             _dirty.add(trees[token])
         elif isinstance(data, bpy.types.Mesh):
+            # Visibility re-evaluation is not an edit to the original UV layout.
+            if playing and not data.is_editmode:
+                _deferred_edits.add(token)
+                continue
             _structure_dirty = True
             _mesh_revisions[token] = _mesh_revisions.get(token, 0) + 1
             _dirty.update(key for key, entry in entries.items() if any(obj.data == data for obj in entry['meshes']))
         elif isinstance(data, bpy.types.Object) and update.is_updated_shading:
+            if playing and data.mode != 'EDIT':
+                _deferred_edits.add(token)
+                continue
             _structure_dirty = True
         elif isinstance(data, bpy.types.Action) and _index:
             _index['animation'] = None

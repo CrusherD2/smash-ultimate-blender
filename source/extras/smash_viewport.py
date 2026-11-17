@@ -508,6 +508,8 @@ def shutdown_preview():
     _name_arr_keep = None
     _reset_extra_state()
     _clear_shade_caches()
+    if _frame_memo is not None:
+        _frame_memo.clear()
 
 
 def _folder_has_numshb(folder):
@@ -3573,6 +3575,8 @@ def _prepare_preview_now(context=None, depsgraph=None):
         preview = _preview
         if not preview:
             return None
+    # A primary-model deletion can recreate the preview inside this call.
+    size_changed = size_changed or _pixel_size != (width, height) or _last_tick_key is None
     needs_gpu = size_changed
     # During playback the frame-change call already synced this frame's mesh
     # transforms; extra draws of the same frame only move the camera.

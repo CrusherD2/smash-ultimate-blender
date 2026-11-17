@@ -37,3 +37,21 @@ def prepare(deleted):
 assert prepare(deleted=False) == []
 assert prepare(deleted=True) == [True]
 print('SMASH_VIEWPORT_DELETED_ARMATURE_OK')
+
+# A frame memo must not preserve the old folder's missing primary after reload.
+remaining = bpy.data.objects.new('Remaining', bpy.data.armatures.new('Remaining'))
+scene.collection.objects.link(remaining)
+with patch.object(viewport, '_frame_memo', {}), \
+     patch.object(viewport, '_lib', None), \
+     patch.object(viewport, '_preview', None), \
+     patch.object(viewport, '_loaded_folder', 'C:/deleted'), \
+     patch.object(viewport, '_folder_has_numshb', return_value=True), \
+     patch.object(viewport, '_folder_from_armature', return_value='C:/remaining'), \
+     patch.object(viewport, '_is_smash_armature', side_effect=lambda obj: obj.type == 'ARMATURE'):
+    assert viewport._primary_smash_armature(scene) is None
+    viewport.shutdown_preview()
+    with patch.object(viewport, '_model_folder', return_value='C:/remaining'):
+        assert viewport._primary_smash_armature(scene) == remaining
+print('SMASH_VIEWPORT_PRIMARY_RELOAD_OK')
+
+bpy.context.view_layer.update()
