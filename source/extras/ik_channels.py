@@ -254,8 +254,10 @@ def create_controls(context, obj, limbs='BOTH', custom_only=False, custom_target
             root, mid, end = [bones[n] for n in (names[0], bend_name(obj, names), names[-1])]
             if target not in bones:
                 control = bones.new(target)
-                control.matrix = end.matrix.copy()
-                control.length = max(end.length * 1.5, .1)
+                # A new bone has zero length, so assigning a matrix loses its direction.
+                control.head = end.head.copy()
+                control.tail = end.head + end.vector.normalized() * max(end.length * 2.0, .1)
+                control.roll = end.roll
                 control.parent = None
                 control.use_deform = False
             if pole not in bones:

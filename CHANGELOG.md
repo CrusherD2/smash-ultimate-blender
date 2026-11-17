@@ -10,6 +10,9 @@ The updater shows every section newer than the user's installed version, and
 the "What's New" popup shows them once after the update installs. Sections
 that aren't headed by a version number (like "Unreleased") are never shown.
 
+## 5.0.3 - 2026-11-16
+- New hand and foot IK controls point the same way as the hand/foot they control and are a bit longer, instead of pointing straight up
+
 ## 5.0.2 - 2026-11-16
 - Smash Viewport: changing a bone's parent no longer twists the rendered model until you undo or move a bone
 
