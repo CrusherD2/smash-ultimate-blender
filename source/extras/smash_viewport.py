@@ -7,6 +7,7 @@ Rendered shading. Overlays, selection, and object visibility stay under Blender.
 from __future__ import annotations
 
 import ctypes
+from functools import lru_cache
 import math
 import os
 import re
@@ -1151,6 +1152,9 @@ def _find_primary_smash_armature(scene):
             if obj is constrained:
                 _primary_arm_obj = obj
                 return obj
+    # Keep GPU model ownership stable when selecting another copy of the same fighter.
+    if _primary_arm_obj in matches and _primary_arm_obj is not driver:
+        return _primary_arm_obj
     preferred = _context_armature(scene)
     if preferred is not None and preferred is not driver:
         for obj in matches:
@@ -1385,8 +1389,6 @@ def _skip_extra_armature(obj):
         if _is_primary_smash_armature(obj):
             return True
         folder = _folder_from_armature(obj)
-        if folder and _folders_match(folder, loaded):
-            return True
         if _armature_owns_smash_mesh(obj) and not folder:
             return True
     if _is_anim_rig(obj):
@@ -1825,14 +1827,57 @@ def _smash_bone_selection(pose):
     return indices, names
 
 
-def smash_bone_matrices(pose, world):
+@lru_cache(maxsize=8)
+def _source_rest_bones(path, modified):
+    from ...dependencies import ssbh_data_py
+    skel = ssbh_data_py.skel_data.read_skel(path)
+    return {
+        bone.name: _Y_UP_TO_Z_UP @ Matrix(skel.calculate_world_transform(bone)).transposed()
+        @ _X_MAJOR_TO_Y_MAJOR
+        for bone in skel.bones
+    }
+
+
+def _loaded_rest_bones(folder=None):
+    folder = _loaded_folder if folder is None else folder
+    if not folder or not os.path.isdir(folder):
+        return None
+    paths = sorted(
+        (os.path.join(folder, name) for name in os.listdir(folder)
+         if name.lower().endswith('.nusktb')),
+        key=lambda path: (os.path.basename(path).lower() != 'model.nusktb', path),
+    )
+    if not paths:
+        return None
+    path = paths[0]
+    return _source_rest_bones(path, os.stat(path).st_mtime_ns)
+
+
+def smash_bone_matrices(pose, world, source_rest=None):
     """Column-major Smash-space world matrices for every bone, shape (n, 16)."""
     import numpy as np
     count = len(pose.bones)
     # foreach_get flattens each 4x4 column by column.
     raw = np.empty(count * 16, dtype=np.float32)
-    pose.bones.foreach_get("matrix", raw)
+    arm = pose.id_data
+    if arm.mode == 'EDIT' or arm.data.pose_position == 'REST':
+        # Blender displays the rest mesh rather than the animated pose in Edit Mode.
+        for index, pbone in enumerate(pose.bones):
+            raw[index * 16:(index + 1) * 16] = _mat4_col_major(pbone.bone.matrix_local)
+    else:
+        pose.bones.foreach_get("matrix", raw)
     local = raw.reshape(count, 4, 4).transpose(0, 2, 1)
+    if source_rest:
+        local = local.copy()
+        for index, pbone in enumerate(pose.bones):
+            original = source_rest.get(pbone.name)
+            if original is None:
+                continue
+            rest = pbone.bone.matrix_local
+            if any(abs(rest[r][c] - original[r][c]) > 1e-5
+                   for r in range(4) for c in range(4)):
+                # Native skinning still uses the source file's inverse bind matrix.
+                local[index] = local[index] @ np.array(rest.inverted_safe() @ original, dtype=np.float32)
     left = np.array(_Z_UP_TO_Y_UP @ world, dtype=np.float32)
     right = np.array(_Y_MAJOR_TO_X_MAJOR, dtype=np.float32)
     smash = left @ local @ right
@@ -1854,7 +1899,7 @@ def _collect_smash_bones(depsgraph, context):
         if not indices:
             continue
         names.extend(selected)
-        chunks.append(smash_bone_matrices(pose, arma.matrix_world)[indices].ravel())
+        chunks.append(smash_bone_matrices(pose, arma.matrix_world, _loaded_rest_bones())[indices].ravel())
     if not chunks:
         return names, np.empty(0, dtype=np.float32)
     return names, np.concatenate(chunks)
@@ -1884,6 +1929,14 @@ def _collect_extra_bones(context):
             arm_ptr = 0
         file_extra = arm_ptr in _extra_smash_arms
         blender_smash = arm_ptr in _extra_blender_smash
+        if file_extra:
+            indices, selected = _smash_bone_selection(pose)
+            transformed = smash_bone_matrices(
+                pose, world, _loaded_rest_bones(_folder_from_armature(arma)),
+            )
+            names.extend(extra_bone_name(arm_name, name) for name in selected)
+            matrices.extend(transformed[indices].ravel())
+            continue
         for pbone in pose.bones:
             if pbone.name.startswith(_EXTRA_BONE_PREFIX) or pbone.name.startswith("SUB_"):
                 continue
@@ -3404,6 +3457,8 @@ def _camera_key(rv3d, width, height, scale):
         int(height),
         round(scale, 4),
         str(getattr(rv3d, "view_perspective", "")),
+        # Camera-view panning changes projection offsets without moving the view matrix.
+        tuple(float(value) for row in rv3d.window_matrix for value in row),
         # Include the complete view rotation. Sampling only vm[0][0] misses
         # valid orbit changes and can leave the Smash render one camera move
         # behind Blender's overlays.
@@ -3652,12 +3707,14 @@ def capture_rgba_frame(
     restore_background=True,
     flush=True,
     wait=False,
+    camera=None,
+    size=None,
 ):
     """RGBA screenshot of Smash Viewport. Transparent pixels have alpha 0.
 
     Returns (width, height, bytes) or None if Smash Viewport is not drawing.
     """
-    global _applied_bg, _pixels, _pixel_size
+    global _applied_bg, _pixels, _pixel_size, _last_cam_key
     context = context or bpy.context
     scene = getattr(context, "scene", None)
     if scene is None or not _viewport_enabled(scene):
@@ -3666,6 +3723,22 @@ def capture_rgba_frame(
     if prepared is None:
         return None
     preview, width, height = prepared[0], prepared[1], prepared[2]
+    if camera is not None and size is not None:
+        from types import SimpleNamespace
+        width = height = max(1, int(size))
+        if _lib.ssbh_preview_resize(preview, width, height, 1.0) != 0:
+            raise RuntimeError("Could not resize Smash thumbnail capture")
+        depsgraph = context.evaluated_depsgraph_get()
+        evaluated = camera.evaluated_get(depsgraph)
+        view = SimpleNamespace(
+            view_matrix=evaluated.matrix_world.inverted(),
+            window_matrix=evaluated.calc_matrix_camera(depsgraph, x=width, y=height),
+            is_perspective=evaluated.data.type != 'ORTHO',
+            view_distance=1.0,
+        )
+        if _set_camera(preview, view, None, width, height, 1.0) != 0:
+            raise RuntimeError("Could not set Smash thumbnail camera")
+        _last_cam_key = None
     setter = getattr(_lib, "ssbh_preview_set_clear_color", None) if _lib else None
     ssp = getattr(scene, "sub_scene_properties", None)
     color = (0.0, 0.0, 0.0)
@@ -4818,7 +4891,7 @@ def _armature_pose_key(arm):
     count = len(bones)
     if count == 0:
         return 0
-    parts = [count]
+    parts = [count, arm.mode, arm.data.pose_position]
     try:
         wt = arm.matrix_world.translation
         wq = arm.matrix_world.to_quaternion()
@@ -5812,7 +5885,7 @@ def _is_output_compat_panel(cls):
         return False
     if getattr(cls, "bl_space_type", "") != "PROPERTIES":
         return False
-    if getattr(cls, "bl_context", "") != "output":
+    if getattr(cls, "bl_context", "") not in {"output", "data"}:
         return False
     engines = getattr(cls, "COMPAT_ENGINES", None)
     if not engines:
@@ -5821,7 +5894,6 @@ def _is_output_compat_panel(cls):
 
 
 def _patch_output_panels(enable):
-    """Output tab panels only list EEVEE/Workbench. Add this engine so FPS/resolution stay visible."""
     global _patched_output_panels
     if enable:
         _patched_output_panels = []

@@ -882,9 +882,11 @@ def capture_thumbnail(context, arma, filepath, size):
     space = area.spaces.active if area is not None else None
     old_view = None
     old_overlays = None
+    old_gizmos = None
     if space is not None:
         old_view = space.region_3d.view_perspective
         old_overlays = space.overlay.show_overlays
+        old_gizmos = space.show_gizmo
 
     try:
         render.filepath = str(path)
@@ -897,12 +899,24 @@ def capture_thumbnail(context, arma, filepath, size):
         render.image_settings.file_format = "PNG"
         if camera is not None:
             scene.camera = camera
-        if space is not None and camera is not None:
-            space.region_3d.view_perspective = "CAMERA"
+        if space is not None:
+            if camera is not None:
+                space.region_3d.view_perspective = "CAMERA"
             space.overlay.show_overlays = False
+            space.show_gizmo = False
         if area is not None and region is not None:
             with context.temp_override(window=context.window, area=area, region=region):
-                bpy.ops.render.opengl(write_still=True)
+                from . import viewport_capture
+                if viewport_capture._should_use_smash_capture(context, area):
+                    from . import smash_viewport
+                    captured = smash_viewport.capture_rgba_frame(
+                        context, wait=True, camera=camera, size=size,
+                    )
+                    if captured is None:
+                        raise RuntimeError("Smash Viewport could not capture the expression")
+                    viewport_capture.save_png(str(path), *captured)
+                else:
+                    bpy.ops.render.opengl(write_still=True)
         else:
             bpy.ops.render.render(write_still=True)
     finally:
@@ -919,6 +933,8 @@ def capture_thumbnail(context, arma, filepath, size):
                 space.region_3d.view_perspective = old_view
             if old_overlays is not None:
                 space.overlay.show_overlays = old_overlays
+            if old_gizmos is not None:
+                space.show_gizmo = old_gizmos
 
     if not path.exists():
         raise RuntimeError("Thumbnail was not written")

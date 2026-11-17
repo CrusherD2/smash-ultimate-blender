@@ -46,6 +46,49 @@ assert names == expected_names == ['Trans', 'Hip'], names
 assert len(matrices) == len(expected)
 assert max(abs(a - b) for a, b in zip(matrices, expected)) < 1e-5, (matrices, expected)
 
+# Edit Mode and Rest Position show the rest mesh, not the current animation.
+posed_key = viewport._armature_pose_key(arm)
+for mode in ('EDIT', 'REST'):
+    if mode == 'EDIT':
+        bpy.ops.object.mode_set(mode='EDIT')
+    else:
+        data.pose_position = 'REST'
+    assert viewport._armature_pose_key(arm) != posed_key
+    actual = viewport.smash_bone_matrices(arm.pose, arm.matrix_world)
+    for index, pbone in enumerate(arm.pose.bones):
+        rest = viewport._Z_UP_TO_Y_UP @ arm.matrix_world @ pbone.bone.matrix_local @ viewport._Y_MAJOR_TO_X_MAJOR
+        assert max(abs(a - b) for a, b in zip(actual[index], viewport._mat4_col_major(rest))) < 1e-5
+    bpy.ops.object.mode_set(mode='OBJECT')
+    data.pose_position = 'POSE'
+bpy.context.view_layer.update()
+assert viewport._armature_pose_key(arm) == posed_key
+
+# Changing a bone's rest position must not deform an unposed mesh.
+original_rest = {bone.name: bone.matrix_local.copy() for bone in data.bones}
+bpy.ops.object.mode_set(mode='EDIT')
+data.edit_bones['Hip'].head.x += 0.5
+data.edit_bones['Hip'].tail.x += 0.5
+bpy.ops.object.mode_set(mode='POSE')
+for pbone in arm.pose.bones:
+    pbone.matrix_basis = Matrix.Identity(4)
+bpy.ops.object.mode_set(mode='OBJECT')
+bpy.context.view_layer.update()
+for posed in (False, True):
+    if posed:
+        arm.pose.bones['Hip'].rotation_euler.z = 0.4
+        bpy.context.view_layer.update()
+    actual = viewport.smash_bone_matrices(arm.pose, arm.matrix_world, original_rest)
+    for index, pbone in enumerate(arm.pose.bones):
+        rest = original_rest[pbone.name]
+        uploaded = Matrix([actual[index][c * 4:c * 4 + 4] for c in range(4)]).transposed()
+        inverse_bind = (viewport._Z_UP_TO_Y_UP @ rest @ viewport._Y_MAJOR_TO_X_MAJOR).inverted()
+        skin = uploaded @ inverse_bind
+        expected_skin = (viewport._Z_UP_TO_Y_UP @ arm.matrix_world @ pbone.matrix
+                         @ pbone.bone.matrix_local.inverted() @ viewport._Y_UP_TO_Z_UP)
+        assert all(abs(skin[r][c] - expected_skin[r][c]) < 1e-5
+                   for r in range(4) for c in range(4)), pbone.name
+print('SMASH_VIEWPORT_EDITED_REST_OK')
+
 # Nested meshes are still found after replacing the per-object children walk.
 mesh = bpy.data.objects.new('Body', bpy.data.meshes.new('Body'))
 nested = bpy.data.objects.new('Nested', bpy.data.meshes.new('Nested'))

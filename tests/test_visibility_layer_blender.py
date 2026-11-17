@@ -73,7 +73,7 @@ assert not sap.vis_track_entries[0].value
 assert original == [(f.data_path, [tuple(k.co) for k in f.keyframe_points]) for f in curves.get_fcurves(base, 'ARMATURE')]
 print('REGULAR ANIMATION REIMPORT PRESERVES VISIBILITY LAYER TEST PASSED')
 # The folder browser shares the importer's selection but imports only layers.
-ssp = scene.sub_scene_properties
+ssp = scene.sub_scene_properties.visibility_animation_browser
 ssp.animation_import_files.clear()
 for name, selected in (('a00layer_b', True), ('a00skip', False), ('a00layer_a', True)):
     item = ssp.animation_import_files.add()

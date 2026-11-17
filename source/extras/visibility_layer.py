@@ -3,7 +3,7 @@ from pathlib import Path
 
 import bpy
 from bpy.props import BoolProperty, IntProperty, StringProperty
-from bpy.types import Operator
+from bpy.types import Menu, Operator
 from bpy_extras.io_utils import ImportHelper
 
 from ..blender_compat import assign_action, ensure_action_slot
@@ -196,6 +196,22 @@ class SUB_OP_import_visibility_layer(Operator, ImportHelper):
         return {'FINISHED'}
 
 
+class SUB_MT_visibility_animation_folders(Menu):
+    bl_label = 'Animation Folders'
+
+    def draw(self, context):
+        ssp = context.scene.sub_scene_properties.visibility_animation_browser
+        paths = {item.path for item in ssp.animation_import_folders}
+        if ssp.animation_import_folder_path:
+            paths.add(ssp.animation_import_folder_path)
+        for path in sorted(paths, key=lambda value: (value.casefold(), value)):
+            op = self.layout.operator(
+                'sub.switch_animation_folder', text=path,
+                icon='CHECKMARK' if path == ssp.animation_import_folder_path else 'FILE_FOLDER')
+            op.folder = path
+            op.visibility = True
+
+
 class SUB_OP_import_visibility_folder(Operator):
     bl_idname = 'sub.import_visibility_folder'
     bl_label = 'Import Folder Animations as Visibility Layers'
@@ -207,10 +223,10 @@ class SUB_OP_import_visibility_folder(Operator):
     @classmethod
     def poll(cls, context):
         return (SUB_OP_import_visibility_layer.poll(context)
-                and len(context.scene.sub_scene_properties.animation_import_files) > 0)
+                and len(context.scene.sub_scene_properties.visibility_animation_browser.animation_import_files) > 0)
 
     def execute(self, context):
-        items = context.scene.sub_scene_properties.animation_import_files
+        items = context.scene.sub_scene_properties.visibility_animation_browser.animation_import_files
         paths = sorted({item.path for item in items if self.import_all or item.selected},
                        key=lambda path: (path.casefold(), path))
         if not paths:
@@ -234,8 +250,8 @@ class SUB_OP_import_visibility_folder(Operator):
 
 
 def draw_visibility_folder(layout, context) -> None:
-    ssp = context.scene.sub_scene_properties
-    layout.operator('sub.ssbh_animation_folder_selector', icon='ZOOM_ALL', text='Add Animation Folder')
+    ssp = context.scene.sub_scene_properties.visibility_animation_browser
+    layout.operator('sub.ssbh_animation_folder_selector', icon='ZOOM_ALL', text='Add Animation Folder').visibility = True
     if not (ssp.animation_import_folder_path or len(ssp.animation_import_folders)):
         return
     box = layout.box()
@@ -247,14 +263,16 @@ def draw_visibility_folder(layout, context) -> None:
     if not ssp.related_animations_expanded:
         return
     if ssp.animation_import_folder_path:
-        box.menu('SUB_MT_animation_folders', text=f'Folder: {ssp.animation_import_folder_path}')
+        box.menu('SUB_MT_visibility_animation_folders', text=f'Folder: {ssp.animation_import_folder_path}')
     box.template_list('SUB_UL_animation_import_list', 'visibility_layers', ssp,
                       'animation_import_files', ssp, 'animation_import_files_index', rows=5)
     box.label(text='Drag checkboxes to include or exclude')
     box.label(text='Name: select  Ctrl: toggle  Shift: range', icon='INFO')
     row = box.row(align=True)
-    row.operator('sub.select_all_animation_imports', text='Select All').select = True
-    row.operator('sub.select_all_animation_imports', text='Deselect All').select = False
+    for label, select in (('Select All', True), ('Deselect All', False)):
+        op = row.operator('sub.select_all_animation_imports', text=label)
+        op.select = select
+        op.visibility = True
     selected = sum(1 for item in ssp.animation_import_files if item.selected)
     row = box.row()
     row.enabled = selected > 0
@@ -280,6 +298,7 @@ def draw_visibility_layers(layout, context) -> None:
 
 
 def register() -> None:
+    bpy.utils.register_class(SUB_MT_visibility_animation_folders)
     bpy.utils.register_class(SUB_OP_import_visibility_layer)
     bpy.utils.register_class(SUB_OP_import_visibility_folder)
     if load_native_layers not in bpy.app.handlers.load_post:
@@ -294,5 +313,6 @@ def unregister() -> None:
     for callback in (refresh_visibility_layers, restore_native_layers):
         if bpy.app.timers.is_registered(callback):
             bpy.app.timers.unregister(callback)
+    bpy.utils.unregister_class(SUB_MT_visibility_animation_folders)
     bpy.utils.unregister_class(SUB_OP_import_visibility_folder)
     bpy.utils.unregister_class(SUB_OP_import_visibility_layer)

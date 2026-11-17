@@ -74,3 +74,17 @@ for rotation, pivot, distance, half_h in (
 rv3d, space = ortho_view(Euler((1.5708, 0, 0)).to_quaternion(), (0, 0, 9), 15.0, 5.0, width / height, 1000.0)
 assert viewport._camera_to_smash(rv3d, None, width, height, space) == viewport._camera_to_smash(rv3d, None, width, height, space, -15.0)
 print('SMASH_VIEWPORT_ORTHO_CAMERA_OK')
+
+# Panning a zoomed camera frame changes only the projection's off-axis terms.
+camera_view = SimpleNamespace(view_matrix=Matrix.Identity(4),
+                              window_matrix=Matrix(((2, 0, 0, 0), (0, 2, 0, 0),
+                                                    (0, 0, -1, -0.2), (0, 0, -1, 0))),
+                              view_perspective='CAMERA', view_camera_zoom=30.0)
+before = viewport._camera_key(camera_view, 1200, 800, 1.0)
+assert before == viewport._camera_key(camera_view, 1200, 800, 1.0)
+camera_view.window_matrix[0][2] = 0.4
+assert before != viewport._camera_key(camera_view, 1200, 800, 1.0)
+after_pan = viewport._camera_key(camera_view, 1200, 800, 1.0)
+camera_view.window_matrix[1][2] = -0.3
+assert after_pan != viewport._camera_key(camera_view, 1200, 800, 1.0)
+print('SMASH_VIEWPORT_CAMERA_PAN_OK')

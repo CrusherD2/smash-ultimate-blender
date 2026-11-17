@@ -89,6 +89,11 @@ def update_thrown_link(victim: bpy.types.Object, context: bpy.types.Context) -> 
     constraint.mix_mode = 'REPLACE'
 
 
+def animation_browser_state(context, visibility=False):
+    ssp = context.scene.sub_scene_properties
+    return ssp.visibility_animation_browser if visibility else ssp
+
+
 def remember_animation_folder(ssp, folder):
     if not folder:
         return
@@ -503,6 +508,7 @@ class SUB_UL_animation_import_list(bpy.types.UIList):
             )
             op.index = index
             op.visible_indices = visible
+            op.visibility = data == context.scene.sub_scene_properties.visibility_animation_browser
         elif self.layout_type in {'GRID'}:
             layout.alignment = 'CENTER'
             op = layout.operator(
@@ -512,6 +518,7 @@ class SUB_UL_animation_import_list(bpy.types.UIList):
             )
             op.index = index
             op.visible_indices = visible
+            op.visibility = data == context.scene.sub_scene_properties.visibility_animation_browser
 
 
 class SUB_OP_toggle_animation_import_selection(Operator):
@@ -520,12 +527,14 @@ class SUB_OP_toggle_animation_import_selection(Operator):
     bl_description = 'Click to select one; Ctrl-click toggles; Shift-click selects a range'
     bl_options = {'INTERNAL'}
 
+    visibility: BoolProperty(default=False, options={'HIDDEN'})
+
     index: IntProperty(options={'HIDDEN'})
     visible_indices: StringProperty(options={'HIDDEN'})
     toggle: BoolProperty(default=False, options={'HIDDEN'})
 
     def invoke(self, context, event):
-        ssp = context.scene.sub_scene_properties
+        ssp = animation_browser_state(context, self.visibility)
         items = ssp.animation_import_files
         if self.index < 0 or self.index >= len(items):
             return {'CANCELLED'}
@@ -541,7 +550,7 @@ class SUB_OP_toggle_animation_import_selection(Operator):
 
     def execute(self, context):
         from .selection import select_range
-        ssp = context.scene.sub_scene_properties
+        ssp = animation_browser_state(context, self.visibility)
         if not 0 <= self.index < len(ssp.animation_import_files):
             return {'CANCELLED'}
         ssp.animation_import_selection_anchor = select_range(
@@ -556,10 +565,12 @@ class SUB_OP_select_all_animation_imports(Operator):
     bl_description = 'Select every animation in the folder list'
     bl_options = {'INTERNAL'}
 
+    visibility: BoolProperty(default=False, options={'HIDDEN'})
+
     select: BoolProperty(default=True, options={'HIDDEN'})
 
     def execute(self, context):
-        for item in context.scene.sub_scene_properties.animation_import_files:
+        for item in animation_browser_state(context, self.visibility).animation_import_files:
             item.selected = self.select
         return {'FINISHED'}
 
@@ -2269,13 +2280,17 @@ class SUB_OP_switch_animation_folder(Operator):
     bl_label = 'Switch Animation Folder'
     bl_options = {'UNDO'}
 
+    visibility: BoolProperty(default=False, options={'HIDDEN'})
+
     folder: StringProperty(subtype='DIR_PATH')
 
     def execute(self, context):
-        sync_anim_importer_to_active(context)
-        ssp = context.scene.sub_scene_properties
+        if not self.visibility:
+            sync_anim_importer_to_active(context)
+        ssp = animation_browser_state(context, self.visibility)
         fill_animation_import_list(ssp, self.folder)
-        bind_anim_folder_to_armature(active_import_armature(context), self.folder, ssp)
+        if not self.visibility:
+            bind_anim_folder_to_armature(active_import_armature(context), self.folder, ssp)
         return {'FINISHED'}
 
 
@@ -2285,17 +2300,20 @@ class SUB_OP_select_animation_folder(Operator):
     bl_description = 'Add a folder, including linked folders, containing .nuanmb animations'
     bl_options = {'UNDO'}
 
+    visibility: BoolProperty(default=False, options={'HIDDEN'})
+
     filter_glob: StringProperty(default='*', options={'HIDDEN'})
     directory: StringProperty(subtype='DIR_PATH')
 
     def invoke(self, context, _event):
-        self.directory = context.scene.sub_scene_properties.animation_import_folder_path
+        self.directory = animation_browser_state(context, self.visibility).animation_import_folder_path
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
     def execute(self, context):
-        sync_anim_importer_to_active(context)
-        ssp = context.scene.sub_scene_properties
+        if not self.visibility:
+            sync_anim_importer_to_active(context)
+        ssp = animation_browser_state(context, self.visibility)
         folder = os.path.normpath(bpy.path.abspath(self.directory))
         if not os.path.isdir(folder):
             self.report({'ERROR'}, f'Animation directory not found: {folder}')
@@ -2309,9 +2327,10 @@ class SUB_OP_select_animation_folder(Operator):
         for path in folders or [folder]:
             remember_animation_folder(ssp, path)
         count = fill_animation_import_list(ssp, folders[0] if folders else folder)
-        refresh_raw_animation_import_list(ssp)
-        bind_anim_folder_to_armature(
-            active_import_armature(context), ssp.animation_import_folder_path, ssp)
+        if not self.visibility:
+            refresh_raw_animation_import_list(ssp)
+            bind_anim_folder_to_armature(
+                active_import_armature(context), ssp.animation_import_folder_path, ssp)
         self.report({'INFO'}, f'Added {len(folders) or 1} folder(s); {count} animations in selected folder')
         return {'FINISHED'}
 

@@ -361,6 +361,17 @@ class SUB_OP_model_exporter(Operator):
         else:
             layout.label(text='All materials already use a Smash shader.', icon='CHECKMARK')
         layout.prop(self, 'convert_materials')
+        files = layout.box()
+        files.label(text='Model Files')
+        for name in ('include_numdlb', 'include_numshb', 'include_numshexb',
+                     'include_nusktb', 'include_numatb', 'include_nuhlpb', 'include_nutexb'):
+            files.prop(self, name)
+        settings = layout.box()
+        settings.label(text='Export Settings')
+        for name in ('linked_nusktb_settings', 'optimize_mesh_weights_to_parent_bone',
+                     'armature_position', 'apply_modifiers', 'split_shape_keys',
+                     'ignore_underscore_meshes', 'use_debug_timer'):
+            settings.prop(self, name)
 
     def execute(self, context):
         # Convert before the preflight so the checks see the converted result.
@@ -484,6 +495,29 @@ from ..export_progress import export_progress
 
 @export_progress
 def export_model(operator: bpy.types.Operator, context, directory, include_numdlb, include_numshb, include_numshexb, include_nusktb,
+                include_numatb, include_nuhlpb, include_nutexb, linked_nusktb_settings, optimize_mesh_weights:str, armature_position: str,
+                apply_modifiers: str, split_shape_keys: str, ignore_underscore_meshes:str):
+    from .vis_shape_groups import iter_visibility_targets
+    arma = context.scene.sub_scene_properties.model_export_arma
+    pose_position = arma.data.pose_position
+    visibility = [(child, child.hide_viewport, child.hide_render)
+                  for child in iter_visibility_targets(arma)]
+    try:
+        return _export_model(
+            operator, context, directory, include_numdlb, include_numshb,
+            include_numshexb, include_nusktb, include_numatb, include_nuhlpb,
+            include_nutexb, linked_nusktb_settings, optimize_mesh_weights,
+            armature_position, apply_modifiers, split_shape_keys, ignore_underscore_meshes,
+        )
+    finally:
+        # Export temporarily exposes every expression, not just the visible face.
+        for child, hide_viewport, hide_render in visibility:
+            child.hide_viewport = hide_viewport
+            child.hide_render = hide_render
+        arma.data.pose_position = pose_position
+
+
+def _export_model(operator: bpy.types.Operator, context, directory, include_numdlb, include_numshb, include_numshexb, include_nusktb,
                 include_numatb, include_nuhlpb, include_nutexb, linked_nusktb_settings, optimize_mesh_weights:str, armature_position: str,
                 apply_modifiers: str, split_shape_keys: str, ignore_underscore_meshes:str):
     # Prepare the scene for export and find the meshes to export.

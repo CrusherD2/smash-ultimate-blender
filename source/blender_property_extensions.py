@@ -170,6 +170,18 @@ bpy.utils.register_class(ModelImportItem)
 bpy.utils.register_class(AnimationImportFolder)
 bpy.utils.register_class(AnimationImportFile)
 
+class VisibilityAnimationBrowser(PropertyGroup):
+    animation_import_folders: CollectionProperty(type=AnimationImportFolder)
+    animation_import_folder_path: StringProperty(subtype='DIR_PATH')
+    animation_import_files: CollectionProperty(type=AnimationImportFile)
+    animation_import_files_index: IntProperty(default=0)
+    animation_import_selection_anchor: StringProperty(options={'HIDDEN'})
+    related_animations_expanded: BoolProperty(default=True)
+
+
+bpy.utils.register_class(VisibilityAnimationBrowser)
+
+
 class MirrorCustomBoneItem(PropertyGroup):
     name: StringProperty(
         name="Bone Name",
@@ -244,6 +256,8 @@ class UserPoseItem(PropertyGroup):
 
 
 class SubSceneProperties(PropertyGroup):
+    visibility_animation_browser: PointerProperty(type=VisibilityAnimationBrowser)
+
     auto_import_default_eyelid: BoolProperty(
         name="Auto-import Default Eyelid",
         description="Import a00defaulteyelid.nuanmb from the model's motion folder when available",
