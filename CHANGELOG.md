@@ -10,6 +10,16 @@ The updater shows every section newer than the user's installed version, and
 the "What's New" popup shows them once after the update installs. Sections
 that aren't headed by a version number (like "Unreleased") are never shown.
 
+## 5.0.1 - 2026-11-16
+- Smash Viewport: two copies of the same model both render, and each keeps its own bone edits no matter which one is selected
+- Smash Viewport matches Blender in Edit Mode and after editing armature bones
+- Smash Viewport updates right away when panning a zoomed camera view
+- Exporting a model no longer leaves hidden facial expressions visible afterwards
+- Facial picker thumbnails use the Smash Viewport render when it's active, without overlays or gizmos
+- Visibility layers have their own folder browser, separate from the Animation Importer
+- Model export file and setting options are back in the export file browser
+- Mesh Data properties (vertex groups, shape keys) show while Smash Viewport is the render engine
+
 ## 5.0.0 - 2026-11-16
 - Smash Viewport works on Blender's Vulkan backend: correct colors and soft edges, and it runs about as fast as OpenGL
 - Smash Viewport plays animations much faster: far less work per frame for visibility, bones and moved meshes
