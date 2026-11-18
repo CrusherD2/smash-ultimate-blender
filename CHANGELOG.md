@@ -10,6 +10,10 @@ The updater shows every section newer than the user's installed version, and
 the "What's New" popup shows them once after the update installs. Sections
 that aren't headed by a version number (like "Unreleased") are never shown.
 
+## 5.0.6 - 2026-11-18
+- Mirror Animation: include fingers by default and remember the Include Fingers setting for single and batch mirrors
+- Idle Pose Library: mirrored imports now swap and flip finger poses too
+
 ## 5.0.5 - 2026-11-17
 - Solid preview: prepare hidden expression textures upfront and reuse them at visibility keys to avoid playback stalls
 - Smash Viewport: correctly reload the remaining model after deleting the primary armature hierarchy

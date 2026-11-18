@@ -40,3 +40,31 @@ assert result=={'FINISHED'},message
 assert not any('LegC' in fc.data_path or 'ClavicleC' in fc.data_path
                for fc in curves.get_all_action_fcurves(action))
 print('LIVE EDIT MIRROR AND IDLE FIXED-BONE EXCLUSION PASSED')
+
+# Mirrored library imports swap and flip asymmetric numbered finger tracks.
+bpy.ops.object.mode_set(mode='EDIT')
+for name in ('FingerL11', 'FingerR11'):
+    bone = obj.data.edit_bones.new(name)
+    bone.head = (0, 0, 1)
+    bone.tail = (0, 0, 2)
+bpy.ops.object.mode_set(mode='POSE')
+fingers = {
+    'FingerL11': {'translation': [.2, .4, .7], 'rotation': [.2, 0, 0, .9797959], 'scale': [1, 1, 1]},
+    'FingerR11': {'translation': [.8, .3, -.1], 'rotation': [0, .3, 0, .9539392], 'scale': [1, 1, 1]},
+}
+expected = flip.mirror_smash_pose_data(fingers)
+wanted = {}
+for name, data in expected.items():
+    obj.pose.bones[name].rotation_mode = 'QUATERNION'
+    flip.apply_smash_node_to_bone(obj.pose.bones[name], data)
+    bpy.context.view_layer.update()
+    wanted[name] = obj.pose.bones[name].matrix.copy()
+for name in fingers:
+    flip.apply_smash_node_to_bone(obj.pose.bones[name], fingers[name])
+    bpy.context.view_layer.update()
+result, message = idle.apply_pose_with_options(bpy.context, json.dumps(fingers), mirrored=True)
+assert result == {'FINISHED'}, message
+for name, matrix in wanted.items():
+    actual = obj.pose.bones[name].matrix
+    assert max(abs(actual[i][j] - matrix[i][j]) for i in range(4) for j in range(4)) < 1e-5, name
+print('IDLE MIRRORED FINGERS PASSED')

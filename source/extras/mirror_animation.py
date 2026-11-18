@@ -218,7 +218,7 @@ def apply_mirror_to_action(
     selected_bones_only=False,
     only_active_frame=False,
     mirror_space='LOCAL',
-    include_fingers=False,
+    include_fingers=True,
     smash_y_anim_flip=False,
     selected_bone_names=None,
 ):
@@ -307,7 +307,7 @@ def mirror_action_smash_y(
     selected_bones_only=False,
     context=None,
     only_active_frame=False,
-    include_fingers=False,
+    include_fingers=True,
     selected_bone_names=None,
 ):
     """
@@ -860,8 +860,8 @@ class SUB_OT_mirror_action(Operator):
 
     include_fingers : BoolProperty(
         name="Include Fingers",
-        description="Include finger bones (FingerL11, FingerR23, etc.) in the mirroring process. Off matches Idle Pose Library Mirrored.",
-        default=False
+        description="Include finger bones (FingerL11, FingerR23, etc.) in the mirroring process",
+        default=True
     )
 
     smash_y_anim_flip : BoolProperty(
@@ -902,6 +902,7 @@ class SUB_OT_mirror_action(Operator):
         ssp = getattr(context.scene, "sub_scene_properties", None)
         if ssp is not None:
             self.smash_y_anim_flip = ssp.mirror_smash_y_anim_flip
+            self.include_fingers = ssp.mirror_include_fingers
         return context.window_manager.invoke_props_dialog(self)
 
     def draw(self, context):
@@ -938,6 +939,7 @@ class SUB_OT_mirror_action(Operator):
         armature = context.active_object
         ssp = context.scene.sub_scene_properties
         ssp.mirror_smash_y_anim_flip = self.smash_y_anim_flip
+        ssp.mirror_include_fingers = self.include_fingers
 
         captured_bones = self._parse_bone_names(self.selected_bone_names)
         if self.selected_bones_only and armature.type == 'ARMATURE':
@@ -1018,7 +1020,7 @@ class SUB_OT_mirror_all_actions(Operator):
     include_fingers : BoolProperty(
         name="Include Fingers",
         description="Include finger bones in the mirroring process",
-        default=False
+        default=True
     )
 
     smash_y_anim_flip : BoolProperty(
@@ -1049,6 +1051,7 @@ class SUB_OT_mirror_all_actions(Operator):
         ssp = getattr(context.scene, "sub_scene_properties", None)
         if ssp is not None:
             self.smash_y_anim_flip = ssp.mirror_smash_y_anim_flip
+            self.include_fingers = ssp.mirror_include_fingers
         return context.window_manager.invoke_props_dialog(self)
 
     def draw(self, context):
@@ -1088,6 +1091,7 @@ class SUB_OT_mirror_all_actions(Operator):
             captured_bones = selected_bones
 
         ssp.mirror_smash_y_anim_flip = self.smash_y_anim_flip
+        ssp.mirror_include_fingers = self.include_fingers
 
         if not armature.animation_data:
             armature.animation_data_create()

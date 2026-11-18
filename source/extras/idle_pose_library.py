@@ -94,7 +94,7 @@ def apply_pose_with_options(context, pose_data_str, include_trans=True, mirrored
         
         # Same Smash-space flip as Mirror Animation / Studio SB (Hip and Trans included).
         if mirrored:
-            excluded_bones = collect_excluded_bone_names(armature, include_fingers=False)
+            excluded_bones = collect_excluded_bone_names(armature, include_fingers=True)
             pose_data = mirror_smash_pose_data(pose_data, excluded_bones=excluded_bones)
         
         # Create a mapping for quick access to stored node data

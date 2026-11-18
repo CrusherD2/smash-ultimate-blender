@@ -274,3 +274,35 @@ for smash_y in (False, True):
         assert error(obj.pose.bones[name].matrix_basis, basis) < 1e-6, (smash_y, name)
     items.clear()
 print('MIRROR CUSTOM FCURVE TEST PASSED')
+
+# Smash Y includes numbered finger pairs by default, but respects opting out.
+SMASH.extend([
+    ('FingerL11', 'LegL', leg_l),
+    ('FingerR11', 'LegR', RX @ leg_l @ D),
+])
+for include in (True, False):
+    obj = build_smash()
+    before = sample(obj)
+    expected = {}
+    for frame in (1, 5, 9):
+        bpy.context.scene.frame_set(frame)
+        expected[frame] = flip.mirror_smash_pose_data(
+            flip.smash_pose_data_from_armature(obj))
+    kwargs = {} if include else {'include_fingers': False}
+    run(smash_y_anim_flip=True, **kwargs)
+    for frame in (1, 5, 9):
+        bpy.context.scene.frame_set(frame)
+        for name in ('FingerL11', 'FingerR11'):
+            bone = obj.pose.bones[name]
+            if include:
+                got = flip.smash_trs_from_pose_bone(bone)
+                want = expected[frame][name]
+                assert max(abs(a - b) for a, b in zip(got[0], want['translation'])) < 1e-4
+                q = Quaternion((want['rotation'][3], *want['rotation'][:3]))
+                actual = Quaternion((got[1][3], *got[1][:3]))
+                assert abs(q.dot(actual)) > 1 - 1e-5
+            else:
+                assert error(bone.matrix_basis, before[frame][name]) < 1e-6
+for operator in (bpy.ops.sub.mirror_action, bpy.ops.sub.mirror_all_actions):
+    assert operator.get_rna_type().properties['include_fingers'].default
+print('MIRROR FINGER DEFAULTS TEST PASSED')

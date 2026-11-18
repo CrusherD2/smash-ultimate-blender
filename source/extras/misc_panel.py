@@ -261,6 +261,7 @@ class SUB_PT_animation_tools(Panel):
             # Mirror space option
             col.prop(ssp, "mirror_space", text="Space")
             col.prop(ssp, "mirror_smash_y_anim_flip", text="Smash Y Anim Flip")
+            col.prop(ssp, "mirror_include_fingers", text="Include Fingers")
 
             col.separator()
             col.operator("sub.find_custom_mirror_bones", text="Find Custom Bones")
