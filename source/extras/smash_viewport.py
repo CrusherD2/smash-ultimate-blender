@@ -1017,7 +1017,7 @@ def _gpu_model_visible(scene, arm, view_layer, space):
 
 def _sync_gpu_model_visibility(context, force=False):
     """Match SSBH Editor's per-folder eye: skip draw/skin uploads for hidden models."""
-    global _last_model_vis_state
+    global _last_model_vis_state, _last_pose_fp, _last_vis_state
     fn = getattr(_lib, "ssbh_preview_set_model_visible", None)
     if fn is None or _preview is None:
         return False
@@ -1058,6 +1058,10 @@ def _sync_gpu_model_visibility(context, force=False):
             return False
     _last_model_vis_state = state
     _vis_cache["models"] = key
+    # Unhidden models need fresh skinning, mesh visibility, and CPU deform.
+    _last_pose_fp = None
+    _last_vis_state = None
+    _schedule_mesh_draw_sync()
     return True
 
 
@@ -2334,6 +2338,7 @@ def visibility_key(context, space):
         return (
             _scene_edit_serial, _id_key(scene), _id_key(view_layer), _id_key(space), local,
             _loaded_folder, len(_extra_mesh_map), tuple(_extra_gpu_order), hidden.tobytes(),
+            tuple(obj.hide_get(view_layer=view_layer) for obj in objects),
         )
     except Exception:
         return None

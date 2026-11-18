@@ -10,6 +10,9 @@ The updater shows every section newer than the user's installed version, and
 the "What's New" popup shows them once after the update installs. Sections
 that aren't headed by a version number (like "Unreleased") are never shown.
 
+## 5.0.7 - 2026-11-18
+- Smash Viewport: restore model visibility and animated deformation after hiding and unhiding a model hierarchy in the Outliner
+
 ## 5.0.6 - 2026-11-18
 - Mirror Animation: include fingers by default and remember the Include Fingers setting for single and batch mirrors
 - Idle Pose Library: mirrored imports now swap and flip finger poses too
