@@ -1581,7 +1581,8 @@ def _sample_names(obj, jobs, cache):
 
 
 
-def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_pole, _native=None):
+def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_pole, _native=None,
+                       _direct_calibration=False):
     """Yield at evaluation barriers; preserve each chain's original solve order.
 
     Seed, target and pole placement use arithmetic where possible. Independent
@@ -1591,6 +1592,8 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
     from . import ik_match_diag as diag
     kind, names, target, pole = job
     path = entry['path']
+    calibrated = (_direct_calibration and entry['pole_geometry'] is not None
+                  and (kind == 'LEGS' or (kind == 'ARMS' and len(path) == 3)))
     solver = [obj.pose.bones[PREFIX + name] for name in path]
     con = obj.pose.bones[entry['solver']].constraints['SUB IK Solve']
     endpoints = end_constraints(solver[-1])
@@ -1724,140 +1727,142 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
 
     # Repeated candidates do not need another scene evaluation.
     native = None
-    if _native is not None:
+    if _native is not None and not calibrated:
         # Capture the exact pre-IK pose once, sharing this barrier across limbs.
         con.mute = True
         yield
         native = _native(obj, job, solver[:-1], con, frame)
         con.mute = False
-    reference_columns = [tuple(matrices[name].col[i].copy() for i in range(4))
-                         for name in path[:-1]]
-    errors = {}
-    def error(angle):
-        if angle in errors:
-            return errors[angle]
-        # After the memo check on purpose: a repeated candidate costs no
-        # evaluation and must not inflate the count.
-        diag.add('candidates', 0.0, 1)
-        con.pole_angle = math.atan2(math.sin(angle), math.cos(angle))
+    # Creation calibrates these angles independently of the discarded pole search.
+    if not calibrated:
+        reference_columns = [tuple(matrices[name].col[i].copy() for i in range(4))
+                             for name in path[:-1]]
+        errors = {}
+        def error(angle):
+            if angle in errors:
+                return errors[angle]
+            # After the memo check on purpose: a repeated candidate costs no
+            # evaluation and must not inflate the count.
+            diag.add('candidates', 0.0, 1)
+            con.pole_angle = math.atan2(math.sin(angle), math.cos(angle))
+            if native is not None:
+                from .ik_native import Request
+                request = Request(native, con.pole_angle)
+                yield request
+                evaluated = request.matrices
+            else:
+                yield
+                evaluated = [bone.matrix for bone in solver[:-1]]
+            # Read each evaluated RNA matrix once; keep the original arithmetic
+            # and summation order so even tie-breaking in the search stays exact.
+            score = sum(sum((matrix.col[i] - reference[i]).length_squared for i in range(4))
+                        for matrix, reference in
+                        zip(evaluated, reference_columns))
+            errors[angle] = score
+            return score
+        def best(candidates):
+            scores = []
+            for candidate in candidates:
+                scores.append((candidate, (yield from error(candidate))))
+            return min(scores, key=lambda pair: pair[1])[0]
+
+        con.pole_angle = 0.0
         if native is not None:
             from .ik_native import Request
-            request = Request(native, con.pole_angle)
+            request = Request(native, 0.0)
             yield request
-            evaluated = request.matrices
+            zero = request.matrices
         else:
             yield
-            evaluated = [bone.matrix for bone in solver[:-1]]
-        # Read each evaluated RNA matrix once; keep the original arithmetic
-        # and summation order so even tie-breaking in the search stays exact.
-        score = sum(sum((matrix.col[i] - reference[i]).length_squared for i in range(4))
-                    for matrix, reference in
-                    zip(evaluated, reference_columns))
-        errors[angle] = score
-        return score
-    def best(candidates):
-        scores = []
-        for candidate in candidates:
-            scores.append((candidate, (yield from error(candidate))))
-        return min(scores, key=lambda pair: pair[1])[0]
-
-    con.pole_angle = 0.0
-    if native is not None:
-        from .ik_native import Request
-        request = Request(native, 0.0)
-        yield request
-        zero = request.matrices
-    else:
-        yield
-        zero = [bone.matrix for bone in solver[:-1]]
-    # Angle from the zero-angle solve to the desired bend plane.
-    bend_index = path.index(middle)
-    delta = _angle(zero[bend_index].translation-root, mid-root, axis)
-    if (mid-root-axis*(mid-root).dot(axis)).length < 1e-5:
-        delta = _angle(zero[0].to_3x3().col[0], matrices[names[0]].to_3x3().col[0], axis)
-    seeds = [delta, -delta, entry['angle'] or 0.0]
-    # One native call per chain and frame instead of one crossing per
-    # candidate. Verification mode keeps the per-candidate path, because its
-    # whole purpose is comparing each candidate against Blender. The mode is
-    # resolved by ik_native rather than read from the environment here, so this
-    # gate and get_factory's cannot disagree about what an unset variable means.
-    #
-    # `not verifying()` alone is also true under SUB_NATIVE_IK=0. That is safe
-    # only because `native is not None` implies get_factory admitted the mode,
-    # which is true but only at a distance, so the enabled-mode test is spelled
-    # out here rather than left to be re-derived by the next reader.
-    from . import ik_native
-    found = None
-    if (native is not None and os.environ.get('SUB_NATIVE_SEARCH', '1') == '1'
-            and ik_native.enabled() and not ik_native.verifying()):
-        found = native.search(reference_columns, seeds, _POLE_TOLERANCE, _POLE_REFINE_STEPS)
-        if found is None:
-            # The native collinearity guard refused this chain-frame and the
-            # Python search below will do the whole thing instead. Counted per
-            # chain-frame so it is directly comparable to native_solves: the
-            # ratio is the fallback rate, and the fallback rate is the whole
-            # difference between the accelerator helping and doing nothing.
+            zero = [bone.matrix for bone in solver[:-1]]
+        # Angle from the zero-angle solve to the desired bend plane.
+        bend_index = path.index(middle)
+        delta = _angle(zero[bend_index].translation-root, mid-root, axis)
+        if (mid-root-axis*(mid-root).dot(axis)).length < 1e-5:
+            delta = _angle(zero[0].to_3x3().col[0], matrices[names[0]].to_3x3().col[0], axis)
+        seeds = [delta, -delta, entry['angle'] or 0.0]
+        # One native call per chain and frame instead of one crossing per
+        # candidate. Verification mode keeps the per-candidate path, because its
+        # whole purpose is comparing each candidate against Blender. The mode is
+        # resolved by ik_native rather than read from the environment here, so this
+        # gate and get_factory's cannot disagree about what an unset variable means.
+        #
+        # `not verifying()` alone is also true under SUB_NATIVE_IK=0. That is safe
+        # only because `native is not None` implies get_factory admitted the mode,
+        # which is true but only at a distance, so the enabled-mode test is spelled
+        # out here rather than left to be re-derived by the next reader.
+        from . import ik_native
+        found = None
+        if (native is not None and os.environ.get('SUB_NATIVE_SEARCH', '1') == '1'
+                and ik_native.enabled() and not ik_native.verifying()):
+            found = native.search(reference_columns, seeds, _POLE_TOLERANCE, _POLE_REFINE_STEPS)
+            if found is None:
+                # The native collinearity guard refused this chain-frame and the
+                # Python search below will do the whole thing instead. Counted per
+                # chain-frame so it is directly comparable to native_solves: the
+                # ratio is the fallback rate, and the fallback rate is the whole
+                # difference between the accelerator helping and doing nothing.
+                #
+                # This is the only user-visible handle on why the default might not
+                # speed a particular rig up. Everything else about a decline is
+                # silent by design -- the output stays correct, it just costs what
+                # it always cost. Measured 0% on 24 of the 28 corpus rows and 21.3%
+                # on the worst; see docs/benchmarks/native-default-2026-09-13.md.
+                diag.add('native_declined', 0.0, 1)
+        if found is not None:
+            # found[1] is the pose the native search settled on, and it is bit-identical
+            # to Blender's at this angle -- 632/632 chain-frames on both supported
+            # versions. It is still deliberately unused: the correction below needs
+            # path[-1] too, and the endpoint bone is outside the native model (Solver
+            # is built over solver[:-1]). Computing path[:-1] from here saves nothing,
+            # because the barrier is one per frame shared across chains and path[-1]
+            # still needs it -- and the endpoint is not the parent's tail, which is
+            # the derivation that looks right and is wrong by up to 0.34.
+            # See docs/benchmarks/correction-barrier-2026-09-15.md.
+            angle = found[0]
+        else:
+            angle = yield from best(seeds)
+            # Refine both bone orientations, not just the knee position. This handles
+            # axial twist and near-straight chains where a position-only pole test has
+            # almost no useful signal.
             #
-            # This is the only user-visible handle on why the default might not
-            # speed a particular rig up. Everything else about a decline is
-            # silent by design -- the output stays correct, it just costs what
-            # it always cost. Measured 0% on 24 of the 28 corpus rows and 21.3%
-            # on the worst; see docs/benchmarks/native-default-2026-09-13.md.
-            diag.add('native_declined', 0.0, 1)
-    if found is not None:
-        # found[1] is the pose the native search settled on, and it is bit-identical
-        # to Blender's at this angle -- 632/632 chain-frames on both supported
-        # versions. It is still deliberately unused: the correction below needs
-        # path[-1] too, and the endpoint bone is outside the native model (Solver
-        # is built over solver[:-1]). Computing path[:-1] from here saves nothing,
-        # because the barrier is one per frame shared across chains and path[-1]
-        # still needs it -- and the endpoint is not the parent's tail, which is
-        # the derivation that looks right and is wrong by up to 0.34.
-        # See docs/benchmarks/correction-barrier-2026-09-15.md.
-        angle = found[0]
-    else:
-        angle = yield from best(seeds)
-        # Refine both bone orientations, not just the knee position. This handles
-        # axial twist and near-straight chains where a position-only pole test has
-        # almost no useful signal.
-        #
-        # This search is the bulk of what a match still costs -- about 18 of its
-        # evaluations per chain per frame -- but it is kept.
-        #
-        # Its objective looks analytically solvable: changing the pole angle
-        # should rotate the solved chain rigidly about the root-to-target axis,
-        # making the residual exactly C + A*cos(t) + B*sin(t), which three samples
-        # would pin down. In practice it is not. Solving it that way finds angles
-        # that score *lower* on this measure yet drift the end effector further
-        # from the FK pose (worst-case limb error on the benchmark rig 0.415 ->
-        # 0.622, median 0.039 -> 0.049), and clamping the closed form to this same
-        # bracket does not fix it. The likely cause is that Blender's IK solver
-        # warm-starts from the previous evaluation, so the residual depends on the
-        # path taken through angles, not just the angle -- which makes a
-        # small-step local search meaningful and a three-probe fit not.
-        #
-        # The iteration count *was* cut, from 18 to 12, once there was multi-clip
-        # evidence for it -- see _POLE_REFINE_STEPS. The rest of the speedups in
-        # this module come from not evaluating the *placement*, which is exact
-        # arithmetic.
-        if (yield from error(angle)) > _POLE_TOLERANCE:
-            lo, hi = angle - .2, angle + .2
-            ratio = (math.sqrt(5.0)-1.0)*.5
-            a, b = hi-ratio*(hi-lo), lo+ratio*(hi-lo)
-            fa = yield from error(a)
-            fb = yield from error(b)
-            for _ in range(_POLE_REFINE_STEPS):
-                if fa < fb:
-                    hi, b, fb = b, a, fa
-                    a = hi-ratio*(hi-lo)
-                    fa = yield from error(a)
-                else:
-                    lo, a, fa = a, b, fb
-                    b = lo+ratio*(hi-lo)
-                    fb = yield from error(b)
-            angle = yield from best((angle, a, b))
-    if native is not None:
-        native.close()
+            # This search is the bulk of what a match still costs -- about 18 of its
+            # evaluations per chain per frame -- but it is kept.
+            #
+            # Its objective looks analytically solvable: changing the pole angle
+            # should rotate the solved chain rigidly about the root-to-target axis,
+            # making the residual exactly C + A*cos(t) + B*sin(t), which three samples
+            # would pin down. In practice it is not. Solving it that way finds angles
+            # that score *lower* on this measure yet drift the end effector further
+            # from the FK pose (worst-case limb error on the benchmark rig 0.415 ->
+            # 0.622, median 0.039 -> 0.049), and clamping the closed form to this same
+            # bracket does not fix it. The likely cause is that Blender's IK solver
+            # warm-starts from the previous evaluation, so the residual depends on the
+            # path taken through angles, not just the angle -- which makes a
+            # small-step local search meaningful and a three-probe fit not.
+            #
+            # The iteration count *was* cut, from 18 to 12, once there was multi-clip
+            # evidence for it -- see _POLE_REFINE_STEPS. The rest of the speedups in
+            # this module come from not evaluating the *placement*, which is exact
+            # arithmetic.
+            if (yield from error(angle)) > _POLE_TOLERANCE:
+                lo, hi = angle - .2, angle + .2
+                ratio = (math.sqrt(5.0)-1.0)*.5
+                a, b = hi-ratio*(hi-lo), lo+ratio*(hi-lo)
+                fa = yield from error(a)
+                fb = yield from error(b)
+                for _ in range(_POLE_REFINE_STEPS):
+                    if fa < fb:
+                        hi, b, fb = b, a, fa
+                        a = hi-ratio*(hi-lo)
+                        fa = yield from error(a)
+                    else:
+                        lo, a, fa = a, b, fb
+                        b = lo+ratio*(hi-lo)
+                        fb = yield from error(b)
+                angle = yield from best((angle, a, b))
+        if native is not None:
+            native.close()
     if kind == 'ARMS' and entry['pole_geometry'] is not None and len(path) == 3:
         # Two-joint calibration cannot represent distributed roll in a longer chain.
         angle = entry['pole_angle']

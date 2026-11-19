@@ -31,7 +31,8 @@ class CreationIKMatch:
 
     def solve(self, context, matrices, frame, writer):
         steps = [ik._match_chain_steps(self.obj, job, matrices, frame, True, writer,
-                                      self.cache[job[2]], self.previous_pole, self.native_factory)
+                                      self.cache[job[2]], self.previous_pole, self.native_factory,
+                                      _direct_calibration=True)
                  for job in self.jobs]
         ik._evaluate_match_steps(context, steps, self.batch)
 
