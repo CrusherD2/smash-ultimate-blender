@@ -1,9 +1,13 @@
 """Regression coverage for intermediate IK bones, matching, export and bulk bake."""
 from pathlib import Path
+
 import importlib
 import tempfile
 from types import SimpleNamespace
 from mathutils import Matrix
+def pose_hidden(pb):
+    return pb.hide if hasattr(pb, 'hide') else pb.bone.hide
+
 fixture = Path(__file__).with_name('test_addon_registration_blender.py')
 exec(compile(fixture.read_text().split('addon_utils.disable(MODULE')[0], str(fixture), 'exec'))
 ik = importlib.import_module(MODULE + '.source.extras.ik_channels')
@@ -66,21 +70,22 @@ rig._set_ik_enabled(bpy.context,obj,True,'ARMS')
 matched = capture()
 compare(fk,matched,'match fidelity')
 assert set(path) <= set(apply.collect_fk_bone_names(obj))
-# Full IK hides all original path bones; fractional blends show both sets.
+# Full IK hides only the endpoint; intermediate bones stay editable.
 rig._set_ik_enabled(bpy.context,obj,True,'ARMS')
 rig._sync_ik_fk_visibility(scene)
-assert all(data.bones[n].hide for n in path)
-assert not data.bones['HandIKL'].hide
+assert all(pose_hidden(obj.pose.bones[n]) == (n == 'HandL') for n in path)
+assert not pose_hidden(obj.pose.bones['HandIKL'])
 # Keyed switches must update visibility when scrubbing.
 for frame, factor in ((1,0.0),(2,0.5),(3,1.0)):
     data.sub_use_ik_arms = factor
     data.keyframe_insert('sub_use_ik_arms',frame=frame)
 scene.frame_set(1)
-assert not data.bones['ArmL'].hide and data.bones['HandIKL'].hide
+assert not pose_hidden(obj.pose.bones['ArmL']) and pose_hidden(obj.pose.bones['HandIKL'])
 scene.frame_set(2)
-assert not data.bones['ArmL'].hide and not data.bones['HandIKL'].hide
+assert not pose_hidden(obj.pose.bones['ArmL']) and not pose_hidden(obj.pose.bones['HandIKL'])
 scene.frame_set(3)
-assert data.bones['ArmL'].hide and not data.bones['HandIKL'].hide
+assert not pose_hidden(obj.pose.bones['ArmL']) and not pose_hidden(obj.pose.bones['HandIKL'])
+assert pose_hidden(obj.pose.bones['HandL'])
 for fc in list(curves.get_all_action_fcurves(data.animation_data.action)):
     if fc.data_path == 'sub_use_ik_arms':
         curves.remove_fcurve(data.animation_data.action,fc)
@@ -210,5 +215,5 @@ for fc in curves.get_all_action_fcurves(a,id_type='OBJECT'):
         assert max(abs(fc.evaluate(f)-expected[f-1]) for f in range(1,6)) < 1e-5
 from_compat.assign_action(obj.animation_data,b)
 compare(reference_b,capture(),'bulk second clip')
-assert all(not data.bones[n].hide for n in path)
+assert all(not pose_hidden(obj.pose.bones[n]) for n in path)
 print('IK WORKFLOW REGRESSIONS PASSED')

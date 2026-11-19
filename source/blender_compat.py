@@ -151,6 +151,21 @@ def ensure_bone_collection(armature_data, name):
         return collections.new(name=name)
 
 
+def set_pose_bone_hidden(pose_bone, hidden=True):
+    if pose_bone is None:
+        return
+    owner = pose_bone if hasattr(pose_bone, 'hide') else pose_bone.bone
+    if owner.hide != hidden:
+        owner.hide = hidden
+
+
+def is_pose_bone_hidden(pose_bone):
+    if pose_bone is None:
+        return False
+    owner = pose_bone if hasattr(pose_bone, 'hide') else pose_bone.bone
+    return bool(owner.hide)
+
+
 def set_pose_bone_select(pose_bone, selected=True):
     """Select a pose bone on Blender 4 (Bone.select) and Blender 5 (PoseBone.select)."""
     if pose_bone is None:

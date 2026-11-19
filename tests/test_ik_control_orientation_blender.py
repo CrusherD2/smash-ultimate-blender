@@ -41,7 +41,7 @@ for control, source in (('FootIKL', 'FootL'), ('HandIKL', 'HandL')):
     assert (c.head_local - s.head_local).length < 1e-5
     for axis in range(3):
         assert (c.matrix_local.col[axis].xyz - s.matrix_local.col[axis].xyz).length < 1e-4, (control, axis)
-    assert abs(c.length - s.length * 2.0) < 1e-4, (control, c.length)
+    assert abs(c.length - s.length * (4.0 if control.startswith('Hand') else 3.0)) < 1e-4, (control, c.length)
 bpy.context.view_layer.update()
 # Matching seeds each control from the FK pose it replaces.
 for control, source in (('FootIKL', 'FootL'), ('HandIKL', 'HandL')):

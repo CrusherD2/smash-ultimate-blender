@@ -1,6 +1,10 @@
 """Animated switches update only changed limbs and preserve independent IK poses."""
 from pathlib import Path
+
 import importlib
+def pose_hidden(pb):
+    return pb.hide if hasattr(pb, 'hide') else pb.bone.hide
+
 fixture=Path(__file__).with_name('test_ik_detail_acceleration_blender.py')
 exec(compile(fixture.read_text().split('\naudit()\nfor repeat')[0],str(fixture),'exec'))
 rig=importlib.import_module(MODULE+'.source.extras.create_animation_rig')
@@ -22,27 +26,28 @@ def switch(value):
 try:
     switch(0)
     assert calls==['LEGS'],calls
-    assert not obj.data.bones['LegL'].hide
-    assert obj.data.bones['FootIKL'].hide
+    assert not pose_hidden(obj.pose.bones['LegL'])
+    assert pose_hidden(obj.pose.bones['FootIKL'])
     calls.clear()
     switch(0)
     assert not calls,calls
     switch(.5)
     assert calls==['LEGS'],calls
-    assert not obj.data.bones['LegL'].hide
-    assert not obj.data.bones['FootIKL'].hide
+    assert not pose_hidden(obj.pose.bones['LegL'])
+    assert not pose_hidden(obj.pose.bones['FootIKL'])
     calls.clear()
     switch(.7)
     assert not calls,calls
     switch(1)
     assert calls==['LEGS'],calls
-    assert obj.data.bones['LegL'].hide
-    assert not obj.data.bones['FootIKL'].hide
+    assert not pose_hidden(obj.pose.bones['LegL'])
+    assert pose_hidden(obj.pose.bones['FootL'])
+    assert not pose_hidden(obj.pose.bones['FootIKL'])
     # Explicit show-both remains authoritative across animated mode changes.
     rig.set_off_mode_bones_hidden(obj,False)
     switch(0)
-    assert not obj.data.bones['LegL'].hide
-    assert not obj.data.bones['FootIKL'].hide
+    assert not pose_hidden(obj.pose.bones['LegL'])
+    assert not pose_hidden(obj.pose.bones['FootIKL'])
     rig.set_off_mode_bones_hidden(obj,True)
     # Sample the same keyed switches with and without the display handler.
     for frame,value in ((1,False),(5,True),(10,False),(16,True)):
@@ -65,7 +70,7 @@ try:
     assert bpy.ops.sub.anim_rig_toggle_ik_fk(
         limbs='LEGS', set_enabled=True, enable_ik=False) == {'FINISHED'}
     for name in ('LegL', 'KneeL', 'FootL'):
-        assert not obj.data.bones[name].hide, name
+        assert not pose_hidden(obj.pose.bones[name]), name
         pb = obj.pose.bones[name]
         output = pb.constraints.get(ik.OUTPUT)
         assert output is None or output.influence == 0.0, name

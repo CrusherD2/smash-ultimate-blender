@@ -10,6 +10,12 @@ The updater shows every section newer than the user's installed version, and
 the "What's New" popup shows them once after the update installs. Sections
 that aren't headed by a version number (like "Unreleased") are never shown.
 
+## 5.0.8 - 2026-11-18
+- IK creation can hide original hands, feet and toes in Pose/Object modes while keeping shoulders, arms, legs and knees visible
+- Switching to FK hides IK controls and reveals original endpoints; switching back restores IK visibility
+- Knee IK controls sit directly in front of their own knees, and lifted feet bend the knees toward their pole controls
+- Longer HandIK, FootIK and ToeIK controls, with improved knee-control rotation and legacy visibility repair
+
 ## 5.0.7 - 2026-11-18
 - Smash Viewport: restore model visibility and animated deformation after hiding and unhiding a model hierarchy in the Outliner
 

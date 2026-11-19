@@ -221,6 +221,29 @@ def solve_bone(obj, names):
     return obj.pose.bones[PREFIX + limb_path(obj, names)[-2]]
 
 
+def _pole_geometry(obj, names, kind):
+    if kind != 'LEGS' or not re.fullmatch(r'Leg([LR])(.*)', names[0]):
+        return None
+    own = obj.data.bones.get(names[0])
+    if own is None:
+        return None
+    return (Vector((0.0, -1.0, 0.0)),
+            own.parent.matrix_local.inverted_safe() if own.parent else Matrix.Identity(4))
+
+
+def _pole_position(obj, names, kind, root, mid, end, bend, parent_world=None, geometry=None):
+    distance = max((mid - root).length + (end - mid).length, 0.5)
+    geometry = geometry if geometry is not None else _pole_geometry(obj, names, kind)
+    if geometry is not None:
+        forward, parent_inverse = geometry
+        space = parent_world @ parent_inverse if parent_world is not None else Matrix.Identity(4)
+        # Smash character forward is -Y; knee poles must not follow an inward rest bend.
+        forward = space.to_3x3() @ forward
+        if forward.length > 1e-8:
+            return mid + forward.normalized() * distance
+    return mid + bend * distance
+
+
 def create_controls(context, obj, limbs='BOTH', custom_only=False, custom_targets=None):
     """One idempotent creation path for IK Tools and the Animation Rig."""
     from . import create_animation_rig as rig, anim_layers_compat
@@ -250,13 +273,13 @@ def create_controls(context, obj, limbs='BOTH', custom_only=False, custom_target
     with rig.defer_pose_tool_updates(), rig._disable_autokey(context), anim_layers_compat.anim_layers_paused():
         bpy.ops.object.mode_set(mode='EDIT')
         bones = obj.data.edit_bones
-        for _, names, target, pole in jobs:
+        for kind, names, target, pole in jobs:
             root, mid, end = [bones[n] for n in (names[0], bend_name(obj, names), names[-1])]
             if target not in bones:
                 control = bones.new(target)
                 # A new bone has zero length, so assigning a matrix loses its direction.
                 control.head = end.head.copy()
-                control.tail = end.head + end.vector.normalized() * max(end.length * 2.0, .1)
+                control.tail = end.head + end.vector.normalized() * max(end.length * (4.0 if kind == 'ARMS' else 3.0), .1)
                 control.roll = end.roll
                 control.parent = None
                 control.use_deform = False
@@ -266,7 +289,7 @@ def create_controls(context, obj, limbs='BOTH', custom_only=False, custom_target
                 if bend.length < 1e-6:
                     bend = axis.orthogonal()
                 control = bones.new(pole)
-                control.head = mid.head + bend.normalized() * (root.length + mid.length)
+                control.head = _pole_position(obj, names, kind, root.head, mid.head, end.head, bend.normalized())
                 control.tail = control.head + Vector((0, max(mid.length*.25, .1), 0))
                 control.parent = None
                 control.use_deform = False
@@ -432,7 +455,17 @@ def _drive_pull_base(obj, pull, target, pole, inner, outer):
         live(('glx', 'gly', 'glz')[axis], target, axis)
     for axis in range(3):
         ref(('grx', 'gry', 'grz')[axis], target, axis)
-    driver.expression = _detail_driver_expression(inner, outer)
+    expression = _detail_driver_expression(inner, outer)
+    if pole_rotation_names(pole)[1] in obj.pose.bones:
+        variable = driver.variables.new()
+        variable.name, variable.type = 'r', 'TRANSFORMS'
+        target = variable.targets[0]
+        target.id, target.bone_target = obj, pole
+        target.transform_space = 'LOCAL_SPACE'
+        target.transform_type = 'ROT_W'
+        target.rotation_mode = 'QUATERNION'
+        expression = 'min(' + expression + ',max(2*r*r-1,0))'
+    driver.expression = expression
 
 
 def _detail_driver_expression(inner, outer):
@@ -469,6 +502,9 @@ def _detail_driver_specs(obj, jobs, owners):
                 inputs[live[axis]] = base + '.location[' + str(axis) + ']'
                 inputs[reference[axis]] = base + '["' + REF_PROPS[axis] + '"]'
         expression = _detail_driver_expression(rest * _DETAIL_INNER, rest * _DETAIL_OUTER)
+        if pole_rotation_names(pole)[1] in obj.pose.bones:
+            inputs['r'] = (pole, 'ROT_W')
+            expression = 'min(' + expression + ',max(2*r*r-1,0))'
         for name in path:
             pull = obj.pose.bones.get(PULL_PREFIX + name)
             if pull is None or owners.get(pull.name) is None:
@@ -490,9 +526,16 @@ def _matches_detail_driver(obj, curve, spec):
         and not driver.use_self and driver.expression == expression
         and len(driver.variables) == len(inputs)
         and {var.name for var in driver.variables} == set(inputs)
-        and all(var.type == 'SINGLE_PROP' and var.targets[0].id == obj
-                and var.targets[0].data_path == inputs[var.name]
-                for var in driver.variables)
+        and all(
+            (var.type == 'TRANSFORMS' and var.targets[0].id == obj
+             and var.targets[0].bone_target == inputs[var.name][0]
+             and var.targets[0].transform_type == 'ROT_W'
+             and var.targets[0].transform_space == 'LOCAL_SPACE'
+             and var.targets[0].rotation_mode == 'QUATERNION')
+            if isinstance(inputs[var.name], tuple) else
+            (var.type == 'SINGLE_PROP' and var.targets[0].id == obj
+             and var.targets[0].data_path == inputs[var.name])
+            for var in driver.variables)
     )
 
 def _install_detail_drivers(obj, jobs):
@@ -520,6 +563,55 @@ def _install_detail_drivers(obj, jobs):
             if obj.pose.bones.get(CORRECTION_PREFIX + name) is None:
                 continue
             _drive_pull_base(obj, pull, target, pole, inner, outer)
+
+
+def pole_rotation_names(pole):
+    return PREFIX + 'PoleOrbit_' + pole, PREFIX + 'PoleAim_' + pole
+
+
+def _ensure_pole_rotation_controls(obj, context, jobs):
+    limbs = list(jobs)
+    missing = [job for job in limbs
+               if any(name not in obj.data.bones for name in pole_rotation_names(job[3]))]
+    if missing:
+        bpy.ops.object.mode_set(mode='EDIT')
+        bones = obj.data.edit_bones
+        for _kind, names, _target, pole in missing:
+            orbit_name, aim_name = pole_rotation_names(pole)
+            length = sum((bones[b].head - bones[a].head).length
+                         for a, b in zip(limb_path(obj, names), limb_path(obj, names)[1:]))
+            offset = bones[pole].matrix.to_3x3() @ Vector((0.6, 0.5, 0.4)).normalized() * (length * 0.25)
+            orbit = bones.get(orbit_name) or bones.new(orbit_name)
+            orbit.head = offset
+            orbit.tail = orbit.head + Vector((0.3, 0.8, 0.5)).normalized() * max(length * 0.05, 0.01)
+            # A diagonal frame lets every control axis steer the bend without spinning deform bones.
+            orbit.roll = 0.45
+            orbit.use_deform = False
+            aim = bones.get(aim_name) or bones.new(aim_name)
+            aim.head = (0, 0, 0)
+            aim.tail = Vector((0, max(length * 0.05, 0.01), 0))
+            aim.parent = orbit
+            aim.use_deform = False
+        bpy.ops.object.mode_set(mode='POSE')
+    collection = obj.data.collections.get('IK Internal') or obj.data.collections.new('IK Internal')
+    collection.is_visible = False
+    for _kind, names, _target, pole in limbs:
+        orbit_name, aim_name = pole_rotation_names(pole)
+        for name in (orbit_name, aim_name):
+            collection.assign(obj.data.bones[name])
+        orbit = obj.pose.bones[orbit_name]
+        con = orbit.constraints.get('SUB IK Pole Position') or orbit.constraints.new('COPY_LOCATION')
+        con.name = 'SUB IK Pole Position'
+        con.target, con.subtarget = obj, pole
+        con.target_space = con.owner_space = 'POSE'
+        con.use_offset = True
+        rotation = orbit.constraints.get('SUB IK Pole Rotation') or orbit.constraints.new('COPY_ROTATION')
+        rotation.name = 'SUB IK Pole Rotation'
+        rotation.target, rotation.subtarget = obj, pole
+        rotation.target_space = rotation.owner_space = 'LOCAL'
+        rotation.use_x = rotation.use_y = rotation.use_z = True
+        rotation.mix_mode = 'REPLACE'
+        solve_bone(obj, names).constraints['SUB IK Solve'].pole_subtarget = aim_name
 
 
 def ensure(obj, context, limbs='BOTH'):
@@ -585,7 +677,7 @@ def ensure(obj, context, limbs='BOTH'):
             roll.roll = foot.roll
             toe_control = bones.get(toe_name) or bones.new(toe_name)
             toe_control.head, toe_control.tail, toe_control.roll = toe.head, toe.tail, toe.roll
-            toe_control.length = toe.length * 1.15
+            toe_control.length = toe.length * 2.0
             output = bones.get(output_name) or bones.new(output_name)
             output.head, output.tail, output.roll = foot.head, foot.tail, foot.roll
             output.length = max(foot.length * .35, .1)
@@ -738,6 +830,7 @@ def ensure(obj, context, limbs='BOTH'):
             pb = obj.pose.bones[CORRECTION_PREFIX + name]
             pb.rotation_mode = 'QUATERNION'
             collection.assign(pb.bone)
+    _ensure_pole_rotation_controls(obj, context, jobs)
     obj.data[VERSION] = 4
     wire(obj)
     from . import ik_floor_contact
@@ -828,6 +921,18 @@ def wire(obj):
                     setattr(con, 'to_max_' + axis, sign * weight)
                 _stretch_chain_driver(obj, con, kind, index == len(path) - 1)
                 con.mute = False
+    for _kind, names, _target, pole in chains(obj):
+        obj.pose.bones[pole].lock_rotation = (False, False, False)
+        for name in limb_path(obj, names)[:-1]:
+            pull = obj.pose.bones.get(PULL_PREFIX + name)
+            if pull is None:
+                continue
+            con = pull.constraints.get('SUB IK Knee Twist')
+            if con is not None:
+                pull.constraints.remove(con)
+        aim = pole_rotation_names(pole)[1]
+        if aim in obj.pose.bones:
+            solve_bone(obj, names).constraints['SUB IK Solve'].pole_subtarget = aim
     wire_arm_pulls(obj)
     for kind, names, target, _pole in chains(obj):
         path = limb_path(obj, names)
@@ -972,7 +1077,9 @@ def upgrade_pull_controls(context, obj):
     jobs = list(chains(obj))
     if not any(prefix + name not in obj.data.bones
                for _, names, _, _ in jobs for name in limb_path(obj, names)
-               for prefix in (PULL_PREFIX, CORRECTION_PREFIX)):
+               for prefix in (PULL_PREFIX, CORRECTION_PREFIX)) and not any(
+                   name not in obj.data.bones for _, _, _, pole in jobs
+                   for name in pole_rotation_names(pole)):
         wire(obj)
         return
     from . import create_animation_rig as rig
@@ -1169,6 +1276,8 @@ def _dependency_audit(obj, jobs, separate):
         articulation = toe_articulation(obj, names)
         owned = [*path, *(PREFIX + n for n in path),
                  *(PULL_PREFIX + n for n in path), target, pole]
+        if pole_rotation_names(pole)[1] in obj.pose.bones:
+            owned.extend(pole_rotation_names(pole))
         if controls:
             owned.extend(controls)
         if articulation:
@@ -1291,17 +1400,6 @@ def _is_self_contained(obj, jobs):
 
 
 def _evaluate_match_steps(context, steps, batch):
-    from . import ik_match_diag as diag
-    if not batch:
-        for step in steps:
-            for _ in step:
-                if diag.enabled():
-                    start = time.perf_counter()
-                    context.view_layer.update()
-                    diag.add('search', time.perf_counter() - start, 1)
-                else:
-                    context.view_layer.update()
-        return
     from .ik_native import evaluate_steps
     evaluate_steps(context, steps, batch)
 
@@ -1365,6 +1463,7 @@ def _chain_cache(obj, jobs):
             # outside the limb and so needs sampling as a placement reference.
             'parent': parent.name if parent is not None else None,
             'angle': None,
+            'pole_geometry': _pole_geometry(obj, names, _kind),
             'foot': foot_controls(names, obj),
             'articulation': toe_articulation(obj, names),
         }
@@ -1406,14 +1505,33 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
     # cannot model falls back to the setter, which does need a barrier -- and
     # then the solver has to be muted so it does not fight the placement.
     parent_world = matrices.get(entry['parent'])
+    seed_matrices = {}
+    if entry['pole_geometry'] is not None and len(path) == 3:
+        start, joint, finish = [matrices[name].translation for name in path]
+        direction = finish - start
+        if direction.length > 1e-8:
+            direction.normalize()
+            offset = joint - start - direction * (joint - start).dot(direction)
+            if offset.length < 1e-6:
+                # A perfectly straight seed has no Jacobian bend direction when the foot is lifted.
+                side = matrices[path[0]].to_3x3().col[0]
+                side = (side - direction * side.dot(direction)).normalized()
+                joint = joint + side * max((finish - start).length * .001, 1e-5)
+                for name, head, tail in ((path[0], start, joint), (path[1], joint, finish)):
+                    source = matrices[name]
+                    rotation = source.to_3x3().col[1].rotation_difference(tail - head)
+                    seed = rotation.to_matrix().to_4x4() @ source.to_3x3().to_4x4()
+                    seed.translation = head
+                    seed_matrices[name] = seed
     for index, name in enumerate(path):
         pose_bone = obj.pose.bones[PREFIX + name]
-        reference = matrices[path[index - 1]] if index else parent_world
-        if not pose_math.apply_world(pose_bone, matrices[name], reference):
+        reference = seed_matrices.get(path[index - 1], matrices[path[index - 1]]) if index else parent_world
+        placement = seed_matrices.get(name, matrices[name])
+        if not pose_math.apply_world(pose_bone, placement, reference):
             con.mute = True
             for endpoint in endpoints:
                 endpoint.mute = True
-            pose_bone.matrix = matrices[name]
+            pose_bone.matrix = placement
             yield
 
     # Independent seed channels preserve animated bone length,
@@ -1467,6 +1585,9 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
             yield
 
     pole_pb = obj.pose.bones[pole]
+    if pole_rotation_names(pole)[1] in obj.pose.bones:
+        # Matching starts a fresh twist correction; the imported twist stays in the residual bones.
+        pole_pb.matrix_basis = Matrix.LocRotScale(pole_pb.location, None, pole_pb.scale)
     current = pose_math.world_from_basis(pole_pb, pole_pb.matrix_basis, None)
     if current is None:
         # Parented pole control: its world matrix has to be read, not derived.
@@ -1477,7 +1598,7 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
             and obj.data.sub_ik_stretch_arms and obj.data.sub_ik_stretch_chain_arms:
         placed.translation = mid
     else:
-        placed.translation = mid + bend * max((mid-root).length + (end-mid).length, 0.5)
+        placed.translation = _pole_position(obj, names, kind, root, mid, end, bend, parent_world, entry['pole_geometry'])
     if not pose_math.apply_world(pole_pb, placed, None):
         pole_pb.matrix = placed
         yield
@@ -1622,6 +1743,11 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
             angle = yield from best((angle, a, b))
     if native is not None:
         native.close()
+    if entry['pole_geometry'] is not None:
+        # Calibrate the solver's bend axis, not the old FK bend's direction relative to the pole.
+        basis = matrices[path[0]].to_3x3()
+        calibration = seed_matrices[path[1]].translation - mid if seed_matrices else bend
+        angle = math.atan2(calibration.dot(basis.col[2]), calibration.dot(basis.col[0]))
     entry['angle'] = angle
 
     con.pole_angle = math.atan2(math.sin(angle), math.cos(angle))
@@ -1690,7 +1816,9 @@ def match(context, obj, limbs='BOTH', entire=True, key=True, clean=False, _batch
                 con.mute = True
             self_contained = _is_self_contained(obj, jobs)
             batch = _batch and self_contained and _can_batch_match(obj, jobs)
-            if batch:
+            native_safe = batch or (_batch and self_contained and len(jobs) == 1
+                                    and _dependency_audit(obj, jobs, separate=True) is not None)
+            if native_safe:
                 from . import ik_native
                 native_factory = ik_native.get_factory()
             # Capture the entire source before writing any destination channels.
@@ -1869,9 +1997,12 @@ def remove(context, obj, limbs='BOTH', targets=None):
     from ..anim.fcurve_compat import get_all_action_fcurves, remove_fcurve
     jobs = [job for job in chains(obj, limbs) if targets is None or job[2] in targets]
     affected = {n for _,group,_,_ in jobs for n in limb_path(obj,group)}
-    for _, group, _, _ in jobs:
-        for name in limb_path(obj, group):
-            obj.data.bones[name].hide = False
+    from ..blender_compat import set_pose_bone_hidden
+    rig._migrate_ik_pose_visibility(obj)
+    for kind, group, _, _ in jobs:
+        toes = connected_toe_bones(obj, group) if kind == 'LEGS' else ()
+        for name in (*limb_path(obj, group), *toes):
+            set_pose_bone_hidden(obj.pose.bones.get(name), bool(obj.data.bones[name].get('sub_component_hidden')))
     from . import ik_floor_contact
     ik_floor_contact.remove(context, obj, controls={job[2] for job in jobs})
     names = {prefix + name
@@ -1879,6 +2010,7 @@ def remove(context, obj, limbs='BOTH', targets=None):
              for name in limb_path(obj, group)
              for prefix in (PREFIX, PULL_PREFIX, CORRECTION_PREFIX)}
     names.update(n for _, _, target, pole in jobs for n in (target, pole))
+    names.update(n for _, _, _, pole in jobs for n in pole_rotation_names(pole))
     for kind, group, _, _ in jobs:
         controls = foot_controls(group, obj) if kind == 'LEGS' else None
         if controls:

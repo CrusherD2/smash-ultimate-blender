@@ -14,6 +14,12 @@ class SUB_OP_create_foot_ik_operator(bpy.types.Operator):
     bl_label = "Create Foot IK Bones"
     bl_options = {'REGISTER', 'UNDO'}
     
+    hide_affected_bones: bpy.props.BoolProperty(
+        name="Hide Foot/Toe",
+        description="Hide regular hands or feet/toes in IK and reveal them in FK",
+        default=True,
+    )
+
     match_position: bpy.props.BoolProperty(
         name="Match IK to FK Position",
         description="Match IK bones position to FK bones after creation",
@@ -26,7 +32,7 @@ class SUB_OP_create_foot_ik_operator(bpy.types.Operator):
             return self._execute_ik_create(context)
 
     def _execute_ik_create(self, context):
-        from .create_animation_rig import find_target_armature
+        from .create_animation_rig import find_target_armature, set_ik_endpoint_hiding
         from .ik_channels import create_controls
         obj = find_target_armature(context)
         if obj is None:
@@ -36,6 +42,7 @@ class SUB_OP_create_foot_ik_operator(bpy.types.Operator):
         if not count:
             self.report({'ERROR'}, "No complete legs chains found")
             return {'CANCELLED'}
+        set_ik_endpoint_hiding(obj, self.hide_affected_bones, 'LEGS')
         if self.match_position:
             fk_to_ik.invoke_position_match_dialog(cleanup_mode='LEGS')
         return {'FINISHED'}
@@ -47,6 +54,7 @@ class SUB_OP_create_foot_ik_operator(bpy.types.Operator):
     def draw(self, context):
         layout = self.layout
         layout.prop(self, "match_position")
+        layout.prop(self, "hide_affected_bones")
 
 
 class SUB_PT_foot_ik_panel(bpy.types.Panel):
