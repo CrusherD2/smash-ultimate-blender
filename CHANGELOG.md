@@ -10,6 +10,13 @@ The updater shows every section newer than the user's installed version, and
 the "What's New" popup shows them once after the update installs. Sections
 that aren't headed by a version number (like "Unreleased") are never shown.
 
+## 5.0.9 - 2026-11-19
+- Faster Animation Rig creation: match IK, fingers and custom components together, with recovery if matching fails or is cancelled
+- Smaller orange HandIK and FootIK boxes, sized slightly larger than their FK controls without shortening the IK bones
+- Switch to IK buttons now appear on original hand and foot controls in FK mode
+- Improved arm IK alignment, pole rotation controls and progressive deformation on long chains, including straightening beyond reach
+- Visibility Autofill only adds valid _VIS_O_OBJShape meshes and skips duplicates
+
 ## 5.0.8 - 2026-11-18
 - IK creation can hide original hands, feet and toes in Pose/Object modes while keeping shoulders, arms, legs and knees visible
 - Switching to FK hides IK controls and reveals original endpoints; switching back restores IK visibility

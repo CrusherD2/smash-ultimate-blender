@@ -12,7 +12,7 @@ import sys
 import time
 from contextlib import nullcontext
 import bpy
-from mathutils import Matrix, Vector
+from mathutils import Matrix, Quaternion, Vector
 
 from . import pose_math
 
@@ -222,12 +222,13 @@ def solve_bone(obj, names):
 
 
 def _pole_geometry(obj, names, kind):
-    if kind != 'LEGS' or not re.fullmatch(r'Leg([LR])(.*)', names[0]):
+    part = {'LEGS': 'Leg', 'ARMS': 'Shoulder'}.get(kind)
+    if part is None or not re.fullmatch(part + r'([LR])(.*)', names[0]):
         return None
     own = obj.data.bones.get(names[0])
     if own is None:
         return None
-    return (Vector((0.0, -1.0, 0.0)),
+    return (Vector((0.0, -1.0 if kind == 'LEGS' else 1.0, 0.0)),
             own.parent.matrix_local.inverted_safe() if own.parent else Matrix.Identity(4))
 
 
@@ -237,14 +238,15 @@ def _pole_position(obj, names, kind, root, mid, end, bend, parent_world=None, ge
     if geometry is not None:
         forward, parent_inverse = geometry
         space = parent_world @ parent_inverse if parent_world is not None else Matrix.Identity(4)
-        # Smash character forward is -Y; knee poles must not follow an inward rest bend.
+        # Knees point forward (-Y), elbows backward (+Y), independent of rest bend.
         forward = space.to_3x3() @ forward
         if forward.length > 1e-8:
             return mid + forward.normalized() * distance
     return mid + bend * distance
 
 
-def create_controls(context, obj, limbs='BOTH', custom_only=False, custom_targets=None):
+def create_controls(context, obj, limbs='BOTH', custom_only=False, custom_targets=None,
+                    _defer_match=False):
     """One idempotent creation path for IK Tools and the Animation Rig."""
     from . import create_animation_rig as rig, anim_layers_compat
     rig._activate_armature(context, obj)
@@ -301,7 +303,10 @@ def create_controls(context, obj, limbs='BOTH', custom_only=False, custom_target
                 obj.data.bones[n].color.palette = 'THEME01'
         if jobs:
             # Seed the new controls from the current FK pose before enabling IK.
-            match(context, obj, limbs, entire=False, key=True, _batch=fresh_controls, _targets={job[2] for job in jobs})
+            if _defer_match:
+                ensure(obj, context, limbs)
+            else:
+                match(context, obj, limbs, entire=False, key=True, _batch=fresh_controls, _targets={job[2] for job in jobs})
             rig._key_use_ik(obj, context.scene.frame_current, limbs=limbs, enabled=True)
             rig._set_ik_enabled(context, obj, True, limbs=limbs)
             context.view_layer.update()
@@ -412,7 +417,15 @@ def _has_driver(obj, constraint, prop):
         return False
 
 
-def _drive_pull_base(obj, pull, target, pole, inner, outer):
+def _pull_rotation_axis(obj, names, name):
+    if name == names[0]:
+        return 'X'
+    if name == bend_name(obj, names):
+        return 'Y'
+    return None
+
+
+def _drive_pull_base(obj, pull, target, pole, inner, outer, rotation_axis=None, reach=None):
     """Fade the frozen FK residual out as controls leave the matched pose.
 
     The PULL bone already stacks solver then residual. This drives the second
@@ -455,16 +468,27 @@ def _drive_pull_base(obj, pull, target, pole, inner, outer):
         live(('glx', 'gly', 'glz')[axis], target, axis)
     for axis in range(3):
         ref(('grx', 'gry', 'grz')[axis], target, axis)
-    expression = _detail_driver_expression(inner, outer)
-    if pole_rotation_names(pole)[1] in obj.pose.bones:
+    if rotation_axis is not None:
         variable = driver.variables.new()
         variable.name, variable.type = 'r', 'TRANSFORMS'
-        target = variable.targets[0]
-        target.id, target.bone_target = obj, pole
-        target.transform_space = 'LOCAL_SPACE'
-        target.transform_type = 'ROT_W'
-        target.rotation_mode = 'QUATERNION'
-        expression = 'min(' + expression + ',max(2*r*r-1,0))'
+        rotation_target = variable.targets[0]
+        rotation_target.id, rotation_target.bone_target = obj, pole
+        rotation_target.transform_space = 'LOCAL_SPACE'
+        rotation_target.transform_type = 'ROT_' + rotation_axis
+        rotation_target.rotation_mode = 'SWING_TWIST_' + rotation_axis
+
+    expression = _detail_driver_expression(inner, outer)
+    if rotation_axis is not None:
+        expression = 'min(' + expression + ',max(1-sqrt(r*r)/pi,0))'
+    if reach is not None:
+        # Unreachable targets must not retain a bent FK residual on a straight solver.
+        for name, end in (('d', target), ('s', reach[1])):
+            variable = driver.variables.new()
+            variable.name, variable.type = name, 'LOC_DIFF'
+            for item, bone in zip(variable.targets, (reach[0], end)):
+                item.id, item.bone_target = obj, bone
+                item.transform_space = 'WORLD_SPACE'
+        expression = 'min(' + expression + ',max(1-max(d-s,0)/max(s*.01,1e-6),0))'
     driver.expression = expression
 
 
@@ -478,16 +502,17 @@ def _detail_driver_expression(inner, outer):
     # linear ramp (smoothstep does not fit). Keep this expression short.
     def weight(cx, cy, cz, rx, ry, rz):
         dist = 'sqrt((' + cx + '-' + rx + ')**2+(' + cy + '-' + ry + ')**2+(' + cz + '-' + rz + ')**2)'
-        return '1-min(max((' + dist + '-' + num(inner) + ')/' + num(span) + ',0),1)'
+        return dist
 
-    return ('min(' + weight('plx', 'ply', 'plz', 'prx', 'pry', 'prz') + ','
-                   + weight('glx', 'gly', 'glz', 'grx', 'gry', 'grz') + ')')
+    return ('max(0,min(1,(' + num(outer) + '-max('
+            + weight('plx', 'ply', 'plz', 'prx', 'pry', 'prz') + ','
+            + weight('glx', 'gly', 'glz', 'grx', 'gry', 'grz') + '))/' + num(span) + '))')
 
 
 def _detail_driver_specs(obj, jobs, owners):
     """Exact generated fade drivers whose inputs stay in their owner's island."""
     specs = {}
-    for _, names, target, pole in jobs:
+    for kind, names, target, pole in jobs:
         path = limb_path(obj, names)
         if not path or any(obj.pose.bones[n].parent for n in (target, pole)):
             continue
@@ -502,9 +527,6 @@ def _detail_driver_specs(obj, jobs, owners):
                 inputs[live[axis]] = base + '.location[' + str(axis) + ']'
                 inputs[reference[axis]] = base + '["' + REF_PROPS[axis] + '"]'
         expression = _detail_driver_expression(rest * _DETAIL_INNER, rest * _DETAIL_OUTER)
-        if pole_rotation_names(pole)[1] in obj.pose.bones:
-            inputs['r'] = (pole, 'ROT_W')
-            expression = 'min(' + expression + ',max(2*r*r-1,0))'
         for name in path:
             pull = obj.pose.bones.get(PULL_PREFIX + name)
             if pull is None or owners.get(pull.name) is None:
@@ -514,7 +536,17 @@ def _detail_driver_specs(obj, jobs, owners):
             con = pull.constraints.get(PULL_BASE)
             if (con is not None and con.type == 'COPY_TRANSFORMS'
                     and con.target == obj and con.subtarget == CORRECTION_PREFIX + name):
-                specs[con.path_from_id() + '.influence'] = (expression, inputs)
+                axis = _pull_rotation_axis(obj, names, name)
+                bone_inputs = dict(inputs)
+                bone_expression = expression
+                if axis is not None:
+                    bone_inputs['r'] = (pole, 'ROT_' + axis)
+                    bone_expression = 'min(' + expression + ',max(1-sqrt(r*r)/pi,0))'
+                if kind == 'ARMS' and len(path) > 3:
+                    bone_inputs['d'] = (PREFIX + path[0], target, 'LOC_DIFF')
+                    bone_inputs['s'] = (PREFIX + path[0], PREFIX + path[-1], 'LOC_DIFF')
+                    bone_expression = 'min(' + bone_expression + ',max(1-max(d-s,0)/max(s*.01,1e-6),0))'
+                specs[con.path_from_id() + '.influence'] = (bone_expression, bone_inputs)
     return specs
 
 
@@ -527,11 +559,16 @@ def _matches_detail_driver(obj, curve, spec):
         and len(driver.variables) == len(inputs)
         and {var.name for var in driver.variables} == set(inputs)
         and all(
+            (var.type == 'LOC_DIFF' and all(
+                target.id == obj and target.bone_target == bone
+                and target.transform_space == 'WORLD_SPACE'
+                for target, bone in zip(var.targets, inputs[var.name][:2])))
+            if isinstance(inputs[var.name], tuple) and len(inputs[var.name]) == 3 else
             (var.type == 'TRANSFORMS' and var.targets[0].id == obj
              and var.targets[0].bone_target == inputs[var.name][0]
-             and var.targets[0].transform_type == 'ROT_W'
+             and var.targets[0].transform_type == inputs[var.name][1]
              and var.targets[0].transform_space == 'LOCAL_SPACE'
-             and var.targets[0].rotation_mode == 'QUATERNION')
+             and var.targets[0].rotation_mode == 'SWING_TWIST_' + inputs[var.name][1][-1])
             if isinstance(inputs[var.name], tuple) else
             (var.type == 'SINGLE_PROP' and var.targets[0].id == obj
              and var.targets[0].data_path == inputs[var.name])
@@ -562,7 +599,10 @@ def _install_detail_drivers(obj, jobs):
                 continue
             if obj.pose.bones.get(CORRECTION_PREFIX + name) is None:
                 continue
-            _drive_pull_base(obj, pull, target, pole, inner, outer)
+            _drive_pull_base(obj, pull, target, pole, inner, outer,
+                             _pull_rotation_axis(obj, names, name),
+                             (PREFIX + path[0], PREFIX + path[-1])
+                             if _kind == 'ARMS' and len(path) > 3 else None)
 
 
 def pole_rotation_names(pole):
@@ -611,6 +651,9 @@ def _ensure_pole_rotation_controls(obj, context, jobs):
         rotation.target_space = rotation.owner_space = 'LOCAL'
         rotation.use_x = rotation.use_y = rotation.use_z = True
         rotation.mix_mode = 'REPLACE'
+        rotation.mute = True
+        orbit.rotation_mode = 'QUATERNION'
+        orbit.rotation_quaternion = (1, 0, 0, 0)
         solve_bone(obj, names).constraints['SUB IK Solve'].pole_subtarget = aim_name
 
 
@@ -642,11 +685,25 @@ def ensure(obj, context, limbs='BOTH'):
         bones = obj.data.edit_bones
         for kind, names, target, pole in fresh:
             path = limb_path(obj, names)
+            reflection = None
+            if kind == 'ARMS':
+                joints = (path[0], bend_name(obj, names), path[-1])
+                start, middle, finish = [bones[name].head.copy() for name in joints]
+                axis = (finish - start).normalized()
+                bend = middle - start - axis * (middle - start).dot(axis)
+                if bend.y < -max((finish - start).length * 1e-4, 1e-6):
+                    reflection = (Matrix.Translation(start)
+                                  @ Quaternion(axis, math.pi).to_matrix().to_4x4()
+                                  @ Matrix.Translation(-start))
             for name in path:
                 src = bones[name]
                 dst = bones.get(PREFIX + name) or bones.new(PREFIX + name)
-                dst.matrix = src.matrix.copy()
+                # A zero-length bone loses the direction assigned through its matrix.
                 dst.length = src.length
+                dst.matrix = src.matrix.copy()
+                if reflection is not None:
+                    dst.matrix = reflection @ dst.matrix
+                    dst.align_roll(src.matrix.col[2].xyz)
                 dst.use_deform = False
                 dst['sub_ik_generation'] = uuid.uuid4().hex
                 dst.inherit_scale = src.inherit_scale
@@ -655,6 +712,28 @@ def ensure(obj, context, limbs='BOTH'):
                 parent = src.parent
                 dst.parent = bones.get(PREFIX + parent.name) if parent and parent.name in path else parent
                 dst.use_connect = src.use_connect
+            if kind == 'ARMS' and len(path) > 3 and _pole_geometry(obj, names, kind) is not None:
+                # Display lengths overlap; solver links must span consecutive joints instead.
+                split = path.index(bend_name(obj, names))
+                for section, segment in enumerate((path[:split + 1], path[split:])):
+                    distances = [0.0]
+                    for first, second in zip(segment, segment[1:]):
+                        distances.append(distances[-1] + (bones[second].head - bones[first].head).length)
+                    start = bones[PREFIX + segment[0]].head.copy()
+                    finish = bones[PREFIX + segment[-1]].head.copy()
+                    points = [start.lerp(finish, distance / max(distances[-1], 1e-8))
+                              for distance in distances]
+                    for index, name in enumerate(segment[:-1]):
+                        bone = bones[PREFIX + name]
+                        z_axis = bone.matrix.col[2].xyz.copy()
+                        bone.head, bone.tail = points[index], points[index + 1]
+                        bone.align_roll(z_axis)
+                        bone['sub_ik_section'] = section
+                        bone['sub_ik_fraction'] = distances[index] / max(distances[-1], 1e-8)
+                bones[PREFIX + path[-1]]['sub_ik_section'] = 1
+                bones[PREFIX + path[-1]]['sub_ik_fraction'] = 1.0
+                for name in path[1:]:
+                    bones[PREFIX + name].use_connect = True
             # Controls must not inherit any FK limb rotation.
             for name in (target, pole):
                 control = bones[name]
@@ -806,8 +885,8 @@ def ensure(obj, context, limbs='BOTH'):
         for name in missing_pull:
             src = bones[name]
             dst = bones.new(PULL_PREFIX + name)
-            dst.matrix = src.matrix.copy()
             dst.length = src.length
+            dst.matrix = src.matrix.copy()
             dst.use_deform = False
         bpy.ops.object.mode_set(mode='POSE')
         collection = obj.data.collections.get('IK Internal') or obj.data.collections.new('IK Internal')
@@ -821,7 +900,8 @@ def ensure(obj, context, limbs='BOTH'):
         for name in missing_corrections:
             src = bones[PREFIX + name]
             dst = bones.new(CORRECTION_PREFIX + name)
-            dst.matrix, dst.length = src.matrix.copy(), src.length
+            dst.length = src.length
+            dst.matrix = src.matrix.copy()
             dst.parent, dst.use_deform = src, False
         bpy.ops.object.mode_set(mode='POSE')
         collection = obj.data.collections.get('IK Internal') or obj.data.collections.new('IK Internal')
@@ -1459,6 +1539,10 @@ def _chain_cache(obj, jobs):
         parent = solver_root.parent if solver_root is not None else None
         cache[target] = {
             'path': path,
+            'solver': solve_bone(obj, names).name,
+            'sections': {name: (obj.data.bones[PREFIX + name]['sub_ik_section'],
+                                obj.data.bones[PREFIX + name]['sub_ik_fraction'])
+                         for name in path if 'sub_ik_section' in obj.data.bones[PREFIX + name]},
             # The solver chain hangs off the FK root's parent, which sits
             # outside the limb and so needs sampling as a placement reference.
             'parent': parent.name if parent is not None else None,
@@ -1467,6 +1551,17 @@ def _chain_cache(obj, jobs):
             'foot': foot_controls(names, obj),
             'articulation': toe_articulation(obj, names),
         }
+        if _kind == 'ARMS' and cache[target]['pole_geometry'] is not None:
+            root, mid, end = [obj.data.bones[PREFIX + name].head_local
+                              for name in (path[0], bend_name(obj, names), path[-1])]
+            axis = (end - root).normalized()
+            calibration = mid - root - axis * (mid - root).dot(axis)
+            basis = obj.data.bones[PREFIX + path[0]].matrix_local.to_3x3()
+            # Near-straight imported arms contain numerical offsets, not a reliable bend plane.
+            if calibration.length < max((end - root).length * 1e-4, 1e-6):
+                calibration = basis.col[0]
+            cache[target]['pole_angle'] = math.atan2(
+                calibration.dot(basis.col[2]), calibration.dot(basis.col[0]))
     return cache
 
 
@@ -1497,7 +1592,7 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
     kind, names, target, pole = job
     path = entry['path']
     solver = [obj.pose.bones[PREFIX + name] for name in path]
-    con = solver[-2].constraints['SUB IK Solve']
+    con = obj.pose.bones[entry['solver']].constraints['SUB IK Solve']
     endpoints = end_constraints(solver[-1])
 
     # Place the solver seed. Every target matrix is already sampled, so these
@@ -1506,26 +1601,46 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
     # then the solver has to be muted so it does not fight the placement.
     parent_world = matrices.get(entry['parent'])
     seed_matrices = {}
-    if entry['pole_geometry'] is not None and len(path) == 3:
-        start, joint, finish = [matrices[name].translation for name in path]
+    if entry['pole_geometry'] is not None and (len(path) == 3 or con.chain_count == 2):
+        joints = (path[0], bend_name(obj, names), path[-1])
+        start, joint, finish = [matrices[name].translation for name in joints]
         direction = finish - start
         if direction.length > 1e-8:
             direction.normalize()
             offset = joint - start - direction * (joint - start).dot(direction)
-            if offset.length < 1e-6:
-                # A perfectly straight seed has no Jacobian bend direction when the foot is lifted.
+            inverted = kind == 'ARMS' and offset.dot(entry['pole_geometry'][0]) < -1e-6
+            if inverted or offset.length < max((finish - start).length * 1e-4, 1e-6):
+                # Seed the bend toward the pole without introducing an axial half-turn.
                 side = matrices[path[0]].to_3x3().col[0]
                 side = (side - direction * side.dot(direction)).normalized()
-                joint = joint + side * max((finish - start).length * .001, 1e-5)
-                for name, head, tail in ((path[0], start, joint), (path[1], joint, finish)):
+                joint = (joint - 2 * offset if inverted else
+                         joint + side * max((finish - start).length * .001, 1e-5))
+                for name, head, tail in ((joints[0], start, joint), (joints[1], joint, finish)):
                     source = matrices[name]
                     rotation = source.to_3x3().col[1].rotation_difference(tail - head)
                     seed = rotation.to_matrix().to_4x4() @ source.to_3x3().to_4x4()
                     seed.translation = head
                     seed_matrices[name] = seed
+    if entry['sections']:
+        joints = (path[0], bend_name(obj, names), path[-1])
+        positions = [matrices[name].translation.copy() for name in joints]
+        axis = (positions[2] - positions[0]).normalized()
+        offset = positions[1] - positions[0] - axis * (positions[1] - positions[0]).dot(axis)
+        if offset.dot(entry['pole_geometry'][0]) < -1e-6:
+            positions[1] -= 2 * offset
+        heads = {name: positions[section].lerp(positions[section + 1], fraction)
+                 for name, (section, fraction) in entry['sections'].items()}
+        for name, following in zip(path, path[1:]):
+            source = matrices[name]
+            direction = heads[following] - heads[name]
+            rotation = source.to_3x3().col[1].rotation_difference(direction)
+            seed = rotation.to_matrix().to_4x4() @ source.to_3x3().to_4x4()
+            seed.translation = heads[name]
+            seed_matrices[name] = seed
     for index, name in enumerate(path):
         pose_bone = obj.pose.bones[PREFIX + name]
-        reference = seed_matrices.get(path[index - 1], matrices[path[index - 1]]) if index else parent_world
+        parent_name = pose_bone.parent.name.removeprefix(PREFIX) if pose_bone.parent else None
+        reference = seed_matrices.get(parent_name, matrices.get(parent_name, parent_world))
         placement = seed_matrices.get(name, matrices[name])
         if not pose_math.apply_world(pose_bone, placement, reference):
             con.mute = True
@@ -1743,7 +1858,10 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
             angle = yield from best((angle, a, b))
     if native is not None:
         native.close()
-    if entry['pole_geometry'] is not None:
+    if kind == 'ARMS' and entry['pole_geometry'] is not None and len(path) == 3:
+        # Two-joint calibration cannot represent distributed roll in a longer chain.
+        angle = entry['pole_angle']
+    elif kind == 'LEGS' and entry['pole_geometry'] is not None:
         # Calibrate the solver's bend axis, not the old FK bend's direction relative to the pole.
         basis = matrices[path[0]].to_3x3()
         calibration = seed_matrices[path[1]].translation - mid if seed_matrices else bend

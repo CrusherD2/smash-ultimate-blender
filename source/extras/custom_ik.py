@@ -33,7 +33,7 @@ def definition(settings):
     }
 
 
-def create_from_settings(context, obj, settings):
+def create_from_settings(context, obj, settings, _defer_match=False):
     names = ik_channels.chain_path(obj, settings.root, settings.end, settings.middle)
     if not names:
         raise ValueError(
@@ -59,7 +59,8 @@ def create_from_settings(context, obj, settings):
     obj['sub_custom_ik_chains'] = json.dumps(records)
     try:
         ik_channels.create_controls(
-            context, obj, settings.kind, custom_only=True, custom_targets={target}
+            context, obj, settings.kind, custom_only=True, custom_targets={target},
+            _defer_match=_defer_match,
         )
     except Exception:
         records.pop()

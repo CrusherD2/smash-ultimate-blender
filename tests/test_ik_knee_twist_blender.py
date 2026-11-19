@@ -33,57 +33,10 @@ def set_rotation(pole, rotation, mode):
         pole.rotation_euler = rotation.to_euler(mode)
 
 pole = obj.pose.bones['KneeIKL']
-reference = snapshot()
-for mode in ('XYZ', 'ZYX', 'QUATERNION', 'AXIS_ANGLE'):
-    for axis in ('X', 'Y', 'Z'):
-        set_rotation(pole, Quaternion(), mode)
-        before = snapshot()
-        previous = before
-        max_change = 0.0
-        for degrees in range(-185, 186, 5):
-            vector = Vector(tuple(float(a == axis) for a in ('X', 'Y', 'Z')))
-            set_rotation(pole, Quaternion(vector, math.radians(degrees)), mode)
-            current = snapshot()
-            for name in ('FootL', 'LegR', 'KneeR', 'FootR'):
-                assert error(current[name], reference[name]) < 3e-5, (mode, axis, degrees, name)
-            for name in ('LegL', 'KneeL'):
-                assert all(math.isfinite(value) for row in current[name] for value in row)
-                max_change = max(max_change, error(current[name], before[name]))
-                if degrees > -185:
-                    step = previous[name].to_quaternion().rotation_difference(current[name].to_quaternion()).angle
-                    assert step < 0.25, (mode, axis, degrees, name, step)
-            ev = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
-            leg, knee, foot = [ev.pose.bones[ik.PREFIX + n] for n in ('LegL', 'KneeL', 'FootL')]
-            assert (leg.tail - knee.head).length < 2e-4, (mode, axis, degrees)
-            assert (knee.tail - foot.head).length < 2e-4, (mode, axis, degrees)
-            leg, knee, foot = [ev.pose.bones[n] for n in ('LegL', 'KneeL', 'FootL')]
-            assert (leg.tail - knee.head).length < 2e-4, (mode, axis, degrees, 'deform knee')
-            assert (knee.tail - foot.head).length < 2e-4, (mode, axis, degrees, 'deform ankle')
-            previous = current
-        assert max_change > 0.02, (mode, axis, max_change)
-    set_rotation(pole, Quaternion(), mode)
-    actual = snapshot()
-    assert max(error(actual[name], reference[name]) for name in names) < 3e-5
-
+checks = Path(__file__).with_name('ik_pull_rotation_checks.py')
+exec(compile(checks.read_text(), str(checks), 'exec'))
+check_rotation_influences(obj, ik, ('Leg', 'Knee', 'Foot'), 'KneeIK')
 rotation = Euler((0.4, -0.5, 0.7)).to_quaternion()
-set_rotation(pole, rotation, 'XYZ')
-expected = snapshot()
-for mode in ('QUATERNION', 'AXIS_ANGLE', 'ZYX'):
-    set_rotation(pole, rotation, mode)
-    actual = snapshot()
-    assert max(error(actual[name], expected[name]) for name in names) < 3e-5, mode
-
-set_rotation(pole, Quaternion(), 'QUATERNION')
-right_pole = obj.pose.bones['KneeIKR']
-neutral = snapshot()
-for axis in ('X', 'Y', 'Z'):
-    vector = Vector(tuple(float(a == axis) for a in ('X', 'Y', 'Z')))
-    set_rotation(right_pole, Quaternion(vector, 0.7), 'QUATERNION')
-    current = snapshot()
-    assert error(current['LegR'], neutral['LegR']) > 0.01, axis
-    for name in ('LegL', 'KneeL', 'FootL', 'FootR'):
-        assert error(current[name], neutral[name]) < 3e-5, (axis, name)
-set_rotation(right_pole, Quaternion(), 'QUATERNION')
 
 old = obj.pose.bones[ik.PULL_PREFIX + 'LegL'].constraints.new('COPY_ROTATION')
 old.name = 'SUB IK Knee Twist'
@@ -116,4 +69,4 @@ assert not pose_hidden(obj.pose.bones['LegL'])
 helpers = [name for _, _, _, pole_name in jobs for name in ik.pole_rotation_names(pole_name)]
 ik.remove(bpy.context, obj, 'LEGS')
 assert not any(name in obj.data.bones for name in helpers)
-print('SMOOTH XYZ KNEE ROTATION, CONNECTED JOINTS, PLANTED FOOT AND NATIVE MATCHING PASSED')
+print('KNEE X/Y PULL INFLUENCE, FIXED SOLVER/FOOT AND NATIVE MATCHING PASSED')

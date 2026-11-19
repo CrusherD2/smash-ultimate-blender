@@ -3136,13 +3136,18 @@ class SUB_OP_create_animation_rig(Operator):
                 self.report({'ERROR'}, str(exc))
                 return {'CANCELLED'}
         _activate_armature(context, armature_obj)
+        from . import anim_layers_compat
+        combine_requested = bool(self.match_position and self.ik_entire_animation and self.ik_auto_keyframe
+            and (self.setup_finger_sliders or self.setup_custom_components)
+            and anim_layers_compat.viewport_driving_action(armature_obj)[0] is not None)
         cleaned = 0
         with ProgressCursor(context) as progress:
             progress.update(0.05)
             ik_created = False
             if self.setup_ik:
                 from .ik_channels import create_controls
-                ik_created = bool(create_controls(context, armature_obj, self.ik_limbs))
+                ik_created = bool(create_controls(context, armature_obj, self.ik_limbs,
+                                                  _defer_match=combine_requested))
                 if ik_created:
                     set_ik_endpoint_hiding(armature_obj, self.hide_affected_bones, self.ik_limbs)
 
@@ -3200,8 +3205,10 @@ class SUB_OP_create_animation_rig(Operator):
             armature_obj.data[ARMATURE_FLAG] = True
             progress.update(0.92)
 
+            combined_match = bool(combine_requested and (slider_count or self.setup_custom_components
+                or (self.setup_ik and armature_has_ik(armature_obj))))
             if self.setup_ik and (ik_created or armature_has_ik(armature_obj)):
-                if self.match_position:
+                if self.match_position and not combined_match:
                     bpy.ops.sub.fk_to_ik_transfer(
                         'EXEC_DEFAULT',
                         cleanup_mode=self.ik_limbs,
@@ -3214,7 +3221,14 @@ class SUB_OP_create_animation_rig(Operator):
                 finalize_ik_controls(armature_obj, context)
             if self.setup_custom_components:
                 from .component_workflow import build_preset
-                build_preset(context, armature_obj, self.custom_component_preset)
+                build_preset(context, armature_obj, self.custom_component_preset,
+                             _defer_ik_match=combined_match)
+            if combined_match:
+                from . import component_matching
+                component_matching.match_animation(context, armature_obj, context.scene.frame_start,
+                    context.scene.frame_end, include_fingers=bool(slider_count), match_ik=True,
+                    fingers_only=not self.setup_custom_components,
+                    _creation_limbs=self.ik_limbs if self.setup_ik else 'NONE')
             cleaned = 0
             if ssp is not None and ssp.clean_keyframes_after_rig:
                 from .finger_sliders import is_finger_match_fcurve_path
@@ -3226,7 +3240,7 @@ class SUB_OP_create_animation_rig(Operator):
                 cleaned += clean_redundant_keys_on_id(armature_obj.data)
             progress.update(1.0)
 
-        if self.setup_custom_components:
+        if self.setup_custom_components and not combined_match:
             from . import anim_layers_compat, component_matching, component_workflow
             if anim_layers_compat.viewport_driving_action(armature_obj)[0] is not None and (
                 slider_count or any(c.kind!='IK' for c in component_workflow.definitions(armature_obj))
@@ -3235,7 +3249,7 @@ class SUB_OP_create_animation_rig(Operator):
                 # component rig, including fingers. Main IK was matched above.
                 component_matching.match_animation(context,armature_obj,context.scene.frame_start,
                     context.scene.frame_end,include_fingers=bool(slider_count),match_ik=False)
-        elif slider_count:
+        elif slider_count and not combined_match:
             from .anim_rig_extras import match_existing_finger_animation
             match_existing_finger_animation(context, armature_obj)
         extra = " IK controls added." if ik_created else ""

@@ -539,14 +539,14 @@ def control_name(obj, c):
     )
 
 
-def build_component(context, obj, c):
-    result = _build_component(context, obj, c)
+def build_component(context, obj, c, _defer_ik_match=False):
+    result = _build_component(context, obj, c, _defer_ik_match=_defer_ik_match)
     from .component_visibility import update
     update(obj, c)
     return result
 
 
-def _build_component(context, obj, c):
+def _build_component(context, obj, c, _defer_ik_match=False):
     names = validate_component(obj, c)
     if not c.uid:
         c.uid = uuid.uuid4().hex
@@ -582,6 +582,7 @@ def _build_component(context, obj, c):
                 end=c.end,
                 kind=c.switch_group,
             ),
+            _defer_match=_defer_ik_match,
         )
         records = json.loads(obj.get('sub_custom_ik_chains', '[]'))
         records[-1]['component_id'] = c.uid

@@ -501,15 +501,18 @@ def _match_slice_seconds():
     return 0.04 if cores>=8 else 0.05
 
 
-def match_animation(context, obj, start, end, include_fingers=False, match_ik=True, fingers_only=False):
+def match_animation(context, obj, start, end, include_fingers=False, match_ik=True, fingers_only=False,
+                    _creation_limbs=None):
     result=None
-    for event in match_animation_steps(context,obj,start,end,include_fingers,match_ik,fingers_only):
+    for event in match_animation_steps(context,obj,start,end,include_fingers,match_ik,fingers_only,
+                                       _creation_limbs=_creation_limbs):
         if event[0]=='done':
             result=event[1]
     return result
 
 
-def match_animation_steps(context, obj, start, end, include_fingers=False, match_ik=True, fingers_only=False):
+def match_animation_steps(context, obj, start, end, include_fingers=False, match_ik=True, fingers_only=False,
+                          _creation_limbs=None):
     from .component_workflow import definitions
     from . import ik_channels, anim_layers_compat, ik_match_fast
     from .create_animation_rig import _activate_armature, _disable_autokey, defer_pose_tool_updates, ProgressCursor
@@ -526,7 +529,14 @@ def match_animation_steps(context, obj, start, end, include_fingers=False, match
             components.append(SimpleNamespace(uid=FINGER_MATCH_ID, kind='FINGERS',
                 bones=[SimpleNamespace(bone=n) for n in sorted(names)],
                 controls=sorted(control_names)))
-    if not components:
+    creation_ik = None
+    if _creation_limbs is not None:
+        from .rig_creation_match import CreationIKMatch
+        targets = {job[2] for job in ik_channels.chains(obj, _creation_limbs)}
+        targets.update(r['target'] for r in json.loads(obj.get('sub_custom_ik_chains', '[]'))
+                       if r.get('component_id') in {c.uid for c in components if c.kind == 'IK'})
+        creation_ik = CreationIKMatch(obj, targets)
+    if not components and not (creation_ik and creation_ik.jobs):
         raise ValueError('Build custom components first')
     if anim_layers_compat.viewport_driving_action(obj)[0] is None:
         raise ValueError('Select the original animation action first')
@@ -545,6 +555,11 @@ def match_animation_steps(context, obj, start, end, include_fingers=False, match
     _activate_armature(context,obj)
     muted = [(con,con.mute) for pb in obj.pose.bones for con in pb.constraints
              if any(con.name.startswith(_prefix(c.uid)) for c in non_ik)]
+    sync_paused = None
+    if creation_ik:
+        from . import create_animation_rig as rig
+        sync_paused = rig._IK_FK_MUTE_SYNC_PAUSED
+        muted.extend(creation_ik.states)
     residual_frames=0
     bone_names=set(obj.data.bones.keys())
     constraints={p.name:{con.as_pointer() for con in p.constraints} for p in obj.pose.bones}
@@ -558,7 +573,11 @@ def match_animation_steps(context, obj, start, end, include_fingers=False, match
     try:
         with ProgressCursor(context) as progress, _disable_autokey(context), defer_pose_tool_updates(), anim_layers_compat.anim_layers_paused(), anim_layers_compat.bind_driving_action_for_bake(obj,context), ik_match_fast.suspend_viewport_handlers():
             paused=_pause_armature_meshes(context, obj)
+            if creation_ik:
+                rig.pause_ik_fk_mute_sync(True)
             sample_names=set(all_owners)
+            if creation_ik:
+                sample_names.update(creation_ik.sample_names)
             for name in list(sample_names):
                 pb=obj.pose.bones.get(name)
                 while pb and pb.parent:
@@ -570,7 +589,7 @@ def match_animation_steps(context, obj, start, end, include_fingers=False, match
             try:
                 frames=range(start,end+1)
                 detached=None
-                if all_owners and end>start:
+                if sample_names and end>start:
                     from ..anim.fcurve_compat import get_fcurves_for_assigned_slot
                     detached=ik_match_fast.sample_fk(obj,frames,sample_names,
                         get_fcurves_for_assigned_slot(obj))
@@ -586,8 +605,11 @@ def match_animation_steps(context, obj, start, end, include_fingers=False, match
             finally:
                 for con,state in muted:
                     con.mute=state
+            if creation_ik:
+                for con, _ in creation_ik.states:
+                    con.mute = True
             targets={r['target'] for r in json.loads(obj.get('sub_custom_ik_chains','[]')) if r.get('component_id') in {c.uid for c in components if c.kind=='IK'}}
-            if targets and match_ik:
+            if targets and match_ik and creation_ik is None:
                 _restore_armature_meshes(paused)
                 paused=[]
                 old_range=(scene.frame_start,scene.frame_end)
@@ -697,6 +719,8 @@ def match_animation_steps(context, obj, start, end, include_fingers=False, match
                         expression_solutions.update(((component.uid,f),value) for (f,_),value in zip(batch,solved))
                 yield ('progress',.2,'Solving component targets')
             from . import component_graph
+            if creation_ik:
+                creation_ik.prepare()
             native_graph=component_graph.capture_for_match(obj,all_owners,controls,sample_names,lambda: _update(context,obj))
             for f,poses in samples.items():
                 scene.frame_set(f)
@@ -708,6 +732,8 @@ def match_animation_steps(context, obj, start, end, include_fingers=False, match
                     evaluate=native_graph.evaluate if native_graph else lambda: _update(context,obj)
                     failed_names=[]
                     try:
+                        if creation_ik:
+                            creation_ik.solve(context, poses, f, writer)
                         for pair in helpers.values():
                             for name in pair:
                                 obj.pose.bones[name].matrix_basis=Matrix.Identity(4)
@@ -872,6 +898,8 @@ def match_animation_steps(context, obj, start, end, include_fingers=False, match
                         fc.modifiers.remove(mod)
             writer.flush()
             choices.flush()
+            if creation_ik:
+                creation_ik.finish()
             progress.update(1)
             success=True
             yield ('done',(len(components),residual_frames))
@@ -919,6 +947,8 @@ def match_animation_steps(context, obj, start, end, include_fingers=False, match
     finally:
         if native_graph:
             native_graph.close()
+        if creation_ik:
+            creation_ik.close(success)
         _restore_armature_meshes(paused)
         for fc,state in locals().get('selector_curves',[]):
             try: fc.mute=state
@@ -930,6 +960,8 @@ def match_animation_steps(context, obj, start, end, include_fingers=False, match
                 con.mute=True if success and con.as_pointer() in locals().get('obsolete',set()) else state
             except ReferenceError:
                 pass
+        if creation_ik:
+            rig.pause_ik_fk_mute_sync(sync_paused)
         scene.frame_set(frame)
 
 

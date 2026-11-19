@@ -13,12 +13,28 @@ def selected(context):
     if not obj or obj.type != 'ARMATURE' or obj.mode != 'POSE' or not pb:
         return None
     from .create_animation_rig import armature_has_animation_rig
-    from ..blender_compat import is_pose_bone_selected
-    if not armature_has_animation_rig(obj) or not is_pose_bone_selected(pb) or pb.bone.hide:
+    from ..blender_compat import is_pose_bone_hidden, is_pose_bone_selected
+    if not armature_has_animation_rig(obj) or not is_pose_bone_selected(pb) or is_pose_bone_hidden(pb):
         return None
     kind = pb.bone.get('sub_ik_control_kind')
     target = pb.bone.get('sub_ik_control_target')
     info = (kind, target, '', '') if kind and target else controls(obj).get(pb.name)
+    from .create_animation_rig import armature_ik_is_enabled
+    from .ik_channels import chains, outputs
+    evaluated = obj.evaluated_get(context.evaluated_depsgraph_get())
+    for limb_kind in ('ARMS', 'LEGS'):
+        if info and info[0] != limb_kind:
+            continue
+        influences = [con.influence for _, con, _ in outputs(evaluated, limb_kind) if not con.mute]
+        enabled = (max(influences) > .5 if influences
+                   else armature_ik_is_enabled(evaluated, limb_kind))
+        if info and not enabled:
+            return None
+        if not info and not enabled:
+            for kind, names, target, pole in chains(obj, limb_kind):
+                if pb.name == names[-1]:
+                    info = (kind, pb.name, 'FK', '')
+                    break
     return (obj, pb, info) if info else None
 
 
@@ -77,7 +93,7 @@ def button_layout(context):
     def point(u,v):
         return a*(1-u)*(1-v)+b*u*(1-v)+c*u*v+d*(1-u)*v
     contact = any(l.control == info[1] for l in obj.sub_floor_contact.limbs)
-    indexes = [0,1,2] if contact else [2]
+    indexes = [3] if info[2] == 'FK' else ([0,1,2] if contact else [2])
     result=[]
     for slot,index in enumerate(indexes):
         center=.5+(slot-(len(indexes)-1)/2)*.29
@@ -99,7 +115,7 @@ def draw_labels():
     blf.enable(0,blf.SHADOW)
     blf.shadow(0,3,0,0,0,.8)
     for index,corners,position in button_layout(context):
-        label=('Plant','Release','Switch FK')[index]
+        label=('Plant','Release','Switch to FK','Switch to IK')[index]
         blf.size(0,11*context.preferences.system.ui_scale)
         width,_=blf.dimensions(0,label)
         available=(corners[1]-corners[0]).length*1.15
@@ -149,6 +165,7 @@ class SUB_OP_ik_view_button(bpy.types.Operator):
             ('PLANT', 'Plant', ''),
             ('RELEASE', 'Release', ''),
             ('FK', 'Switch to FK', ''),
+            ('IK', 'Switch to IK', ''),
         ]
     )
 
@@ -158,6 +175,7 @@ class SUB_OP_ik_view_button(bpy.types.Operator):
             'PLANT': 'Plant this IK control and key the contact',
             'RELEASE': 'Release this IK control and key the contact',
             'FK': 'Switch this limb group to FK and key the switch',
+            'IK': 'Switch this limb group to IK and key the switch',
         }[properties.action]
 
     def execute(self, context):
@@ -165,9 +183,9 @@ class SUB_OP_ik_view_button(bpy.types.Operator):
         if not found:
             return {'CANCELLED'}
         obj, pb, (kind, target, shape, tool) = found
-        if self.action == 'FK':
+        if self.action in {'FK', 'IK'}:
             return bpy.ops.sub.anim_rig_toggle_ik_fk(
-                limbs=kind, set_enabled=True, enable_ik=False
+                limbs=kind, set_enabled=True, enable_ik=self.action == 'IK'
             )
         return bpy.ops.sub.floor_contact(action=self.action, control=target)
 
@@ -185,7 +203,7 @@ class SUB_GGT_ik_buttons(bpy.types.GizmoGroup):
 
     def setup(self, context):
         self.buttons = []
-        for action in ('PLANT', 'RELEASE', 'FK'):
+        for action in ('PLANT', 'RELEASE', 'FK', 'IK'):
             gizmo = self.gizmos.new('SUB_GT_ik_box_button')
             gizmo.scale_basis = 1
             gizmo.line_width = 2

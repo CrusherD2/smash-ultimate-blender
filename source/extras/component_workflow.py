@@ -337,7 +337,7 @@ def validate_preset_for_object(obj, name):
     return payload
 
 
-def build_preset(context, obj, name):
+def build_preset(context, obj, name, _defer_ik_match=False):
     from .custom_components import (
         load_preset,
         validate_build,
@@ -351,7 +351,7 @@ def build_preset(context, obj, name):
     editor.armature = obj
     validate_build(obj, editor.components)
     for c in editor.components:
-        build_component(context, obj, c)
+        build_component(context, obj, c, _defer_ik_match=_defer_ik_match)
     from .component_appearance_presets import apply
 
     apply(context, obj, json.loads(editor.appearances))

@@ -966,12 +966,13 @@ class SUB_OP_auto_fill_vis_entries(Operator):
 
     def execute(self, context):
         arma: bpy.types.Object = context.object
-        from .visibility_tracks import model_visibility_names
+        from ..model.vis_shape_groups import iter_model_meshes, vis_shape_group_name
 
-        vis_names = set(model_visibility_names(arma).values())
+        vis_names = {name for mesh in iter_model_meshes(arma)
+                     if (name := vis_shape_group_name(mesh.name)) is not None}
         sap: SUB_PG_sub_anim_data = arma.data.sub_anim_properties
         existing_names = {entry.name.casefold() for entry in sap.vis_track_entries}
-        for vis_name in vis_names:
+        for vis_name in sorted(vis_names, key=lambda name: (name.casefold(), name)):
             if vis_name.casefold() not in existing_names:
                 new_entry: SUB_PG_vis_track_entry = sap.vis_track_entries.add()
                 new_entry.name = vis_name

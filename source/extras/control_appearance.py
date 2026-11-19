@@ -52,6 +52,7 @@ def style_ik_controls(context, obj):
     collection = obj.data.collections.get('IK Controls') or obj.data.collections.new(
         'IK Controls'
     )
+    endpoints = {target: names[-1] for _, names, target, _ in ik_channels.chains(obj)}
     for name, (kind, target, shape, tool) in controls(obj).items():
         pb = obj.pose.bones[name]
         pb.bone['sub_ik_control_target'] = target
@@ -59,9 +60,24 @@ def style_ik_controls(context, obj):
         pb.bone['sub_component_control'] = True
         pb.bone['sub_component_tool'] = tool
         collection.assign(pb.bone)
-        _assign_shape(
-            pb, _widget_object(context, shape), max(pb.length, 0.15), 'THEME04', False
-        )
+        scale = max(pb.length, 0.15)
+        if name == target:
+            fk = obj.pose.bones[endpoints[target]]
+            if fk.custom_shape:
+                bone_size = fk.length if fk.use_custom_shape_bone_size else 1.0
+                scale = tuple(value * bone_size * 1.15 for value in fk.custom_shape_scale_xyz)
+            else:
+                from .create_animation_rig import _classify_bone, _estimate_character_scale, canonical_bone_name
+                classification = _classify_bone(canonical_bone_name(fk.name))
+                if classification:
+                    scale = _estimate_character_scale(obj) * classification[2] * 1.15
+        _assign_shape(pb, _widget_object(context, shape), scale, 'THEME04', False)
+        if name == target:
+            for color in (pb.color, pb.bone.color):
+                color.palette = 'CUSTOM'
+                color.custom.normal = (1.0, 0.35, 0.05)
+                color.custom.select = (1.0, 0.6, 0.15)
+                color.custom.active = (1.0, 0.8, 0.3)
 
 
 def _save_changes(operator, context, force=False):

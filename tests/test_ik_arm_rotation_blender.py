@@ -19,34 +19,10 @@ def snapshot():
 def error(a, b):
     return max(abs(a[r][c] - b[r][c]) for r in range(4) for c in range(4))
 
-neutral = snapshot()
-for side in ('L', 'R'):
-    pole = obj.pose.bones['ArmIK' + side]
-    pole.rotation_mode = 'QUATERNION'
-    assert not any(pole.lock_rotation)
-    for axis in ('X', 'Y', 'Z'):
-        previous = None
-        changed = 0.0
-        for degrees in range(-185, 186, 5):
-            vector = Vector(tuple(float(a == axis) for a in ('X', 'Y', 'Z')))
-            pole.rotation_quaternion = Quaternion(vector, math.radians(degrees))
-            actual = snapshot()
-            changed = max(changed, error(actual['Shoulder'+side], neutral['Shoulder'+side]))
-            assert error(actual['Hand'+side], neutral['Hand'+side]) < 3e-5
-            other = 'R' if side == 'L' else 'L'
-            for bone in ('Shoulder', 'Arm', 'Hand'):
-                assert error(actual[bone+other], neutral[bone+other]) < 3e-5
-            ev = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
-            shoulder, arm, hand = [ev.pose.bones[n+side] for n in ('Shoulder', 'Arm', 'Hand')]
-            assert (shoulder.tail - arm.head).length < 2e-4
-            assert (arm.tail - hand.head).length < 2e-4
-            if previous is not None:
-                step = previous.to_quaternion().rotation_difference(actual['Shoulder'+side].to_quaternion()).angle
-                assert step < 0.25, (side, axis, degrees, step)
-            previous = actual['Shoulder'+side]
-        assert changed > 0.01, (side, axis)
-    pole.rotation_quaternion = Quaternion()
-    snapshot()
+checks = Path(__file__).with_name('ik_pull_rotation_checks.py')
+exec(compile(checks.read_text(), str(checks), 'exec'))
+check_rotation_influences(obj, ik, ('Shoulder', 'Arm', 'Hand'), 'ArmIK')
+
 audit()
 ik.match(bpy.context, obj, 'ARMS', entire=True, key=True, _batch=True)
 assert diag.record()['counts'].get('native_solves', 0) == 32
@@ -65,4 +41,4 @@ for name in ('ShoulderL', 'ArmL', 'HandL'):
         pb.rotation_euler[axis] += 0.3
         assert error(snapshot()[name], before) > 0.05, (name, axis)
         pb.rotation_euler[axis] -= 0.3
-print('BOTH ARM POLES: SMOOTH XYZ, CONNECTED JOINTS, FIXED HANDS, FK ROTATION AND NATIVE MATCHING PASSED')
+print('ARM X/Y PULL INFLUENCE, FIXED SOLVER/HANDS, FK ROTATION AND NATIVE MATCHING PASSED')
