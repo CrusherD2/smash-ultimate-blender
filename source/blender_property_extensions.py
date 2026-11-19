@@ -670,6 +670,13 @@ class SubSceneProperties(PropertyGroup):
         default=(0.0, 0.0, 0.0),
         update=_update_smash_vp_background,
     )
+    smash_vp_lightweight: BoolProperty(
+        name="Lightweight Lighting",
+        description="Disable bloom and shadows while preserving full resolution, textures and material colors",
+        default=False,
+        options=set(),
+        update=_update_smash_vp_lighting,
+    )
     smash_vp_light_path: StringProperty(
         name="Stage Lights",
         description="Stage light.nuanmb used by Smash Viewport (same as SSBH Editor)",

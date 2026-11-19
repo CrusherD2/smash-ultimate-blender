@@ -564,6 +564,8 @@ def match_animation_steps(context, obj, start, end, include_fingers=False, match
     bone_names=set(obj.data.bones.keys())
     constraints={p.name:{con.as_pointer() for con in p.constraints} for p in obj.pose.bones}
     old_bases={p.name:p.matrix_basis.copy() for p in obj.pose.bones}
+    old_follow={p.name:p['follows_parent_bone'] for p in obj.pose.bones
+               if p.name in controls and 'follows_parent_bone' in p}
     old_helpers={p.name:p.bone.matrix_local.copy() for p in obj.pose.bones if p.bone.get('sub_match_helper')}
     source_action=anim_layers_compat.viewport_driving_action(obj)[0]
     backup=source_action.copy()
@@ -664,11 +666,19 @@ def match_animation_steps(context, obj, start, end, include_fingers=False, match
             fit_spec=_parameter_spec(obj,fit_controls) if fit_controls else None
             selector_curves=[]
             face_control_ids=expression_ids|eyes_ids
+            follow_paths={obj.pose.bones[n].path_from_id()+'["follows_parent_bone"]'
+                          for n in old_follow}
             for fc in get_all_action_fcurves(obj.animation_data.action,id_type='OBJECT'):
-                if any(fc.data_path.startswith(obj.pose.bones[n].path_from_id()+'.') for n in controls
+                if fc.data_path in follow_paths:
+                    selector_curves.append((fc,fc.mute))
+                    fc.mute=True
+                elif any(fc.data_path.startswith(obj.pose.bones[n].path_from_id()+'.') for n in controls
                        if obj.data.bones[n].get('sub_face_owner') in face_control_ids):
                     selector_curves.append((fc,fc.mute))
                     fc.mute=True
+            for name in old_follow:
+                obj.pose.bones[name]['follows_parent_bone']=0.0
+            obj.update_tag()
             isolated_jobs=[]
             for n,uid in isolated.items():
                 con=obj.pose.bones[n].constraints.get(_prefix(uid))
@@ -884,6 +894,9 @@ def match_animation_steps(context, obj, start, end, include_fingers=False, match
                     path=obj.pose.bones[name].path_from_id()
                     choices.stash_channel(path+'.sub_face_expression',0,f,index,name)
                     writer.stash_channel(path+'.location',1,f,strength,name)
+                for name in old_follow:
+                    path=obj.pose.bones[name].path_from_id()+'["follows_parent_bone"]'
+                    writer.stash_channel(path,0,f,0.0,name)
                 residual_frames += int(extra)
                 progress.update(.2+.75*(f-start+1)/max(1,end-start+1))
                 for name in controls+sorted(finger_names)+[n for pair in helpers.values() for n in pair]:
@@ -953,6 +966,9 @@ def match_animation_steps(context, obj, start, end, include_fingers=False, match
         for fc,state in locals().get('selector_curves',[]):
             try: fc.mute=state
             except ReferenceError: pass
+        if not success:
+            for name,value in old_follow.items():
+                obj.pose.bones[name]['follows_parent_bone']=value
         if success:
             bpy.data.actions.remove(backup)
         for con,state in muted:

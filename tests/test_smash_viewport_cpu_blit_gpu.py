@@ -62,8 +62,18 @@ with offscreen.bind():
     viewport._presubmitted = True
     assert viewport.render_cropped(1, 3, 2, False)
     assert not viewport._presubmitted
+    # A pending first frame already owns the render, even before its texture exists.
+    viewport._blit_tex_key = None
+    viewport._presubmitted = True
+    assert viewport.render_cropped(1, 3, 2, False)
+    assert not viewport._presubmitted
+    assert len(submits) == 1, submits
+    # Real changes after presubmission still require a fresh render.
+    viewport._presubmitted = True
+    assert viewport.render_cropped(1, 3, 2, True)
+    assert not viewport._presubmitted
 offscreen.free()
-assert len(calls) == 2 and len(submits) == 1, (calls, submits)
+assert len(calls) == 4 and len(submits) == 2, (calls, submits)
 assert np.allclose(pixels[1][1], (1.0, 0.2158605, 0.0, 1.0), atol=2e-3), pixels
 for row, col in ((1, 0), (1, 2), (0, 0), (0, 1), (0, 2)):
     assert np.allclose(pixels[row][col], backdrop, atol=1e-3), (row, col, pixels)

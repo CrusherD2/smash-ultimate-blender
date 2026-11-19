@@ -43,7 +43,9 @@ with tempfile.TemporaryDirectory() as folder:
     editor.save_on_build=False
     component('ISOLATED','Floating Wing',['WingL'])
     assert bpy.ops.sub.component_build()=={'FINISHED'}
+    isolated_control=obj.pose.bones[cc.control_name(obj,editor.components[-1])]
     for iteration in range(2):
+        isolated_control['follows_parent_bone']=0.6
         for pb in obj.pose.bones:
             if pb.name.startswith('BL_') or pb.name.startswith('FootIK'):
                 pb.location=(.4,.2,.1)
@@ -67,6 +69,10 @@ with tempfile.TemporaryDirectory() as folder:
                 error=max(abs(actual[f][n][i][j]-wanted[i][j]) for i in range(4) for j in range(4))
                 assert error<3e-4,(iteration,f,n,error)
     curves_now=curves.get_all_action_fcurves(obj.animation_data.action)
+    follow_path=isolated_control.path_from_id()+'["follows_parent_bone"]'
+    follow_curve=next(fc for fc in curves_now if fc.data_path==follow_path)
+    assert len(follow_curve.keyframe_points)==3
+    assert all(abs(k.co.y)<1e-7 for k in follow_curve.keyframe_points)
     assert any('FootIK' in fc.data_path for fc in curves_now)
     assert any('BL_CC_' in fc.data_path for fc in curves_now)
     assert any(fingers.is_finger_control_bone(fc.data_path.split('"')[1]) for fc in curves_now if 'pose.bones["' in fc.data_path)

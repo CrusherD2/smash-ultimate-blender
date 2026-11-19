@@ -81,6 +81,44 @@ def _identity_curve(fc):
     return all(a.co.x<b.co.x for a,b in zip(points,points[1:]))
 
 
+def _isolated_follow_input(obj, pb, con):
+    control = obj.pose.bones.get(getattr(con, 'subtarget', ''))
+    owner = control.bone.get('sub_face_owner') if control else None
+    while control and control.bone.get('sub_isolated_role') != 'ROOT':
+        if control.bone.get('sub_face_owner') != owner:
+            return None
+        control = control.parent
+    if (con.type != 'COPY_TRANSFORMS' or con.target != obj or control is None
+            or control.bone.get('sub_isolated_role') != 'ROOT'
+            or control.bone.get('sub_isolated_source') != pb.name
+            or con.name != 'SUB Component ' + control.bone.get('sub_face_owner', '')):
+        return None
+    path = con.path_from_id() + '.influence'
+    drivers = [fc for fc in obj.animation_data.drivers if not fc.mute
+               and fc.data_path.rpartition('.')[0] == con.path_from_id()]
+    if len(drivers) != 1 or drivers[0].data_path != path:
+        return None
+    fc = drivers[0]
+    driver = fc.driver
+    if (not driver.is_valid or driver.type != 'SCRIPTED' or driver.use_self
+            or driver.expression != '1.0 - follow' or len(driver.variables) != 1):
+        return None
+    modifiers = [mod for mod in fc.modifiers if not mod.mute]
+    if any(mod.type != 'GENERATOR' or mod.mode != 'POLYNOMIAL' or mod.poly_order != 1
+           or tuple(mod.coefficients) != (0., 1.) or mod.use_additive or mod.use_restricted_range
+           or (mod.use_influence and mod.influence != 1) for mod in modifiers):
+        return None
+    if not modifiers and not _identity_curve(fc):
+        return None
+    variable = driver.variables[0]
+    target = variable.targets[0]
+    if (variable.name != 'follow' or variable.type != 'SINGLE_PROP' or target.id != obj
+            or target.data_path != control.path_from_id() + '["follows_parent_bone"]'):
+        return None
+    _scalar_property(target)
+    return target
+
+
 def _external_matrix(owner,con):
     """Capture independent external transforms, never candidate-driven ones."""
     target=con.target
@@ -129,6 +167,7 @@ class Graph:
         animated_properties={fc.data_path.rpartition('.')[0] for fc in animation}
         driven_properties={fc.data_path.rpartition('.')[0] for fc in (obj.animation_data.drivers if obj.animation_data else []) if not fc.mute}
         self._dynamic=[]
+        self._isolation_influences={}
         self._property_inputs=[]
         self._frame_inputs=[]
         paths={pb.path_from_id():pb.name for pb in obj.pose.bones}
@@ -261,11 +300,14 @@ class Graph:
                     node['drivers'].append(dict(channel={'location':0,'rotation_euler':3,'scale':6}[channel]+fc.array_index,vars=variables,expression=expression))
                 for con in pb.constraints:
                     if con.path_from_id() in driven_properties:
-                        raise ValueError('Driver-controlled constraint settings')
+                        follow = _isolated_follow_input(obj, pb, con)
+                        if follow is None:
+                            raise ValueError('Driver-controlled constraint settings')
+                        self._isolation_influences[con.as_pointer()] = follow
                     if con.path_from_id() in animated_properties or (getattr(con,'target',None) and con.target!=obj):
                         if pb not in self._dynamic:
                             self._dynamic.append(pb)
-                    if con.mute or con.influence==0:
+                    if con.mute or (con.influence==0 and con.as_pointer() not in self._isolation_influences):
                         continue
                     record=self._constraint(con,pb)
                     node['constraints'].append(record)
@@ -291,7 +333,9 @@ class Graph:
         foreign=dict(target_matrix=_external_matrix(self.obj,con)) if getattr(con,'target',None) and con.target!=self.obj else {}
         spaces={'LOCAL','POSE','WORLD'}
         if con.owner_space in spaces:
-            base=dict(foreign,influence=con.influence,owner_space=con.owner_space)
+            follow = self._isolation_influences.get(con.as_pointer())
+            influence = max(0., min(1., 1. - _scalar_property(follow))) if follow is not None else con.influence
+            base=dict(foreign,influence=influence,owner_space=con.owner_space)
             if con.type=='LIMIT_ROTATION':
                 order=con.euler_order if con.euler_order!='AUTO' else pb.rotation_mode
                 orders=('XYZ','XZY','YXZ','YZX','ZXY','ZYX')
@@ -390,7 +434,7 @@ class Graph:
         if self._dynamic or world!=self._world or property_changed:
             self._world=world
             for pb in self._dynamic:
-                self.spec[self.indices[pb.name]]['constraints']=[self._constraint(con,pb) for con in pb.constraints if not con.mute and con.influence]
+                self.spec[self.indices[pb.name]]['constraints']=[self._constraint(con,pb) for con in pb.constraints if not con.mute and (con.influence or con.as_pointer() in self._isolation_influences)]
             self._compile()
         # Undriven bones already supply Blender's exact basis matrix. Only
         # driven channels and expression selectors need the scalar input buffer.

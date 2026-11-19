@@ -34,6 +34,20 @@ pub unsafe extern "C" fn sub_ik_create(data: *const u8, len: usize) -> *mut pose
     .unwrap_or(ptr::null_mut())
 }
 
+// The caller supplies len readable float32 values; no buffer is retained.
+#[no_mangle]
+pub unsafe extern "C" fn sub_ik_create_packed(
+    data: *const f32, len: usize, bones: usize, iterations: usize, backend: u32,
+) -> *mut pose::Case {
+    if data.is_null() || !(1..=16).contains(&bones) || len != 64 + bones * 32 {
+        return ptr::null_mut();
+    }
+    catch_unwind(|| {
+        let input = crate::packed_capture::decode(slice::from_raw_parts(data, len), bones, iterations, backend)?;
+        Some(Box::into_raw(Box::new(capture::convert(input))))
+    }).ok().flatten().unwrap_or(ptr::null_mut())
+}
+
 /// # Safety
 /// Same buffer ownership and handle lifetime requirements as sub_ik_create.
 #[no_mangle]
@@ -283,6 +297,19 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn packed_capture_rejects_malformed_buffers() {
+        let values = [0.0f32; 128];
+        unsafe {
+            assert!(sub_ik_create_packed(ptr::null(), 128, 2, 100, 0).is_null());
+            assert!(sub_ik_create_packed(values.as_ptr(), 127, 2, 100, 0).is_null());
+            assert!(sub_ik_create_packed(values.as_ptr(), 128, usize::MAX, 100, 0).is_null());
+            assert!(sub_ik_create_packed(values.as_ptr(), 128, 2, 0, 0).is_null());
+            assert!(sub_ik_create_packed(values.as_ptr(), 128, 2, 100, 2).is_null());
+            assert!(sub_ik_create_packed(values.as_ptr(), 128, 2, 100, 0).is_null());
+        }
+    }
+
     #[test]
     fn ffi_buffers_and_thread_counts() {
         let fixture: serde_json::Value =

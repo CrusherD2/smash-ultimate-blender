@@ -8,6 +8,7 @@ of the default. The native SVD is not proven bit-compatible on every input, so
 the per-frame guards and fallbacks here remain the reason that is survivable.
 """
 import ctypes
+from array import array
 import json
 import os
 import time
@@ -83,11 +84,36 @@ def verifying():
     return mode() == '1'
 
 
+def _native_library_path():
+    path = Path(__file__).resolve().parents[2] / 'native/bin/sub_ik_match_native.dll'
+    reload = path.with_name('sub_ik_match_native.reload.dll')
+    if reload.is_file() and (not path.is_file() or reload.stat().st_mtime > path.stat().st_mtime):
+        return reload
+    return path
+
+
+def _capture_buffer(obj, bones, con):
+    values = array('f')
+    for matrix in (bones[0].parent.matrix if bones[0].parent else Matrix.Identity(4),
+                   obj.matrix_world, obj.pose.bones[con.subtarget].matrix,
+                   obj.pose.bones[con.pole_subtarget].matrix):
+        for row in matrix:
+            values.extend(row)
+    for bone in bones:
+        for matrix in (bone.matrix, bone.bone.matrix):
+            for row in matrix:
+                values.extend(row)
+        values.extend(bone.head)
+        values.extend(bone.tail)
+        values.append(bone.bone.length)
+    return values
+
+
 class Solver:
     def __init__(self, obj, job, bones, con, frame):
         global _dll
         if _dll is None:
-            path = Path(__file__).resolve().parents[2] / 'native/bin/sub_ik_match_native.dll'
+            path = _native_library_path()
             library = ctypes.CDLL(str(path))
             library.sub_ik_abi_version.restype = ctypes.c_uint32
             if library.sub_ik_abi_version() != 3:
@@ -96,6 +122,11 @@ class Solver:
             library.sub_ik_create.restype = ctypes.c_void_p
             library.sub_ik_create_raw.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
             library.sub_ik_create_raw.restype = ctypes.c_void_p
+            packed = getattr(library, 'sub_ik_create_packed', None)
+            if packed is not None:
+                packed.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
+                                   ctypes.c_size_t, ctypes.c_size_t, ctypes.c_uint32]
+                packed.restype = ctypes.c_void_p
             library.sub_ik_solve.argtypes = [ctypes.c_void_p, ctypes.c_float, ctypes.POINTER(ctypes.c_float), ctypes.c_size_t]
             library.sub_ik_solve.restype = ctypes.c_int
             library.sub_ik_free.argtypes = [ctypes.c_void_p]
@@ -111,19 +142,26 @@ class Solver:
                 ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_float), ctypes.c_size_t]
             library.sub_ik_search.restype = ctypes.c_int
             _dll = library
-        rows = lambda matrix: [list(row) for row in matrix]
-        case = dict(parent=rows(bones[0].parent.matrix) if bones[0].parent else rows(Matrix.Identity(4)),
-                    poses=[rows(b.matrix) for b in bones], rests=[rows(b.bone.matrix) for b in bones],
-                    heads=[list(b.head) for b in bones], tails=[list(b.tail) for b in bones],
-                    lengths=[b.bone.length for b in bones], object=rows(obj.matrix_world),
-                    target=rows(obj.pose.bones[con.subtarget].matrix),
-                    pole=rows(obj.pose.bones[con.pole_subtarget].matrix), iterations=con.iterations,
-                    # Unrecognised values deserialize to the approximate
-                    # backend in Rust, so a typo here cannot silently select
-                    # an unverified solver.
-                    backend=os.environ.get('SUB_NATIVE_SVD', 'approximate'))
-        data = json.dumps(case).encode()
-        self.handle = _dll.sub_ik_create_raw(data, len(data))
+        packed = getattr(_dll, 'sub_ik_create_packed', None)
+        if packed is None:
+            rows = lambda matrix: [list(row) for row in matrix]
+            case = dict(parent=rows(bones[0].parent.matrix) if bones[0].parent else rows(Matrix.Identity(4)),
+                        poses=[rows(b.matrix) for b in bones], rests=[rows(b.bone.matrix) for b in bones],
+                        heads=[list(b.head) for b in bones], tails=[list(b.tail) for b in bones],
+                        lengths=[b.bone.length for b in bones], object=rows(obj.matrix_world),
+                        target=rows(obj.pose.bones[con.subtarget].matrix),
+                        pole=rows(obj.pose.bones[con.pole_subtarget].matrix), iterations=con.iterations,
+                        # Unrecognised values deserialize to the approximate
+                        # backend in Rust, so a typo here cannot silently select
+                        # an unverified solver.
+                        backend=os.environ.get('SUB_NATIVE_SVD', 'approximate'))
+            data = json.dumps(case).encode()
+            self.handle = _dll.sub_ik_create_raw(data, len(data))
+        else:
+            values = _capture_buffer(obj, bones, con)
+            buffer = (ctypes.c_float * len(values)).from_buffer(values)
+            self.handle = packed(buffer, len(values), len(bones), con.iterations,
+                                 int(os.environ.get('SUB_NATIVE_SVD') == 'eigen'))
         if not self.handle:
             raise RuntimeError('Rust rejected the captured IK problem')
         self.buffer = (ctypes.c_float * (16*len(bones)))()
@@ -221,7 +259,7 @@ def get_factory():
     if (not enabled() or sys.platform != 'win32'
             or platform.machine().lower() not in {'amd64','x86_64'}
             or bpy.app.version[:2] not in {(4,5),(5,2)}
-            or not (Path(__file__).resolve().parents[2] / 'native/bin/sub_ik_match_native.dll').is_file()):
+            or not _native_library_path().is_file()):
         return None
     return Factory()
 

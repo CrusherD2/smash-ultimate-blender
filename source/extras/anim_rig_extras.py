@@ -187,6 +187,8 @@ def draw_anim_rig_extras(layout, context, arm):
         row.operator('sub.components_bake_remove', text='', icon='X').bake = False
     else:
         row.operator('sub.custom_components', text='Add Components')
+    from .component_workflow import draw_isolated_switches
+    draw_isolated_switches(box, arm)
     from .face_components import draw_rig_expressions
     draw_rig_expressions(box,arm)
 

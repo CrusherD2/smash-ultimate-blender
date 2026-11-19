@@ -39,6 +39,82 @@ def place_controls(context, obj, c, names, plane=False):
     bpy.ops.object.mode_set(mode='POSE')
 
 
+def draw_isolated_switches(layout, obj, uid=None):
+    controls = sorted((pb for pb in obj.pose.bones
+                       if pb.bone.get('sub_isolated_role') == 'ROOT'
+                       and (uid is None or pb.bone.get('sub_face_owner') == uid)
+                       and 'follows_parent_bone' in pb), key=lambda pb: pb.name)
+    if not controls:
+        return
+    evaluated = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    layout.label(text='Isolated Bones')
+    for pb in controls:
+        enabled = evaluated.pose.bones[pb.name].get('follows_parent_bone', 0.0) < 0.5
+        row = layout.row(align=True)
+        row.label(text=pb.bone.get('sub_isolated_source', pb.name))
+        op = row.operator('sub.isolated_toggle', text='Isolation ON' if enabled else 'Isolation OFF',
+                          depress=enabled)
+        op.control = pb.name
+        op.enabled = not enabled
+
+
+class SUB_OP_isolated_toggle(bpy.types.Operator):
+    bl_idname = 'sub.isolated_toggle'
+    bl_label = 'Toggle Bone Isolation'
+    bl_description = 'Key isolation ON for independent handles, or OFF to pose the original bone normally'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    control: bpy.props.StringProperty()
+    enabled: bpy.props.BoolProperty(default=True)
+
+    def execute(self, context):
+        from .create_animation_rig import find_target_armature
+        from ..anim.fcurve_compat import get_all_action_fcurves
+
+        obj = find_target_armature(context)
+        pb = obj.pose.bones.get(self.control) if obj else None
+        if pb is None or pb.bone.get('sub_isolated_role') != 'ROOT':
+            self.report({'ERROR'}, 'Select the armature with this isolated control')
+            return {'CANCELLED'}
+        source = obj.pose.bones.get(pb.bone.get('sub_isolated_source', ''))
+        if source is None:
+            self.report({'ERROR'}, 'The original bone is missing')
+            return {'CANCELLED'}
+        old = pb.get('follows_parent_bone', 0.0)
+        pb['follows_parent_bone'] = 0.0 if self.enabled else 1.0
+        frame = context.scene.frame_current_final
+        try:
+            if not pb.keyframe_insert(data_path='["follows_parent_bone"]', frame=frame,
+                                      group=pb.name):
+                raise RuntimeError('Could not key the isolation switch')
+        except (RuntimeError, TypeError) as exc:
+            pb['follows_parent_bone'] = old
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        path = pb.path_from_id() + '["follows_parent_bone"]'
+        for fc in get_all_action_fcurves(obj.animation_data.action, id_type='OBJECT'):
+            if fc.data_path == path:
+                for key in fc.keyframe_points:
+                    if abs(key.co.x - frame) < 1e-4:
+                        key.interpolation = 'CONSTANT'
+        if not self.enabled:
+            if 'sub_isolated_edit_visibility' not in source:
+                source['sub_isolated_edit_visibility'] = [
+                    source.bone.hide, source.bone.hide_select, getattr(source, 'hide', False)]
+            source.bone.hide = source.bone.hide_select = False
+            if hasattr(source, 'hide'):
+                source.hide = False
+        elif 'sub_isolated_edit_visibility' in source:
+            hidden = source['sub_isolated_edit_visibility']
+            source.bone.hide, source.bone.hide_select = hidden[:2]
+            if hasattr(source, 'hide'):
+                source.hide = hidden[2]
+            del source['sub_isolated_edit_visibility']
+        obj.update_tag()
+        context.view_layer.update()
+        return {'FINISHED'}
+
+
 def build_isolated(context, obj, c):
     from .custom_components import validate_component, control_name, COLLECTION
     from .create_animation_rig import _activate_armature, _assign_shape, _widget_object
@@ -119,6 +195,12 @@ def build_isolated(context, obj, c):
             pb['sub_isolated_reference'] = [
                 v for row in pb.bone.matrix_local for v in row
             ]
+        if 'follows_parent_bone' not in pb:
+            pb['follows_parent_bone'] = 0.0
+        pb.id_properties_ui('follows_parent_bone').update(
+            min=0.0, max=1.0, soft_min=0.0, soft_max=1.0,
+            description='0: independent control; 1: original animation following its parent',
+        )
         original = obj.pose.bones[n]
         prefix = 'SUB Component ' + c.uid
         for con in list(original.constraints):
@@ -192,6 +274,16 @@ def build_isolated(context, obj, c):
         con.name = 'SUB Component ' + c.uid
         con.target, con.subtarget = obj, helper
         con.target_space = con.owner_space = 'POSE'
+        driver = con.driver_add('influence').driver
+        driver.type = 'SCRIPTED'
+        variable = driver.variables.new()
+        variable.name = 'follow'
+        variable.type = 'SINGLE_PROP'
+        variable.targets[0].id = obj
+        variable.targets[0].data_path = (
+            obj.pose.bones[controls[n]].path_from_id() + '["follows_parent_bone"]'
+        )
+        driver.expression = '1.0 - follow'
     context.view_layer.update()
     return main
 
@@ -392,6 +484,7 @@ def register():
     from . import component_matching, component_selection
     component_matching.register()
     component_selection.register()
+    bpy.utils.register_class(SUB_OP_isolated_toggle)
     bpy.utils.register_class(SUB_OP_components_bake_remove)
 
 
@@ -400,3 +493,4 @@ def unregister():
     component_selection.unregister()
     component_matching.unregister()
     bpy.utils.unregister_class(SUB_OP_components_bake_remove)
+    bpy.utils.unregister_class(SUB_OP_isolated_toggle)

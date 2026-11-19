@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 mod capture;
+mod packed_capture;
 mod components;
 mod component_graph;
 mod component_math;

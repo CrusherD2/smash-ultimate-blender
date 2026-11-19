@@ -15,6 +15,20 @@ Existing dependency checks must pass before selecting it. Custom solver
 constraints, IK limits/locks/stiffness, rotational goals, native IK stretch,
 other platforms/versions and missing binaries retain the Blender path.
 
+## Packed capture
+
+The optional `sub_ik_create_packed` entry point removes JSON encoding/parsing
+from per-frame capture. It takes row-major float32 data: parent, object, target
+and pole matrices, followed by each bone's pose matrix, 3x3 rest matrix, head,
+tail and length. Counts and finite values are validated before conversion.
+The existing ABI version remains 3; older DLLs use the original JSON path.
+Python prefers a newer `sub_ik_match_native.reload.dll` when the main DLL was
+locked during staging. Restart Blender to load the replacement.
+
+A single selected limb can now use native solving after the same complete-rig
+dependency audit. This does not relax the independence or numerical guards.
+These changes reduce overhead, not the amount or quality of matching.
+
 ## Exactness and fallback
 
 The experimental accelerator checks convergence within Blender's minimum twelve

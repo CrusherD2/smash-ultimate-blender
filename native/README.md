@@ -34,6 +34,21 @@ viewport draw, and uploads just the model's bounding box (`ssbh_preview_submit_r
 / `ssbh_preview_collect_float`). Rebuild
 and replace the matching file when the crate changes.
 
+**Lightweight Lighting** is optional and off by default. It preserves full viewport
+resolution, textures and material colors, but disables shadow-map and bloom passes.
+The normal lighting mode is unchanged. The Python compositor also avoids drawing
+fallback meshes twice and reuses an already submitted first readback frame.
+GPU sharing remains automatic on supported Windows/OpenGL setups; Vulkan and
+Metal retain the full-resolution readback fallback. This does not guarantee
+Solid-mode frame rates.
+
+Mesh Edit Mode uses the live BMesh for a temporary lightweight textured preview.
+The character switches back to proper native Smash shading on leaving Edit Mode,
+including when an older blend contains a saved live-preview flag. Bone Edit Mode
+also temporarily previews rest geometry. Other characters retain native shading.
+Blender mesh edits remain intact, but native shading uses the model files on disk;
+this preview does not export or overwrite those files.
+
 ## Build
 
 1. Put `ssbh_wgpu` at `native/vendor/ssbh_wgpu`.

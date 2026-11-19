@@ -82,6 +82,7 @@ class PoseKeyWriter:
         self.interpolation = interpolation
         # (data_path, index) -> {'group': str, 'frames': [], 'values': []}
         self._channels = {}
+        self._vector_channels = {}
         self._quaternion_paths = set()
 
     # -- stashing -------------------------------------------------------------
@@ -95,8 +96,20 @@ class PoseKeyWriter:
         channel['values'].append(float(value))
 
     def stash_vector(self, data_path, frame, values, group=''):
-        for index, value in enumerate(values):
-            self.stash_channel(data_path, index, frame, value, group)
+        values = tuple(values)
+        key = (data_path, len(values))
+        channels = self._vector_channels.get(key)
+        if channels is None:
+            channels = []
+            for index in range(len(values)):
+                channel = self._channels.setdefault(
+                    (data_path, index), {'group': group, 'frames': [], 'values': []})
+                channels.append(channel)
+            self._vector_channels[key] = channels
+        frame = float(frame)
+        for channel, value in zip(channels, values):
+            channel['frames'].append(frame)
+            channel['values'].append(float(value))
 
     def stash_pose_bone(self, pose_bone, frame):
         """Stash the bone's current basis transform: location, rotation, scale.
@@ -205,6 +218,7 @@ class PoseKeyWriter:
             written += len(channel['frames'])
 
         self._channels.clear()
+        self._vector_channels.clear()
         self._quaternion_paths.clear()
         return written
 

@@ -1730,6 +1730,26 @@ pub unsafe extern "C" fn ssbh_preview_set_clear_color(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn ssbh_preview_set_lightweight(ptr: *mut Preview, enabled: i32) -> i32 {
+    clear_error();
+    let result = catch(|| {
+        let preview = unsafe { preview_mut(ptr)? };
+        let mut settings = RenderSettings::default();
+        settings.render_bloom = enabled == 0;
+        settings.render_shadows = enabled == 0;
+        preview.renderer.update_render_settings(&preview.queue, &settings);
+        Ok(())
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn ssbh_preview_load_lighting(
     ptr: *mut Preview,
     path: *const c_char,

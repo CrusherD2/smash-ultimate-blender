@@ -127,6 +127,16 @@ if args:
         ok(lib.ssbh_preview_apply_material_anim(handle, anim.encode(), 0))
         restored = render()
         assert np.abs(restored.astype(float)-after).mean() < 1
+        if hasattr(lib, 'ssbh_preview_set_lightweight'):
+            ok(lib.ssbh_preview_set_lightweight(handle, 1))
+            lightweight = render()
+            assert (lightweight[:, :, 3] > 200).sum() > 100
+            assert lightweight.shape == restored.shape
+            assert np.abs(lightweight.astype(float) - restored).sum() > 100
+            ok(lib.ssbh_preview_set_lightweight(handle, 0))
+            normal_again = render()
+            assert np.abs(normal_again.astype(float) - restored).mean() < 1
+            print("PASS: full-resolution lightweight lighting and normal-mode restoration")
         timings = []
         for _ in range(5):
             start = time.perf_counter()

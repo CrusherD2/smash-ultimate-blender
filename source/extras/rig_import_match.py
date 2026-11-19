@@ -23,9 +23,19 @@ def suspend_floor_contact(context, obj):
             context.view_layer.update()
 
 
+def _has_matching_controls(obj):
+    from . import component_workflow, finger_sliders
+
+    return bool(obj and obj.type == 'ARMATURE' and (
+        rig.armature_has_animation_rig(obj)
+        or component_workflow.has_components(obj)
+        or finger_sliders.has_finger_sliders(obj)
+    ))
+
+
 def import_with_matching(importer, context, filepath, transforms, materials, visibility, first, obj=None):
     obj = obj or context.object
-    match = bool(transforms and obj and obj.type == 'ARMATURE' and rig.armature_has_animation_rig(obj))
+    match = bool(transforms and _has_matching_controls(obj))
     states = [(con,con.mute) for pb in obj.pose.bones for con in pb.constraints] if match else []
     paused = rig._IK_FK_MUTE_SYNC_PAUSED
     if match:
@@ -48,7 +58,7 @@ def import_with_matching(importer, context, filepath, transforms, materials, vis
 
 def match_imported_animation(context,obj):
     from . import ik_channels, finger_sliders, component_matching, component_workflow
-    if not rig.armature_has_animation_rig(obj):
+    if not _has_matching_controls(obj):
         return
     action=obj.animation_data.action if obj.animation_data else None
     if action is None:

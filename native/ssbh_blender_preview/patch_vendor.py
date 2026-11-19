@@ -66,6 +66,36 @@ struct BoneRenderData {""")
     }
     return vec4(outColor, outAlpha);""")
 
+    patch(root, "renderer.rs", """            self.shadow_pass(encoder, render_models.iter());
+
+            // Create the two channel shadow map for variance shadows.
+            self.variance_shadow_pass(encoder);""", """            if self.render_settings.render_shadows {
+                self.shadow_pass(encoder, render_models.iter());
+                self.variance_shadow_pass(encoder);
+            }""")
+    patch(root, "renderer.rs", """            self.bloom_threshold_pass(encoder, self.render_settings.render_bloom);
+
+            // Repeatedly downsample and blur the thresholded bloom colors.
+            self.bloom_blur_passes(encoder);
+
+            // Combine the bloom textures into a single texture.
+            self.bloom_combine_pass(encoder);
+
+            // Upscale with bilinear filtering to smooth the result.
+            self.bloom_upscale_pass(encoder);""", """            if self.render_settings.render_bloom {
+                self.bloom_threshold_pass(encoder, true);
+                self.bloom_blur_passes(encoder);
+                self.bloom_combine_pass(encoder);
+                self.bloom_upscale_pass(encoder);
+            } else {
+                // Clear stale bloom when switching modes without running the blur chain.
+                drop(create_color_pass(
+                    encoder,
+                    &self.pass_info.bloom_upscaled.view,
+                    Some("Clear Disabled Bloom"),
+                ));
+            }""")
+
 
 if __name__ == "__main__":
     main()

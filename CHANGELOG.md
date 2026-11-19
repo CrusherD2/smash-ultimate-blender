@@ -10,6 +10,12 @@ The updater shows every section newer than the user's installed version, and
 the "What's New" popup shows them once after the update installs. Sections
 that aren't headed by a version number (like "Unreleased") are never shown.
 
+## 5.0.10 - 2026-11-19
+- Smash Viewport: optional Lightweight Lighting disables shadows and bloom without lowering resolution
+- Smash Viewport: live textured previews while editing meshes and armatures, plus improved undo refresh and less repeated upload/readback work
+- Isolated controls: keyable isolation ON/OFF switches and parent-follow behavior, including standalone component animation imports
+- Faster native IK capture and bulk animation-key buffering, with compatible fallback paths
+
 ## 5.0.9 - 2026-11-19
 - Faster Animation Rig creation: match IK, fingers and custom components together, with recovery if matching fails or is cancelled
 - Smaller orange HandIK and FootIK boxes, sized slightly larger than their FK controls without shortening the IK bones

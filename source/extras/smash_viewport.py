@@ -74,6 +74,7 @@ _saved_color = {}
 _saved_grids = {}
 _last_tick_key = None
 _last_pose_fp = None
+_last_bone_upload = None
 _last_pose_arm_fp = None
 _last_synced_arm_fp = None
 _mesh_sync_timer = False
@@ -90,6 +91,7 @@ _blit_tex_key = None
 _gpu_failed = False
 _saved_mesh_filter = {}
 _applied_bg = None
+_applied_lightweight = None
 _applied_light = None
 _applied_light_frame = None
 _bg_picker_touched = False
@@ -382,6 +384,7 @@ def _bind_lib(lib):
         ("ssbh_preview_load_lighting", c_int, [c_void_p, c_char_p]),
         ("ssbh_preview_clear_lighting", c_int, [c_void_p]),
         ("ssbh_preview_set_lighting_frame", c_int, [c_void_p, c_float]),
+        ("ssbh_preview_set_lightweight", c_int, [c_void_p, c_int]),
         ("ssbh_preview_render_wait", c_int, [
             c_void_p,
             ctypes.c_void_p,
@@ -502,6 +505,7 @@ def shutdown_preview():
     globals()['_presubmitted'] = False
     _gpu_failed = False
     _applied_bg = None
+    globals()["_applied_lightweight"] = None
     _applied_light = None
     _applied_light_frame = None
     _bone_name_tuple = None
@@ -941,6 +945,7 @@ def _viewport_enabled(scene=None):
 def _reset_extra_state():
     global _extra_fp, _extra_mesh_map, _extra_ok, _extra_smash_arms, _extra_blender_smash, _extra_gpu_order
     global _last_model_vis_state
+    globals()["_last_bone_upload"] = None
     _extra_fp = None
     _extra_mesh_map = {}
     _extra_ok = False
@@ -1002,7 +1007,7 @@ def _retarget_driver_suppressed(scene, arm):
     return False
 
 
-def _gpu_model_visible(scene, arm, view_layer, space):
+def _gpu_model_visible(scene, arm, view_layer, space, *, include_edit=False):
     """Honor Blender visibility, suppressing only the known retarget driver.
 
     Never infer duplicates from folder paths or active selection: users can
@@ -1010,6 +1015,7 @@ def _gpu_model_visible(scene, arm, view_layer, space):
     """
     return bool(
         arm is not None
+        and (include_edit or not _arm_live_preview(arm))
         and any(not _mesh_hidden(mesh, view_layer, space) for mesh in _iter_armature_meshes(arm))
         and not _retarget_driver_suppressed(scene, arm)
     )
@@ -1341,7 +1347,39 @@ def _skip_extra_mesh(obj):
     return False
 
 
+def _arm_live_preview(arm):
+    if arm is None:
+        return False
+    key = ('live_edit_arm', _id_key(arm))
+    if getattr(arm, 'mode', '') == 'EDIT':
+        _vis_cache.pop(key, None)
+        return True
+    stamp = (_scene_edit_serial, getattr(bpy.context, 'mode', 'OBJECT'))
+    cached = _vis_cache.get(key)
+    if cached is None or cached[0] != stamp:
+        # Native mesh names are shared across copies, so preview an edited character as a unit.
+        cached = (stamp, any(mesh.mode == 'EDIT' for mesh in _iter_armature_meshes(arm)))
+        _vis_cache[key] = cached
+    return cached[1]
+
+
+def _mesh_live_preview(obj, arm=None):
+    return getattr(obj, 'mode', '') == 'EDIT' or _arm_live_preview(arm)
+
+
+def _has_live_edit_preview(context):
+    scene = getattr(context, 'scene', None)
+    if scene is None:
+        return False
+    return any(obj.type == 'MESH' and _mesh_live_preview(obj, _mesh_armature(obj))
+               for obj in scene.objects)
+
+
 def _gpu_covers_mesh(obj, arm):
+    return not _mesh_live_preview(obj, arm) and _gpu_owns_mesh(obj, arm)
+
+
+def _gpu_owns_mesh(obj, arm):
     try:
         ptr = int(obj.as_pointer())
     except Exception:
@@ -1432,7 +1470,7 @@ def _extra_fingerprint(scene):
     vl = getattr(bpy.context, "view_layer", None)
     space = _preview_space(bpy.context)
     for arm in extra.iter_extra_armatures(scene, _skip_extra_armature):
-        if not _gpu_model_visible(scene, arm, vl, space):
+        if not _gpu_model_visible(scene, arm, vl, space, include_edit=True):
             parts.append(("hidden", int(arm.as_pointer())))
             continue
         folder = _folder_from_armature(arm)
@@ -1495,7 +1533,7 @@ def _ensure_extra_models(context):
     vl = getattr(context, "view_layer", None)
     space = _preview_space(context)
     for arm in extra.iter_extra_armatures(scene, _skip_extra_armature):
-        if not _gpu_model_visible(scene, arm, vl, space):
+        if not _gpu_model_visible(scene, arm, vl, space, include_edit=True):
             continue
         folder = _folder_from_armature(arm)
         try:
@@ -1544,6 +1582,7 @@ def _ensure_extra_models(context):
     _extra_blender_smash = blender_smash
     _extra_gpu_order = gpu_order
     _extra_ok = True
+    globals()["_last_bone_upload"] = None
     _last_pose_fp = None
     _last_vis_state = None
     _sync_gpu_model_visibility(context)
@@ -2018,7 +2057,7 @@ def _set_camera(preview, rv3d, region, width, height, scale, space=None):
 
 
 def _set_bones(preview, depsgraph, context):
-    global _name_keep, _name_arr_keep, _bone_name_tuple
+    global _name_keep, _name_arr_keep, _bone_name_tuple, _last_bone_upload
     import numpy as np
     names, matrices = _collect_smash_bones(depsgraph, context)
     extra_names, extra_matrices = _collect_extra_bones(context)
@@ -2036,13 +2075,19 @@ def _set_bones(preview, depsgraph, context):
     name_arr = _name_arr_keep
     # Pass numpy's buffer directly; building a ctypes array element by element was ~2 ms.
     matrices = np.ascontiguousarray(matrices, dtype=np.float32)
+    upload_key = (preview, key, matrices.tobytes())
+    if upload_key == _last_bone_upload:
+        return 0
     mat_arr = matrices.ctypes.data_as(POINTER(c_float))
-    return _lib.ssbh_preview_set_world_transforms(
+    result = _lib.ssbh_preview_set_world_transforms(
         preview,
         name_arr,
         mat_arr,
         len(names),
     )
+    if result == 0:
+        _last_bone_upload = upload_key
+    return result
 
 
 def _smash_mesh_object_name(name):
@@ -2385,7 +2430,7 @@ def _collect_mesh_visibility_now(context, space=None):
         if raw.startswith("SUB_WGT_"):
             return
         extra = _extra_mesh_map.get(ptr)
-        hidden = _gpu_mesh_hidden(obj, arm, tracks, view_layer, space)
+        hidden = _mesh_live_preview(obj, arm) or _gpu_mesh_hidden(obj, arm, tracks, view_layer, space)
         vis = 0 if hidden else 1
         if extra is not None:
             add_vis(extra[0], extra[1], vis)
@@ -3401,6 +3446,22 @@ def _using_gpu():
         return False
 
 
+def _apply_performance_settings(preview, scene):
+    global _applied_lightweight, _last_error
+    setter = getattr(_lib, "ssbh_preview_set_lightweight", None)
+    if setter is None:
+        return False
+    ssp = getattr(scene, "sub_scene_properties", None)
+    lightweight = bool(getattr(ssp, "smash_vp_lightweight", False))
+    if lightweight == _applied_lightweight:
+        return False
+    if setter(preview, int(lightweight)) != 0:
+        _last_error = _native_error() or "Failed to update viewport lighting mode"
+        return False
+    _applied_lightweight = lightweight
+    return True
+
+
 def _apply_viewport_look(preview, scene):
     global _applied_bg, _applied_light, _applied_light_frame, _last_error
     if preview is None or _lib is None or scene is None:
@@ -3504,6 +3565,8 @@ def _animation_playing(context):
 
 def _prepare_preview(context=None, depsgraph=None):
     global _frame_memo
+    if _reload_after_undo and bpy.app.timers.is_registered(_after_undo_viewport_refresh):
+        return None
     _frame_memo = {}
     try:
         return _prepare_preview_now(context, depsgraph)
@@ -3672,6 +3735,7 @@ def _prepare_preview_now(context=None, depsgraph=None):
                     return None
             _last_cv31_state = mat_state
             needs_gpu = True
+    needs_gpu = _apply_performance_settings(preview, scene) or needs_gpu
     _apply_viewport_look(preview, scene)
     if frame_changed:
         _last_frame = frame
@@ -3842,6 +3906,9 @@ def _on_scene_redraw(*args):
             break
         if isinstance(updated, bpy.types.Armature):
             pose_dirty = True
+            channels_dirty = True
+            continue
+        if isinstance(updated, bpy.types.Mesh):
             channels_dirty = True
             continue
         if isinstance(updated, bpy.types.Object):
@@ -4061,9 +4128,9 @@ def render_cropped(preview, width, height, force):
     if collect is None:
         return False
     key = ("cropped", width, height)
-    force = force or _blit_tex_key != key
-    if force or _presubmitted:
-        if force and _lib.ssbh_preview_submit_readback(preview) != 0:
+    needs_submit = force or (_blit_tex_key != key and not _presubmitted)
+    if needs_submit or _presubmitted:
+        if needs_submit and _lib.ssbh_preview_submit_readback(preview) != 0:
             _last_error = _native_error() or "render failed"
             _blit_tex = _blit_tex_key = None
             _presubmitted = False
@@ -4188,6 +4255,11 @@ def draw_smash_viewport_ui(layout, context):
         return
     box = layout.column()
     box.prop(ssp, "smash_viewport", text="Smash Viewport Engine")
+    box.prop(ssp, "smash_vp_lightweight", text="Lightweight Lighting")
+    if _has_live_edit_preview(context):
+        box.label(text="Edit Mode temporarily uses a textured preview.", icon="INFO")
+    if ssp.smash_vp_lightweight and _lib is not None and not hasattr(_lib, "ssbh_preview_set_lightweight"):
+        box.label(text="Update the native plugin for lightweight lighting.", icon="ERROR")
     path = native_plugin_path()
     if path:
         box.label(text="Plugin: " + os.path.basename(path), icon="CHECKMARK")
@@ -4833,17 +4905,15 @@ def _iter_blender_shade_meshes_now(context, skip_smash, space=None):
         if name.startswith("SUB_WGT_"):
             continue
         try:
-            if int(obj.as_pointer()) in _extra_mesh_map:
-                continue
-        except Exception:
-            pass
-        try:
             arm = getattr(obj, "parent", None)
             if arm is None or getattr(arm, "type", "") != "ARMATURE":
                 arm = _mesh_armature(obj)
         except Exception:
             arm = None
-        if skip_smash:
+        live = _mesh_live_preview(obj, arm)
+        if not live and _id_key(obj) in _extra_mesh_map:
+            continue
+        if skip_smash and not live:
             if arm is not None:
                 if _gpu_covers_mesh(obj, arm):
                     continue
@@ -4859,6 +4929,9 @@ def _iter_blender_shade_meshes_now(context, skip_smash, space=None):
             if smash_arm:
                 continue
         if _mesh_hidden(obj, view_layer, space):
+            continue
+        if live and _gpu_mesh_hidden(obj, arm, _vis_track_map(arm) if arm is not None else None,
+                                     view_layer, space):
             continue
         yield obj
 
@@ -5091,6 +5164,30 @@ def _shade_extract_parts(mesh, obj):
     return parts
 
 
+def _shade_extract_edit_parts(obj):
+    import bmesh
+    import numpy as np
+
+    bm = bmesh.from_edit_mesh(obj.data)
+    bm.normal_update()
+    triangles = bm.calc_loop_triangles()
+    looks = _material_looks_for_mesh(obj.data, obj)
+    parts = []
+    for slot, look in enumerate(looks):
+        loops = [loop for tri in triangles if not tri[0].face.hide
+                 and min(tri[0].face.material_index, len(looks) - 1) == slot for loop in tri]
+        if not loops:
+            continue
+        layer = bm.loops.layers.uv.get(look[1]) if look[1] else None
+        if layer is None:
+            layer = bm.loops.layers.uv.get('map1') or bm.loops.layers.uv.active
+        positions = np.asarray([tuple(loop.vert.co) for loop in loops], dtype=np.float32)
+        normals = np.asarray([tuple(loop.vert.normal) for loop in loops], dtype=np.float32)
+        uv = np.asarray([tuple(loop[layer].uv) if layer else (0.0, 0.0) for loop in loops], dtype=np.float32)
+        parts.append((positions, normals, uv, look[2], look[0]))
+    return parts
+
+
 def _shade_cache_entry(obj, context, depsgraph, evaluate, pose_key=0):
     data = getattr(obj, "data", None)
     if data is None:
@@ -5104,13 +5201,15 @@ def _shade_cache_entry(obj, context, depsgraph, evaluate, pose_key=0):
         len(data.vertices),
         pose_key if evaluate else 0,
         mat_key,
+        _scene_edit_serial if _mesh_live_preview(obj, _mesh_armature(obj)) else 0,
+        obj.mode,
     )
     cached = _shade_cache.get(obj.as_pointer())
     if cached is not None and cached[0] == key:
         return cached
     mesh = data
     eval_obj = obj
-    if evaluate:
+    if evaluate and obj.mode != 'EDIT':
         try:
             eval_obj = obj.evaluated_get(depsgraph)
             mesh = eval_obj.to_mesh()
@@ -5118,7 +5217,7 @@ def _shade_cache_entry(obj, context, depsgraph, evaluate, pose_key=0):
             mesh = data
             eval_obj = obj
     try:
-        parts = _shade_extract_parts(mesh, obj)
+        parts = _shade_extract_edit_parts(obj) if obj.mode == 'EDIT' else _shade_extract_parts(mesh, obj)
     except Exception:
         parts = []
     finally:
@@ -5220,10 +5319,11 @@ def _draw_blender_meshes(context, depsgraph, skip_smash):
     keep = set()
     for obj in meshes:
         keep.add(obj.as_pointer())
-        evaluate = _mesh_has_armature_mod(obj)
+        arm = _mesh_armature(obj)
+        evaluate = _mesh_has_armature_mod(obj) and obj.mode != 'EDIT' and not (
+            arm is not None and arm.mode == 'EDIT')
         pose_key = 0
         if evaluate:
-            arm = _mesh_armature(obj)
             if arm is not None:
                 arm_ptr = arm.as_pointer()
                 pose_key = pose_keys.get(arm_ptr)
@@ -5350,16 +5450,20 @@ def _draw_smash_overlay_inner(context=None, depsgraph=None):
             dest_h = max(int(region.height), 1)
     _fill_viewport_color(dest_w, dest_h)
     gpu_cover = _gpu_covers_scene()
-    if not gpu_cover:
-        _draw_blender_meshes(context, depsgraph, skip_smash=False)
     if prepared is None:
+        if not gpu_cover:
+            _draw_blender_meshes(context, depsgraph, skip_smash=False)
         return
     preview, width, height, size_changed, region, rv3d, needs_gpu = prepared
     if size_changed:
         _gpu_failed = False
     gpu_rc = -2
     flags = (1 if needs_gpu else 0) | 2
-    if not _gpu_failed and gl_present_supported():
+    use_shared_gpu = not _gpu_failed and gl_present_supported()
+    draw_underlay = not gpu_cover and use_shared_gpu
+    if draw_underlay:
+        _draw_blender_meshes(context, depsgraph, skip_smash=False)
+    if use_shared_gpu:
         try:
             gpu_rc = int(
                 _lib.ssbh_preview_present_gl(
@@ -5370,6 +5474,8 @@ def _draw_smash_overlay_inner(context=None, depsgraph=None):
             _last_error = str(exc)
             gpu_rc = -1
         if gpu_rc == 0:
+            if not draw_underlay and _has_live_edit_preview(context):
+                _draw_blender_meshes(context, depsgraph, skip_smash=True)
             _reload_after_undo = False
             _last_error = ""
             status = f"{width}x{height} ssbh_wgpu GPU"
@@ -5398,30 +5504,33 @@ def _draw_smash_overlay_inner(context=None, depsgraph=None):
         _last_error = f"Readback failed: {exc}"
         cropped = False
     if cropped:
-        _draw_blender_meshes(
-            context,
-            depsgraph,
-            skip_smash=bool(_loaded_folder) or bool(_extra_gpu_order),
-        )
+        if not draw_underlay:
+            _draw_blender_meshes(
+                context,
+                depsgraph,
+                skip_smash=bool(_loaded_folder) or bool(_extra_gpu_order),
+            )
         return
     _cpu_render(preview, width, height, force=bool(needs_gpu or size_changed))
     tex_w, tex_h = _pixel_size
     if tex_w < 1 or tex_h < 1 or not _pixels:
-        _draw_blender_meshes(
-            context,
-            depsgraph,
-            skip_smash=bool(_loaded_folder) or bool(_extra_gpu_order),
-        )
+        if not draw_underlay:
+            _draw_blender_meshes(
+                context,
+                depsgraph,
+                skip_smash=bool(_loaded_folder) or bool(_extra_gpu_order),
+            )
         return
     try:
         _blit_rgba(tex_w, tex_h, _pixels, dest_w, dest_h)
     except Exception as exc:
         _last_error = f"Blit failed: {exc}"
-    _draw_blender_meshes(
-        context,
-        depsgraph,
-        skip_smash=bool(_loaded_folder) or bool(_extra_gpu_order),
-    )
+    if not draw_underlay:
+        _draw_blender_meshes(
+            context,
+            depsgraph,
+            skip_smash=bool(_loaded_folder) or bool(_extra_gpu_order),
+        )
 
 
 def _ensure_draw_handler():
@@ -5671,6 +5780,7 @@ class RENDER_PT_smash_viewport(bpy.types.Panel):
         layout.prop(ssp, "smash_vp_bg_color", text="Background")
         col = layout.column(align=True)
         col.prop(ssp, "smash_vp_light_path", text="Stage Lights")
+        col.prop(ssp, "smash_vp_lightweight", text="Lightweight Lighting")
         row = layout.row(align=True)
         row.operator(
             SUB_OP_smash_vp_load_lighting.bl_idname,
@@ -5761,10 +5871,40 @@ def _resume_if_enabled():
     return None
 
 
+def _reuse_undo_extra_models(scene):
+    global _extra_fp, _extra_mesh_map, _extra_gpu_order, _extra_smash_arms
+    if not _extra_ok or not _extra_fp or _extra_blender_smash:
+        return False
+    old = _extra_fp[1:]
+    # Built Blender meshes may have changed even when their vertex counts did not.
+    if any(part[0] != 'smash' for part in old):
+        return False
+    current = _extra_fingerprint(scene)
+    if not current or current[0] != _extra_fp[0]:
+        return False
+    new = current[1:]
+    if any(part[0] != 'smash' for part in new):
+        return False
+    before = {(part[2], part[3]): part[1] for part in old}
+    after = {(part[2], part[3]): part[1] for part in new}
+    if before.keys() != after.keys():
+        return False
+    if set(_extra_gpu_order) != set(before.values()):
+        return False
+    pointers = {before[key]: after[key] for key in before}
+    if any(ptr not in pointers for ptr in (*_extra_gpu_order, *_extra_mesh_map, *_extra_smash_arms)):
+        return False
+    _extra_mesh_map = {pointers[ptr]: value for ptr, value in _extra_mesh_map.items()}
+    _extra_gpu_order = [pointers[ptr] for ptr in _extra_gpu_order]
+    _extra_smash_arms = {pointers[ptr] for ptr in _extra_smash_arms}
+    _extra_fp = current
+    return True
+
+
 @persistent
 def _on_undo_redo(_dummy):
     """Refresh pose, extras, and viewport overrides after Blender rebuilds IDs."""
-    global _reload_after_undo, _gpu_failed
+    global _reload_after_undo, _gpu_failed, _extra_fp
     if _ignore_update:
         return
     scene = _first_scene()
@@ -5773,32 +5913,39 @@ def _on_undo_redo(_dummy):
     _gpu_failed = False
     _drop_viewport_object_maps()
     _clear_undo_object_caches()
-    _clear_extra_models()
+    extra_fp = _extra_fp
     invalidate_animation_state(redraw=False)
-    if _smash_arm_fp(scene) != _loaded_arm_fp:
-        shutdown_preview()
-        try:
-            bpy.app.timers.register(_resume_if_enabled, first_interval=0.05)
-        except Exception:
-            pass
-        return
+    _extra_fp = extra_fp
     _reload_after_undo = True
     try:
-        bpy.app.timers.register(_after_undo_viewport_refresh, first_interval=0.0)
+        if not bpy.app.timers.is_registered(_after_undo_viewport_refresh):
+            bpy.app.timers.register(_after_undo_viewport_refresh, first_interval=0.0)
     except Exception:
         _after_undo_viewport_refresh()
     _tag_preview_redraw()
 
 
 def _after_undo_viewport_refresh():
-    global _reload_after_undo
+    global _reload_after_undo, _extra_fp, _loaded_arm_fp
     scene = _first_scene()
     if scene is None or not _viewport_enabled(scene):
+        _reload_after_undo = False
         return None
-    _heal_smash_file_viewport_state()
+    if _loaded_folder and _primary_smash_armature(scene) is None:
+        shutdown_preview()
+        try:
+            bpy.app.timers.register(_resume_if_enabled, first_interval=0.05)
+        except Exception:
+            pass
+        return None
+    if not _reuse_undo_extra_models(scene):
+        _clear_extra_models()
+    extra_fp = _extra_fp
+    invalidate_animation_state(redraw=False)
+    _extra_fp = extra_fp
+    _loaded_arm_fp = _smash_arm_fp(scene)
     _sync_armature_mod_viewport()
-    invalidate_animation_state(redraw=True)
-    _reload_after_undo = False
+    _tag_preview_redraw()
     return None
 
 

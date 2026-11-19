@@ -1177,6 +1177,10 @@ def draw_editor(layout, context):
         text='Select Control in Viewport',
         icon='RESTRICT_SELECT_OFF',
     ).action = 'SELECT_CONTROL'
+    if c.kind == 'ISOLATED':
+        from .component_workflow import draw_isolated_switches
+
+        draw_isolated_switches(layout, obj, c.uid)
     if c.kind in {'EYES', 'LIDS', 'MOUTH'}:
         from .face_components import draw_face
 
