@@ -4942,7 +4942,14 @@ def _mesh_armature(obj):
     except Exception:
         key = id(obj)
     if key in _shade_arm_cache:
-        return _shade_arm_cache[key]
+        cached = _shade_arm_cache[key]
+        try:
+            if cached is None or cached.type == 'ARMATURE':
+                return cached
+        except ReferenceError:
+            pass
+        # Deletion and undo can invalidate RNA objects before the next cache reset.
+        _shade_arm_cache.pop(key, None)
     arm = None
     try:
         arm = obj.find_armature()

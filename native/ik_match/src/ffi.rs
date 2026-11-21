@@ -113,6 +113,30 @@ pub unsafe extern "C" fn sub_ik_free(handle: *mut pose::Case) {
     }
 }
 
+// The caller owns nine readable point floats, one output angle, and len output floats.
+#[no_mangle]
+pub unsafe extern "C" fn sub_ik_calibrate(
+    handle: *mut pose::Case, points: *const f32, angle: f64,
+    out_angle: *mut f64, output: *mut f32, len: usize,
+) -> i32 {
+    if handle.is_null() || points.is_null() || out_angle.is_null() || output.is_null()
+        || len != 32 || !angle.is_finite() {
+        return 0;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let case = &mut *handle;
+        if case.deltas.len() != 2 { return 0; }
+        let values: [f32;9] = slice::from_raw_parts(points,9).try_into().unwrap();
+        if values.iter().any(|v| !v.is_finite()) { return 0; }
+        let Some((angle, matrices)) = pose::calibrate(case, values, angle) else { return 2; };
+        for (dst, src) in slice::from_raw_parts_mut(output,len).iter_mut().zip(matrices.iter().flatten().flatten()) {
+            *dst = *src;
+        }
+        *out_angle = angle;
+        1
+    })).unwrap_or(0)
+}
+
 #[no_mangle]
 pub extern "C" fn sub_ik_abi_version() -> u32 {
     3
@@ -284,6 +308,17 @@ mod tests {
         // refused on this check rather than calling a missing symbol.
         assert_eq!(sub_ik_abi_version(), 3);
     }
+    #[test]
+    fn calibration_rejects_null_handles() {
+        let points = [0.0f32;9];
+        let mut angle = 0.0;
+        let mut output = [0.0;32];
+        unsafe {
+            assert_eq!(sub_ik_calibrate(ptr::null_mut(), points.as_ptr(), 0.,
+                &mut angle, output.as_mut_ptr(), output.len()), 0);
+        }
+    }
+
     #[test]
     fn search_rejects_malformed_requests() {
         let seeds = [0.0f64; 3];

@@ -29,6 +29,16 @@ A single selected limb can now use native solving after the same complete-rig
 dependency audit. This does not relax the independence or numerical guards.
 These changes reduce overhead, not the amount or quality of matching.
 
+## Joint calibration
+
+The optional `sub_ik_calibrate` entry point runs the eight-step middle-joint
+calibration inside the DLL. Python checks its final matrices against one Blender
+evaluation (maximum component error below 0.0002) before using the angle.
+Missing entry points, rejected geometry, and verification mismatches retain the
+Blender calibration. ABI 3 remains compatible with older DLLs.
+`SUB_NATIVE_CALIBRATION=0` disables only this step for comparisons;
+`SUB_NATIVE_IK=1` verification mode also retains Blender calibration.
+
 ## Exactness and fallback
 
 The experimental accelerator checks convergence within Blender's minimum twelve

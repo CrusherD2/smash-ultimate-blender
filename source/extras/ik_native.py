@@ -141,6 +141,11 @@ class Solver:
                 ctypes.POINTER(ctypes.c_double), ctypes.c_double, ctypes.c_size_t,
                 ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_float), ctypes.c_size_t]
             library.sub_ik_search.restype = ctypes.c_int
+            calibrate = getattr(library, 'sub_ik_calibrate', None)
+            if calibrate is not None:
+                calibrate.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.c_double,
+                                      ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_float), ctypes.c_size_t]
+                calibrate.restype = ctypes.c_int
             _dll = library
         packed = getattr(_dll, 'sub_ik_create_packed', None)
         if packed is None:
@@ -193,6 +198,19 @@ class Solver:
                                     self.buffer, len(self.buffer))
         if status != 1:
             self.fallback = True
+            return None
+        matrices = [Matrix([self.buffer[offset+r*4:offset+r*4+4] for r in range(4)])
+                    for offset in range(0, len(self.buffer), 16)]
+        return angle.value, matrices
+
+    def calibrate(self, root, mid, axis, seed):
+        function = getattr(_dll, 'sub_ik_calibrate', None)
+        if function is None or self.fallback:
+            return None
+        points = (ctypes.c_float * 9)(*root, *mid, *axis)
+        angle = ctypes.c_double()
+        status = function(self.handle, points, seed, ctypes.byref(angle), self.buffer, len(self.buffer))
+        if status != 1:
             return None
         matrices = [Matrix([self.buffer[offset+r*4:offset+r*4+4] for r in range(4)])
                     for offset in range(0, len(self.buffer), 16)]

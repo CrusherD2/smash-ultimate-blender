@@ -228,6 +228,62 @@ pub fn search(
     Some((angle, result.matrices))
 }
 
+pub fn calibrate(case: &mut Case, points: [f32; 9], mut angle: f64) -> Option<(f64, Vec<Mat4>)> {
+    if case.deltas.len() != 2 || !angle.is_finite() || points.iter().any(|v| !v.is_finite()) {
+        return None;
+    }
+    let root = [points[0], points[1], points[2]];
+    let mid = [points[3], points[4], points[5]];
+    let axis = [points[6], points[7], points[8]];
+    fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+        (a[0] * b[0] + a[1] * b[1]) + a[2] * b[2]
+    }
+    fn evaluate(case: &mut Case, angle: f64) -> Option<Vec<Mat4>> {
+        case.job.angle = (angle.sin().atan2(angle.cos()) as f32) as f64;
+        let result = solve_fast(case);
+        if !result.kernel.converged || result.matrices.iter().flatten().flatten().any(|v| !v.is_finite()) {
+            return None;
+        }
+        Some(result.matrices)
+    }
+    fn error(matrices: &[Mat4], mid: [f32; 3]) -> f64 {
+        (0..3).rev().map(|i| {
+            let d = matrices[1][i][3] - mid[i];
+            (d * d) as f64
+        }).sum()
+    }
+    if (dot(axis, axis) - 1.0).abs() > 1e-4 {
+        return None;
+    }
+    let mut matrices = evaluate(case, angle)?;
+    for _ in 0..8 {
+        if error(&matrices, mid) < 1e-10 {
+            break;
+        }
+        let mut a = std::array::from_fn(|i| matrices[1][i][3] - root[i]);
+        let mut b = std::array::from_fn(|i| mid[i] - root[i]);
+        let da = dot(a, axis);
+        let db = dot(b, axis);
+        for i in 0..3 {
+            a[i] -= axis[i] * da;
+            b[i] -= axis[i] * db;
+        }
+        let cross = [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+        let delta = if dot(a,a).sqrt().min(dot(b,b).sqrt()) < 1e-8 { 0.0 }
+                    else { (dot(axis,cross) as f64).atan2(dot(a,b) as f64) };
+        let mut best = (f64::INFINITY, angle);
+        for candidate in [angle, angle + delta, angle - delta] {
+            let score = error(&evaluate(case, candidate)?, mid);
+            if score < best.0 {
+                best = (score, candidate);
+            }
+        }
+        angle = best.1;
+        matrices = evaluate(case, angle)?;
+    }
+    Some((angle, matrices))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,6 +345,18 @@ mod tests {
         let (angle, _) = search(&mut subject, &reference, [0.25, 0.25, 0.25], f64::INFINITY, 12)
             .expect("the reachable case should converge");
         assert_eq!(angle, 0.25);
+    }
+
+    #[test]
+    fn calibration_preserves_an_already_matched_joint() {
+        let mut subject = case();
+        let matrices = solve_fast(&subject).matrices;
+        let mid = &matrices[1];
+        let (_, actual) = calibrate(&mut subject,
+            [0.,0.,0.,mid[0][3],mid[1][3],mid[2][3],0.,1.,0.], 0.).unwrap();
+        assert_eq!(actual, matrices);
+        assert!(calibrate(&mut subject, [0.;9], 0.).is_none());
+        assert!(calibrate(&mut subject, [f32::NAN;9], 0.).is_none());
     }
 
     #[test]

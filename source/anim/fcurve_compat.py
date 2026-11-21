@@ -393,11 +393,8 @@ def style_ik_fk_fcurve(fcurve):
         if value >= 0.5:
             return IK_KEYFRAME_TYPE, IK_HANDLE_TYPE
         return FK_KEYFRAME_TYPE, FK_HANDLE_TYPE
-    _style_fcurve_keys(
-        fcurve,
-        interpolation='LINEAR',
-        key_type_for_value=_ik_fk_style,
-    )
+    # Styling must not turn a held IK/FK range into an interpolated transition.
+    _style_fcurve_keys(fcurve, key_type_for_value=_ik_fk_style)
     apply_dopesheet_key_colors()
 
 

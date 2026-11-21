@@ -1,6 +1,7 @@
 from . import attribute_renamer
 from . import clipboard_image
 from . import create_animation_rig
+from . import ik_rig_upgrade
 from . import create_meshes
 from . import eye_rig
 from . import smash_viewport
@@ -79,6 +80,7 @@ def register():
     eye_rig.register()
     smash_viewport.register()
     create_animation_rig.register()
+    ik_rig_upgrade.register()
     
     # Register misc_panel first since IK panel depends on it
     misc_panel.register()
@@ -104,6 +106,7 @@ def unregister():
     face_picker.unregister()
     smash_viewport.unregister()
     eye_rig.unregister()
+    ik_rig_upgrade.unregister()
     create_animation_rig.unregister()
     viewport_capture.unregister()
     ik_floor_contact.unregister()

@@ -31,6 +31,10 @@ PULL_END = 'SUB IK Pull End'
 ARM_PULL_PROPERTY = 'sub_ik_arm_pull'
 PULL_BASE = 'SUB IK Pull Base'
 SOLVER_BASE = 'SUB IK Solver Base'
+PULL_ROTATION = 'SUB IK Matched Rotation'
+PULL_TWIST = 'SUB IK Pole Twist'
+PULL_AIM = 'SUB IK Arm Pull Aim'
+FOLLOW_PROPERTY = 'sub_ik_stretch_follow_'
 # Matched reference, keyed on each IK target/pole per frame. These store the
 # post-placement basis locations -- the same channels the fade drivers read --
 # so live-vs-reference is exactly zero at the matched pose by construction.
@@ -315,6 +319,9 @@ def create_controls(context, obj, limbs='BOTH', custom_only=False, custom_target
     if rig.armature_has_animation_rig(obj):
         from .control_appearance import style_ik_controls
         style_ik_controls(context, obj)
+    if jobs and fresh_controls:
+        from .ik_rig_upgrade import REVISION_KEY, CURRENT_REVISION
+        obj.data[REVISION_KEY] = CURRENT_REVISION
     return len(jobs)
 
 
@@ -423,6 +430,35 @@ def _pull_rotation_axis(obj, names, name):
     if name == bend_name(obj, names):
         return 'Y'
     return None
+
+
+def _wire_pull_rotation(obj, pull, name, pole, axis):
+    # Translation fades positional residuals, never the limb's matched axial roll.
+    for label, subtarget in ((PULL_ROTATION, CORRECTION_PREFIX + name),
+                             (PULL_TWIST, PREFIX + name)):
+        con = pull.constraints.get(label) or pull.constraints.new('COPY_ROTATION')
+        con.name = label
+        con.target, con.subtarget = obj, subtarget
+        con.target_space = con.owner_space = 'POSE'
+        con.mix_mode = 'REPLACE'
+        index = list(pull.constraints).index(pull.constraints[PULL_BASE]) + 1
+        if label == PULL_TWIST:
+            index += 1
+        pull.constraints.move(list(pull.constraints).index(con), index)
+        con.influence = 1.0 if label == PULL_ROTATION else 0.0
+        if label == PULL_TWIST and axis is not None:
+            driver = con.driver_add('influence').driver
+            driver.type = 'SCRIPTED'
+            for variable in list(driver.variables):
+                driver.variables.remove(variable)
+            variable = driver.variables.new()
+            variable.name, variable.type = 'r', 'TRANSFORMS'
+            target = variable.targets[0]
+            target.id, target.bone_target = obj, pole
+            target.transform_space = 'LOCAL_SPACE'
+            target.transform_type = 'ROT_' + axis
+            target.rotation_mode = 'SWING_TWIST_' + axis
+            driver.expression = 'min(sqrt(r*r)/pi,1)'
 
 
 def _drive_pull_base(obj, pull, target, pole, inner, outer, rotation_axis=None, reach=None):
@@ -547,6 +583,11 @@ def _detail_driver_specs(obj, jobs, owners):
                     bone_inputs['s'] = (PREFIX + path[0], PREFIX + path[-1], 'LOC_DIFF')
                     bone_expression = 'min(' + bone_expression + ',max(1-max(d-s,0)/max(s*.01,1e-6),0))'
                 specs[con.path_from_id() + '.influence'] = (bone_expression, bone_inputs)
+                twist = pull.constraints.get(PULL_TWIST)
+                if (axis is not None and twist is not None and twist.type == 'COPY_ROTATION'
+                        and twist.target == obj and twist.subtarget == PREFIX + name):
+                    specs[twist.path_from_id() + '.influence'] = (
+                        'min(sqrt(r*r)/pi,1)', {'r': (pole, 'ROT_' + axis)})
     return specs
 
 
@@ -936,6 +977,9 @@ def wire(obj):
         for first, second in zip(path, path[1:]):
             distances.append(distances[-1] + (
                 obj.data.bones[second].head_local - obj.data.bones[first].head_local).length)
+        bend = bend_name(obj, names)
+        bend_fraction = (distances[path.index(bend)] / distances[-1]
+                         if bend in path and distances[-1] > 1e-8 else None)
         for index, name in enumerate(path):
             source = obj.pose.bones[name]
             pull = obj.pose.bones.get(PULL_PREFIX + name)
@@ -972,6 +1016,8 @@ def wire(obj):
                     # Pre-match or legacy rig: exact legacy result until a
                     # match keys references and installs the fade driver.
                     base.influence = 1.0
+            if correction is not None and index < len(path) - 1:
+                _wire_pull_rotation(obj, pull, name, pole, _pull_rotation_axis(obj, names, name))
             blend.subtarget = pull.name
             _ensure_constraint_influence_driver(obj, source, blend, _limb_switch_prop(kind))
             blend.mute = False
@@ -994,12 +1040,14 @@ def wire(obj):
                 con.map_from = con.map_to = 'LOCATION'
                 con.mix_mode = 'ADD'
                 con.use_motion_extrapolate = True
+                endpoint = index == len(path) - 1
+                weight_term = None if endpoint else follow_weight(weight, bend_fraction)
                 for axis in 'xyz':
                     setattr(con, 'from_min_' + axis, 0.0)
                     setattr(con, 'from_max_' + axis, 1.0)
                     setattr(con, 'to_min_' + axis, 0.0)
-                    setattr(con, 'to_max_' + axis, sign * weight)
-                _stretch_chain_driver(obj, con, kind, index == len(path) - 1)
+                    setattr(con, 'to_max_' + axis, sign * (1.0 if weight_term else weight))
+                _stretch_chain_driver(obj, con, kind, endpoint, weight_term)
                 con.mute = False
     for _kind, names, _target, pole in chains(obj):
         obj.pose.bones[pole].lock_rotation = (False, False, False)
@@ -1042,7 +1090,30 @@ def wire(obj):
     ik_floor_contact.rewire(obj)
 
 
-def _stretch_chain_driver(obj, constraint, kind, endpoint):
+def _num(value):
+    return repr(round(value, 6))
+
+
+def follow_position(bend_fraction):
+    """Where the bend sits along the stretch, as a driver term of ``follow``.
+
+    0.5 keeps the rest-length proportion; 0 holds the bend at the root, 1 at the end.
+    """
+    return (f'(min(2*follow,1)*{_num(bend_fraction)}'
+            f'+max(2*follow-1,0)*{_num(1.0 - bend_fraction)})')
+
+
+def follow_weight(weight, bend_fraction):
+    """Stretch share of one chain bone, remapped so the bend lands at ``follow_position``."""
+    if bend_fraction is None or not 1e-6 < bend_fraction < 1.0 - 1e-6 or weight < 1e-8:
+        return None
+    position = follow_position(bend_fraction)
+    if weight <= bend_fraction + 1e-9:
+        return f'{_num(weight / bend_fraction)}*{position}'
+    return f'(1-{_num((1.0 - weight) / (1.0 - bend_fraction))}*(1-{position}))'
+
+
+def _stretch_chain_driver(obj, constraint, kind, endpoint, weight_term=None):
     driver = constraint.driver_add('influence').driver
     driver.type = 'SCRIPTED'
     for variable in list(driver.variables):
@@ -1051,14 +1122,21 @@ def _stretch_chain_driver(obj, constraint, kind, endpoint):
     chain_prop = 'sub_ik_stretch_chain_' + kind.lower()
     if hasattr(obj.data, chain_prop):
         props.append(('chain', chain_prop))
+    follow_prop = FOLLOW_PROPERTY + kind.lower()
+    if weight_term and len(props) == 2 and hasattr(obj.data, follow_prop):
+        props.append(('follow', follow_prop))
     for variable_name, prop in props:
         variable = driver.variables.new()
         variable.name, variable.type = variable_name, 'SINGLE_PROP'
         variable.targets[0].id_type = 'ARMATURE'
         variable.targets[0].id = obj.data
         variable.targets[0].data_path = prop
-    driver.expression = 'stretch' if endpoint else (
-        'stretch * chain' if len(props) == 2 else '0')
+    if endpoint:
+        driver.expression = 'stretch'
+    elif len(props) == 3:
+        driver.expression = 'stretch * chain * ' + weight_term
+    else:
+        driver.expression = 'stretch * chain' if len(props) == 2 else '0'
 
 
 def _endpoint_stretch_driver(obj, constraint, kind):
@@ -1080,22 +1158,46 @@ def _endpoint_stretch_driver(obj, constraint, kind):
     driver.expression = 'stretch * (1-chain)' if len(props) == 2 else 'stretch'
 
 
-def _arm_pull_driver(obj, constraint, pole):
+def _arm_pull_driver(obj, constraint, pole, position=None):
     driver = constraint.driver_add('influence').driver
     driver.type = 'SCRIPTED'
     for variable in list(driver.variables):
         driver.variables.remove(variable)
-    for variable_name, id_type, target_id, data_path in (
-            ('pull', 'ARMATURE', obj.data,
-             obj.data.bones[pole].path_from_id() + '.' + ARM_PULL_PROPERTY),
-            ('stretch', 'ARMATURE', obj.data, 'sub_ik_stretch_arms'),
-            ('chain', 'ARMATURE', obj.data, 'sub_ik_stretch_chain_arms')):
+    inputs = [('pull', obj.data.bones[pole].path_from_id() + '.' + ARM_PULL_PROPERTY),
+              ('stretch', 'sub_ik_stretch_arms'),
+              ('chain', 'sub_ik_stretch_chain_arms')]
+    if position is not None:
+        inputs.append(('follow', FOLLOW_PROPERTY + 'arms'))
+    for variable_name, data_path in inputs:
         variable = driver.variables.new()
         variable.name, variable.type = variable_name, 'SINGLE_PROP'
-        variable.targets[0].id_type = id_type
-        variable.targets[0].id = target_id
+        variable.targets[0].id_type = 'ARMATURE'
+        variable.targets[0].id = obj.data
         variable.targets[0].data_path = data_path
-    driver.expression = 'pull * stretch * chain'
+    driver.expression = 'pull * stretch * chain' + (' * ' + position if position else '')
+
+
+def _wire_pull_aims(obj, path, bend_index, pole):
+    """Keep each pulled bone before the bend pointing at the next one, so its tail follows."""
+    for index, name in enumerate(path[:-1]):
+        pull = obj.pose.bones.get(PULL_PREFIX + name)
+        if pull is None:
+            continue
+        con = pull.constraints.get(PULL_AIM)
+        if index >= bend_index or PULL_PREFIX + path[index + 1] not in obj.pose.bones:
+            if con is not None:
+                con.driver_remove('influence')
+                pull.constraints.remove(con)
+            continue
+        con = con or pull.constraints.new('DAMPED_TRACK')
+        con.name = PULL_AIM
+        con.target, con.subtarget = obj, PULL_PREFIX + path[index + 1]
+        con.head_tail = 0.0
+        con.track_axis = 'TRACK_Y'
+        pull.constraints.move(list(pull.constraints).index(con), len(pull.constraints) - 1)
+        # Scales with the pull, so a zero pull leaves the matched pose untouched.
+        _arm_pull_driver(obj, con, pole)
+        con.mute = False
 
 
 def wire_arm_pulls(obj):
@@ -1112,6 +1214,10 @@ def wire_arm_pulls(obj):
                 obj.data.bones[second].head_local - obj.data.bones[first].head_local).length)
         total, bend_distance = distances[-1], distances[bend_index]
         bend_fraction = bend_distance / total if total > 1e-8 else bend_index / (len(path) - 1)
+        position = (follow_position(bend_fraction)
+                    if hasattr(obj.data, FOLLOW_PROPERTY + 'arms') and 1e-6 < bend_fraction < 1 - 1e-6
+                    else None)
+        _wire_pull_aims(obj, path, bend_index, pole)
         for index, name in enumerate(path):
             pull = obj.pose.bones.get(PULL_PREFIX + name)
             if pull is None:
@@ -1122,13 +1228,15 @@ def wire_arm_pulls(obj):
                 span = total - bend_distance
                 u = (total - distances[index]) / span if span > 1e-8 else 0.0
             weight = u * u * (3.0 - 2.0 * u)
+            # The stretch moved the bend by its follow share of (Hand - End); undo exactly that.
+            share = 1.0 if position else bend_fraction
             terms = (
-                ('Pole', pole, weight),
-                ('Bend', PREFIX + middle, -weight),
-                ('Hand', endpoint_target(obj, names, target), -weight * bend_fraction),
-                ('End', PREFIX + path[-1], weight * bend_fraction),
+                ('Pole', pole, weight, None),
+                ('Bend', PREFIX + middle, -weight, None),
+                ('Hand', endpoint_target(obj, names, target), -weight * share, position),
+                ('End', PREFIX + path[-1], weight * share, position),
             )
-            for suffix, subtarget, factor in terms:
+            for suffix, subtarget, factor, scale in terms:
                 label = 'SUB IK Arm Pull ' + suffix
                 if abs(factor) < 1e-8:
                     old = pull.constraints.get(label)
@@ -1148,7 +1256,7 @@ def wire_arm_pulls(obj):
                     setattr(con, 'from_max_' + axis, 1.0)
                     setattr(con, 'to_min_' + axis, 0.0)
                     setattr(con, 'to_max_' + axis, factor)
-                _arm_pull_driver(obj, con, pole)
+                _arm_pull_driver(obj, con, pole, scale)
                 con.mute = False
 
 
@@ -1380,7 +1488,8 @@ def _dependency_audit(obj, jobs, separate):
     props = {'sub_use_ik_arms', 'sub_use_ik_legs',
              'sub_ik_stretch_arms', 'sub_ik_stretch_legs',
              'sub_ik_stretch_chain_arms', 'sub_ik_stretch_chain_legs',
-             'sub_ik_progressive_scale_arms', 'sub_ik_progressive_scale_legs'}
+             'sub_ik_progressive_scale_arms', 'sub_ik_progressive_scale_legs',
+             FOLLOW_PROPERTY + 'arms', FOLLOW_PROPERTY + 'legs'}
     props.update(obj.data.bones[pole].path_from_id() + '.' + ARM_PULL_PROPERTY
                  for kind, _, _, pole in chains(obj, 'ARMS'))
     if obj.data.animation_data and obj.data.animation_data.drivers:
@@ -1416,8 +1525,10 @@ def _dependency_audit(obj, jobs, separate):
         progressive = re.fullmatch(re.escape(driver.variables[0].name)
                                    + r' \* -?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?',
                                    driver.expression)
+        follow = re.fullmatch(r'(?:pull \* )?stretch \* chain \* [-+*()0-9.,e ]*'
+                              r'(?:(?:min|max|follow)[-+*()0-9.,e ]*)+', driver.expression)
         if driver.type != 'SCRIPTED' or not (
-                driver.expression in expressions or progressive):
+                driver.expression in expressions or progressive or follow):
             return diag.reject(guard, 'foreign_driver_expression')
         for var in driver.variables:
             if (var.type != 'SINGLE_PROP' or var.targets[0].id != obj.data
@@ -1861,8 +1972,6 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
                         b = lo+ratio*(hi-lo)
                         fb = yield from error(b)
                 angle = yield from best((angle, a, b))
-        if native is not None:
-            native.close()
     if kind == 'ARMS' and entry['pole_geometry'] is not None and len(path) == 3:
         # Two-joint calibration cannot represent distributed roll in a longer chain.
         angle = entry['pole_angle']
@@ -1871,6 +1980,41 @@ def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_p
         basis = matrices[path[0]].to_3x3()
         calibration = seed_matrices[path[1]].translation - mid if seed_matrices else bend
         angle = math.atan2(calibration.dot(basis.col[2]), calibration.dot(basis.col[0]))
+    bend_radius = (mid - root - axis * (mid - root).dot(axis)).length
+    if len(path) == 3 and bend_radius > (end - root).length * .01:
+        # Verify the native result once in Blender before trusting its calibration.
+        found = (native.calibrate(root, mid, axis, angle)
+                 if native is not None and not ik_native.verifying()
+                 and os.environ.get('SUB_NATIVE_CALIBRATION', '1') == '1' else None)
+        accepted = False
+        if found is not None:
+            con.pole_angle = math.atan2(math.sin(found[0]), math.cos(found[0]))
+            yield
+            accepted = max(abs(a - b) for bone, expected in zip(solver[:-1], found[1])
+                           for row, reference in zip(bone.matrix, expected)
+                           for a, b in zip(row, reference)) < 2e-4
+            if accepted:
+                angle = found[0]
+                diag.add('native_calibrations', 0.0, 1)
+        if not accepted:
+            diag.add('calibration_fallbacks', 0.0, 1)
+            # Keep Blender's original calibration for rejected or unsupported native solves.
+            con.pole_angle = math.atan2(math.sin(angle), math.cos(angle))
+            yield
+            for _ in range(8):
+                if (solver[1].head - mid).length_squared < 1e-10:
+                    break
+                delta = _angle(solver[1].head - root, mid - root, axis)
+                candidates = []
+                for candidate in (angle, angle + delta, angle - delta):
+                    con.pole_angle = math.atan2(math.sin(candidate), math.cos(candidate))
+                    yield
+                    candidates.append(((solver[1].head - mid).length_squared, candidate))
+                angle = min(candidates, key=lambda item: item[0])[1]
+                con.pole_angle = math.atan2(math.sin(angle), math.cos(angle))
+                yield
+    if native is not None:
+        native.close()
     entry['angle'] = angle
 
     con.pole_angle = math.atan2(math.sin(angle), math.cos(angle))
@@ -1916,6 +2060,9 @@ def match(context, obj, limbs='BOTH', entire=True, key=True, clean=False, _batch
     jobs = [job for job in chains(obj, limbs) if _targets is None or job[2] in _targets]
     if not jobs:
         raise RuntimeError('No complete IK chains for the requested limbs')
+    if key:
+        # A keyed match rewrites these anyway; older rigs' expressions would block the native path.
+        _install_detail_drivers(obj, jobs)
     scene = context.scene
     original = scene.frame_current
     frames = range(scene.frame_start, scene.frame_end + 1) if entire else [original]

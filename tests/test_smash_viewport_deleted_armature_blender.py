@@ -55,3 +55,25 @@ with patch.object(viewport, '_frame_memo', {}), \
 print('SMASH_VIEWPORT_PRIMARY_RELOAD_OK')
 
 bpy.context.view_layer.update()
+
+# Panel drawing must re-resolve cached armatures removed between redraws.
+mesh = bpy.data.objects.new('PreviewMesh', bpy.data.meshes.new('PreviewMesh'))
+scene.collection.objects.link(mesh)
+modifier = mesh.modifiers.new('Armature', 'ARMATURE')
+modifier.object = remaining
+with patch.object(viewport, '_shade_arm_cache', {}):
+    assert viewport._mesh_armature(mesh) == remaining
+    bpy.data.objects.remove(remaining)
+    assert viewport._mesh_armature(mesh) is None
+    assert viewport._has_live_edit_preview(bpy.context) is False
+    replacement = bpy.data.objects.new('Replacement', bpy.data.armatures.new('Replacement'))
+    scene.collection.objects.link(replacement)
+    modifier.object = replacement
+    viewport._shade_arm_cache.clear()
+    assert viewport._mesh_armature(mesh) == replacement
+    bpy.context.view_layer.objects.active = replacement
+    replacement.select_set(True)
+    bpy.ops.object.mode_set(mode='EDIT')
+    assert viewport._has_live_edit_preview(bpy.context) is True
+    bpy.ops.object.mode_set(mode='OBJECT')
+print('SMASH_VIEWPORT_DELETED_ARMATURE_PANEL_OK')

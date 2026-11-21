@@ -505,11 +505,19 @@ class SUB_PT_misc_utilities(Panel):
         modes = ['POSE', 'OBJECT', 'EDIT_ARMATURE']  # Allow panel in all these modes
         return context.mode in modes
 
+    def draw_header(self, context):
+        from .ik_rig_upgrade import pending_rigs
+        if pending_rigs(context.scene):
+            self.layout.label(icon='ERROR')
+
     def draw(self, context):
         self.layout.use_property_decorate = False
         layout = self.layout
         layout.use_property_split = False
 
+        from .ik_rig_upgrade import draw_update_box
+        if draw_update_box(layout, context):
+            layout.separator()
         layout.operator("sub.append_param_labels", text="Append New Hashes", icon="FILE_TICK")
         from .visibility_layer import draw_visibility_layers
         draw_visibility_layers(layout, context)

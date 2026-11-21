@@ -1554,10 +1554,21 @@ def _set_ik_bone_visibility(armature_obj, visible, limbs='BOTH', respect_overrid
     from ..blender_compat import is_pose_bone_selected, set_pose_bone_select
     if armature_obj.data.get('sub_independent_ik'):
         from . import ik_channels
-        for kind, names, target, pole in ik_channels.chains(armature_obj, limbs):
-            for name in ik_channels.limb_path(armature_obj, names):
+        jobs = tuple(ik_channels.chains(armature_obj, limbs))
+        if not jobs:
+            return
+        for kind, names, target, pole in jobs:
+            preference = (armature_obj.data.sub_hide_ik_hand if kind == 'ARMS'
+                          else armature_obj.data.sub_hide_ik_foot_toe)
+            factor = _ik_switch_factor(armature_obj.data, 'sub_use_ik_' + kind.lower())
+            hide_endpoint = preference and factor >= 1.0 - _FK_ON_EPSILON
+            toes = ik_channels.connected_toe_bones(armature_obj, names) if kind == 'LEGS' else ()
+            endpoints = {names[-1], *toes}
+            path = ik_channels.limb_path(armature_obj, names)
+            # Write each bone's final visibility once, rather than reveal then hide endpoints.
+            for name in dict.fromkeys((*path, names[-1], *toes)):
                 bone = armature_obj.data.bones[name]
-                hidden = bool(bone.get("sub_component_hidden"))
+                hidden = bool(bone.get("sub_component_hidden")) or (name in endpoints and hide_endpoint)
                 set_pose_bone_hidden(armature_obj.pose.bones.get(name), hidden)
             controls = [target, pole]
             foot = ik_channels.foot_controls(names, armature_obj) if kind == 'LEGS' else None
@@ -1571,7 +1582,6 @@ def _set_ik_bone_visibility(armature_obj, visible, limbs='BOTH', respect_overrid
                     set_pose_bone_hidden(armature_obj.pose.bones.get(name), not visible)
         if visible:
             _set_collection_visible(armature_obj.data, 'IK Bones', True)
-        _set_ik_endpoint_visibility(armature_obj, limbs)
         return
     from .apply_ik_animation import collect_fk_bone_names
     for kind in ('ARMS', 'LEGS'):
@@ -2081,7 +2091,6 @@ def _enforce_ik_fk_channel_separation(armature_obj):
     _sync_fk_rest_hold(armature_obj)
 
 
-@persistent
 def _has_ik_cached(obj):
     # Scanning the IK chains walks every bone; rigs only change when bones or
     # custom chains are added, so key the answer on those.
@@ -2095,6 +2104,26 @@ def _has_ik_cached(obj):
     return result
 
 
+def _keyed_ik_visibility(obj, kind, frame, factor):
+    animation = obj.data.animation_data
+    action = animation.action if animation else None
+    if action is not None:
+        path = 'sub_use_ik_arms' if kind == 'ARMS' else 'sub_use_ik_legs'
+        curve = find_fcurve(action, path, index=0, id_type='ARMATURE')
+        if curve is not None and not curve.mute and curve.keyframe_points:
+            if abs(curve.evaluate(frame) - factor) > 1e-5:
+                return factor > _FK_ON_EPSILON
+            # Visibility holds the switch state even when influence eases between keys.
+            key = curve.keyframe_points[0]
+            for candidate in curve.keyframe_points:
+                if candidate.co[0] > frame:
+                    break
+                key = candidate
+            return key.co[1] >= 0.5
+    return factor > _FK_ON_EPSILON
+
+
+@persistent
 def _sync_ik_fk_visibility(scene, depsgraph=None):
     """Sync IK visibility / mutes / FK rest-hold only when the mode changes.
 
@@ -2113,8 +2142,10 @@ def _sync_ik_fk_visibility(scene, depsgraph=None):
             if obj.data.get("sub_independent_ik"):
                 # Unchanged visibility must not dirty the armature's depsgraph.
                 state = (obj.data.as_pointer(), len(obj.data.bones),
-                         _ik_mode_bucket(obj.data.sub_use_ik_arms),
-                         _ik_mode_bucket(obj.data.sub_use_ik_legs))
+                         (_keyed_ik_visibility(obj, 'ARMS', scene.frame_current_final, obj.data.sub_use_ik_arms),
+                          _ik_mode_bucket(obj.data.sub_use_ik_arms)),
+                         (_keyed_ik_visibility(obj, 'LEGS', scene.frame_current_final, obj.data.sub_use_ik_legs),
+                          _ik_mode_bucket(obj.data.sub_use_ik_legs)))
                 previous = cache.get(obj.name)
                 if previous != state:
                     same_rig = previous is not None and len(previous) == 4 and previous[:2] == state[:2]
@@ -2122,7 +2153,7 @@ def _sync_ik_fk_visibility(scene, depsgraph=None):
                         if same_rig and previous[index] == state[index]:
                             continue
                         if armature_has_ik(obj, kind):
-                            _set_ik_bone_visibility(obj, state[index] != 'fk', kind)
+                            _set_ik_bone_visibility(obj, state[index][0], kind)
                     cache[obj.name] = state
                 continue
             if not _has_ik_cached(obj):
@@ -2133,7 +2164,9 @@ def _sync_ik_fk_visibility(scene, depsgraph=None):
 
             arms_f = _effective_limb_ik_factor(obj, 'ARMS')
             legs_f = _effective_limb_ik_factor(obj, 'LEGS')
-            state = (_ik_mode_bucket(arms_f), _ik_mode_bucket(legs_f))
+            arms_visible = _keyed_ik_visibility(obj, 'ARMS', scene.frame_current_final, arms_f)
+            legs_visible = _keyed_ik_visibility(obj, 'LEGS', scene.frame_current_final, legs_f)
+            state = (_ik_mode_bucket(arms_f), _ik_mode_bucket(legs_f), arms_visible, legs_visible)
             key = obj.name
             prev = cache.get(key)
 
@@ -2146,14 +2179,15 @@ def _sync_ik_fk_visibility(scene, depsgraph=None):
                 _ensure_ik_influence_drivers(obj)
 
             if armature_has_ik(obj, 'ARMS'):
-                _set_ik_bone_visibility(obj, arms_f > _FK_ON_EPSILON, 'ARMS')
+                _set_ik_bone_visibility(obj, arms_visible, 'ARMS')
             if armature_has_ik(obj, 'LEGS'):
-                _set_ik_bone_visibility(obj, legs_f > _FK_ON_EPSILON, 'LEGS')
+                _set_ik_bone_visibility(obj, legs_visible, 'LEGS')
 
-            _sync_all_limb_ik_constraint_mutes(obj)
-            _sync_ik_fk_fcurve_mutes(obj)
-            _sync_fk_rest_hold(obj, force=True)
-            data["sub_ik_fk_mute_healed"] = True
+            if prev is None or prev[:2] != state[:2]:
+                _sync_all_limb_ik_constraint_mutes(obj)
+                _sync_ik_fk_fcurve_mutes(obj)
+                _sync_fk_rest_hold(obj)
+                data["sub_ik_fk_mute_healed"] = True
     finally:
         _IK_FK_FRAME_SYNC_BUSY = False
 
@@ -2633,11 +2667,10 @@ def _set_bool_switch_key(fcurve, frame, value):
     if existing is None:
         return
     existing.co[1] = value
-    # Linear on every switch key so playback eases between opposite switches.
-    for keyframe in fcurve.keyframe_points:
-        keyframe.interpolation = 'LINEAR'
-        keyframe.handle_left_type = 'AUTO'
-        keyframe.handle_right_type = 'AUTO'
+    # Keep existing hold keys and animator-authored interpolation intact.
+    existing.interpolation = 'LINEAR'
+    existing.handle_left_type = 'AUTO'
+    existing.handle_right_type = 'AUTO'
     try:
         existing.type = 'GENERATED' if value >= 0.5 else 'BREAKDOWN'
     except (AttributeError, TypeError, RuntimeError):
@@ -2654,12 +2687,23 @@ def _key_bool_prop(armature_obj, data_path, frame, old_value=None, new_value=Non
     Interpolation comes from the previous switch key on the curve (another
     frame), not from auto-inserting a paired key a few frames away.
     """
-    del old_value, blend_frames  # kept for call-site compatibility
+    del blend_frames  # kept for call-site compatibility
     if new_value is None:
         new_value = float(getattr(armature_obj.data, data_path) or 0.0) >= 0.5
     new_f = 1.0 if new_value else 0.0
     action, fcurve = _bool_switch_fcurve(armature_obj, data_path)
+    hold_frame = None
+    if (old_value is not None and bool(old_value) != bool(new_value)
+            and not any(key.co[0] < frame for key in fcurve.keyframe_points)):
+        # A lone key extrapolates backward; preserve the previous mode before this switch.
+        hold_frame = float(frame) - 1.0
+        _set_bool_switch_key(fcurve, hold_frame, float(old_value))
     _set_bool_switch_key(fcurve, float(frame), new_f)
+    if hold_frame is not None:
+        for key in fcurve.keyframe_points:
+            if abs(key.co[0] - hold_frame) < .001:
+                key.interpolation = 'CONSTANT'
+
     try:
         fcurve.extrapolation = 'CONSTANT'
     except (AttributeError, TypeError, RuntimeError):
@@ -2678,6 +2722,7 @@ def _key_use_ik(armature_obj, frame, limbs='BOTH', old_arms=None, old_legs=None,
             armature_obj,
             "sub_use_ik_arms",
             frame,
+            old_value=old_arms,
             new_value=enabled,
         )
     if limbs in {'LEGS', 'BOTH'} and armature_has_ik(armature_obj, 'LEGS'):
@@ -2685,6 +2730,7 @@ def _key_use_ik(armature_obj, frame, limbs='BOTH', old_arms=None, old_legs=None,
             armature_obj,
             "sub_use_ik_legs",
             frame,
+            old_value=old_legs,
             new_value=enabled,
         )
 
@@ -3518,11 +3564,13 @@ class SUB_OP_anim_rig_toggle_ik_fk(Operator):
         if not off_mode_hiding_enabled(armature_obj):
             set_off_mode_bones_hidden(armature_obj, True, self.limbs)
 
-        # One key at this frame for the destination mode (no auto +N pair).
+        # Retain the earlier mode when this is the first keyed switch.
         _key_use_ik(
             armature_obj,
             frame,
             limbs=self.limbs,
+            old_arms=_effective_limb_ik_factor(armature_obj, 'ARMS'),
+            old_legs=_effective_limb_ik_factor(armature_obj, 'LEGS'),
             enabled=enable_ik,
         )
 
@@ -3816,6 +3864,9 @@ def _ensure_ik_drivers_on_loaded_rigs():
     for obj in bpy.data.objects:
         if obj.type != 'ARMATURE':
             continue
+        from .ik_rig_upgrade import needs_update
+        if needs_update(obj):
+            continue
         from .finger_sliders import upgrade_finger_curl
         upgrade_finger_curl(obj)
         if not (obj.data.get(ARMATURE_FLAG) or obj.data.get('sub_independent_ik')):
@@ -3859,6 +3910,7 @@ def _unregister_ik_fk_props():
                      "sub_ik_stretch_arms", "sub_ik_stretch_legs",
                      "sub_ik_stretch_chain_arms", "sub_ik_stretch_chain_legs",
                      "sub_ik_arm_pull", "sub_ik_progressive_scale_arms", "sub_ik_progressive_scale_legs",
+                     "sub_ik_stretch_follow_arms", "sub_ik_stretch_follow_legs",
                      "sub_hide_ik_foot_toe", "sub_hide_ik_hand"):
             if hasattr(cls, name):
                 try:
@@ -3896,6 +3948,11 @@ def register():
         setattr(bpy.types.Armature, 'sub_ik_progressive_scale_' + kind, bpy.props.FloatProperty(
             name='Progressive Scale', default=0.0, min=0.0, max=1.0, subtype='FACTOR',
             description='Blend bone scale progressively from the chain root to the IK target',
+            update=_update_stretch_chain))
+        setattr(bpy.types.Armature, 'sub_ik_stretch_follow_' + kind, bpy.props.FloatProperty(
+            name='Follow Parent/Child', default=0.5, min=0.0, max=1.0, subtype='FACTOR',
+            description='Where the elbow or knee sits in a stretched chain: '
+                        '0 stays near the shoulder or leg, 1 moves near the hand or foot',
             update=_update_stretch_chain))
         setattr(bpy.types.Armature, 'sub_ik_stretch_chain_' + kind, bpy.props.BoolProperty(
             name='Stretch Chain',

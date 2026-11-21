@@ -464,7 +464,8 @@ class SUB_OP_bulk_ik_bake_all(bpy.types.Operator):
             'sub_use_ik', 'sub_use_ik_arms', 'sub_use_ik_legs',
             'sub_ik_stretch_arms', 'sub_ik_stretch_legs',
             'sub_ik_stretch_chain_arms', 'sub_ik_stretch_chain_legs',
-            'sub_ik_progressive_scale_arms', 'sub_ik_progressive_scale_legs')}
+            'sub_ik_progressive_scale_arms', 'sub_ik_progressive_scale_legs',
+            'sub_ik_stretch_follow_arms', 'sub_ik_stretch_follow_legs')}
         processed = 0
         removed_fcurves_total = 0
         try:
