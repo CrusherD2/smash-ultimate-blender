@@ -10,6 +10,14 @@ The updater shows every section newer than the user's installed version, and
 the "What's New" popup shows them once after the update installs. Sections
 that aren't headed by a version number (like "Unreleased") are never shown.
 
+## 5.0.11 - 2026-11-20
+- Old IK rigs are detected when a file opens, with an Update button in the popup and in Misc.; a backup is kept and the rig is restored if the update does not match
+- Updating a posed or stretched old rig now gives the same result as a rig created in T-pose
+- Stretch Chain: new Follow Parent/Child slider places the elbow or knee between the shoulder/leg and the hand/foot
+- ArmIK Pull now also pulls the tail of the shoulder
+- Much faster IK matching on rigs made with older versions, using the native solver again
+- IK/FK controls stay hidden or shown until the next switch key, with smoother playback on switch frames
+
 ## 5.0.10 - 2026-11-19
 - Smash Viewport: optional Lightweight Lighting disables shadows and bloom without lowering resolution
 - Smash Viewport: live textured previews while editing meshes and armatures, plus improved undo refresh and less repeated upload/readback work
