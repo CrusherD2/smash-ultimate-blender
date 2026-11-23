@@ -19,6 +19,7 @@ from itertools import chain
 from .rig_mapping import bone_mapping
 from . import preset_handler
 from . import bone_utils
+from . import offsets
 from . import fbx_helper
 from ..source.anim.fcurve_compat import (
     get_fcurves,
@@ -434,246 +435,19 @@ class ConvertBoneNaming(bpy.types.Operator):
         return {'FINISHED'}
 
 
-_offset_preview_session = {}
-
-
-def _offset_container_scale_update(self, context):
-    """Live viewport preview while the scale slider is dragged."""
-    if _offset_preview_session.get('finalizing'):
-        return
-
-    arm_name = _offset_preview_session.get('armature')
-    if not arm_name:
-        return
-
-    arm_ob = bpy.data.objects.get(arm_name)
-    if arm_ob is None:
-        return
-
-    preview_scale = max(self.container_scale, 1e-8)
-    base_scale = Vector(_offset_preview_session.get('base_scale', (1.0, 1.0, 1.0)))
-    arm_ob.scale = base_scale * preview_scale
-
-    met_name = _offset_preview_session.get('metarig')
-    if met_name:
-        metarig = bpy.data.objects.get(met_name)
-        if metarig:
-            met_base = Vector(_offset_preview_session.get('met_base_scale', (1.0, 1.0, 1.0)))
-            metarig.scale = met_base * preview_scale
-
-    if context.screen:
-        for area in context.screen.areas:
-            area.tag_redraw()
-
-    view_layer = getattr(context, 'view_layer', None)
-    if view_layer is not None:
-        view_layer.update()
-
-
 class CreateTransformOffset(bpy.types.Operator):
-    """Scale the Character and setup an Empty to preserve final transform"""
-    bl_description = 'Scale the Character and setup an Empty to preserve final transform'
     bl_idname = "object.expykit_create_offset"
     bl_label = "Create Scale Offset"
+    bl_description = "Align source scale using a parent offset without rewriting animation"
     bl_options = {'REGISTER', 'UNDO'}
-
-    container_name: StringProperty(name="Name", description="Name of the transform container", default="EMP-Offset")
-    container_scale: FloatProperty(
-        name="Scale",
-        description="Scale of the transform container",
-        default=0.01,
-        min=1e-8,
-        update=_offset_container_scale_update,
-    )
-    fix_animations: BoolProperty(
-        name="Fix Animations",
-        description="Apply offset to character animations when Execute and Exit is pressed",
-        default=True,
-    )
-    fix_constraints: BoolProperty(name="Fix Constraints", description="Apply Offset to character constraints", default=True)
-    do_parent: BoolProperty(
-        name="Execute and Exit",
-        description="Bake the chosen scale, fix animations, create the offset empty, and finish",
-        default=False,
-        options={'HIDDEN', 'SKIP_SAVE'},
-    )
-
-    _allowed_modes = ['OBJECT', 'POSE']
 
     @classmethod
     def poll(cls, context):
-        if not context.object:
-            return False
-        if context.object.parent:
-            return False
-        if context.object.type != 'ARMATURE':
-            return False
-        if context.mode not in cls._allowed_modes:
-            return False
-
-        return True
-
-    def check(self, context):
-        return True
-
-    def invoke(self, context, event):
-        if self.do_parent:
-            _offset_preview_session['finalizing'] = True
-            result = self.execute(context)
-            _offset_preview_session.clear()
-            return result
-
-        arm_ob = context.object
-        _offset_preview_session.clear()
-        _offset_preview_session.update({
-            'active': True,
-            'armature': arm_ob.name,
-            'base_scale': tuple(arm_ob.scale),
-        })
-
-        metarig = self._find_metarig(arm_ob)
-        if metarig:
-            _offset_preview_session['metarig'] = metarig.name
-            _offset_preview_session['met_base_scale'] = tuple(metarig.scale)
-
-        _offset_container_scale_update(self, context)
-        return context.window_manager.invoke_props_dialog(self)
-
-    def draw(self, context):
-        layout = self.layout
-        column = layout.column()
-
-        row = column.split(factor=0.2, align=True)
-        row.label(text="Name")
-        row.prop(self, 'container_name', text="")
-
-        row = column.split(factor=0.2, align=True)
-        row.label(text="Scale")
-        row.prop(self, "container_scale", text="")
-
-        row = column.split(factor=0.2, align=True)
-        row.label(text="")
-        row.prop(self, "fix_animations")
-
-        row = column.split(factor=0.2, align=True)
-        row.label(text="")
-        row.prop(self, "fix_constraints")
-
-        column.separator()
-        row = column.row()
-        row.scale_y = 1.4
-        op = row.operator(self.bl_idname, text="Execute and Exit", icon='CHECKMARK')
-        op.container_name = self.container_name
-        op.container_scale = self.container_scale
-        op.fix_animations = self.fix_animations
-        op.fix_constraints = self.fix_constraints
-        op.do_parent = True
-
-    @staticmethod
-    def _find_metarig(arm_ob):
-        try:
-            return next(
-                ob for ob in bpy.data.objects
-                if ob.type == 'ARMATURE' and ob.data.rigify_target_rig == arm_ob
-            )
-        except (StopIteration, AttributeError):
-            return None
-
-    def _apply_scale_finalize(self, context, arm_ob):
-        scale = self.container_scale
-        scale_mat = Matrix.Scale(scale, 4)
-        base_scale = Vector(_offset_preview_session.get('base_scale', (1.0, 1.0, 1.0)))
-
-        arm_world = arm_ob.matrix_world.copy()
-        arm_loc, arm_rot, _arm_scale = arm_world.decompose()
-
-        arm_ob.scale = base_scale
-        arm_ob.data.transform(scale_mat)
-        arm_ob.update_tag()
-        arm_ob.matrix_world = Matrix.LocRotScale(arm_loc, arm_rot, base_scale)
-
-        metarig = self._find_metarig(arm_ob)
-        if metarig:
-            met_base = Vector(_offset_preview_session.get('met_base_scale', (1.0, 1.0, 1.0)))
-            met_world = metarig.matrix_world.copy()
-            met_loc, met_rot, _met_scale = met_world.decompose()
-
-            metarig.scale = met_base
-            metarig.data.transform(scale_mat)
-            metarig.update_tag()
-            metarig.matrix_world = Matrix.LocRotScale(met_loc, met_rot, met_base)
-
-        if self.fix_constraints:
-            for pbone in arm_ob.pose.bones:
-                for constr in pbone.constraints:
-                    if constr.type == 'STRETCH_TO':
-                        constr.rest_length *= scale
-                    elif constr.type == 'LIMIT_DISTANCE':
-                        constr.distance *= scale
-                    elif constr.type == 'ACTION':
-                        if constr.target == arm_ob and constr.transform_channel.startswith('LOCATION'):
-                            if constr.target_space != 'WORLD':
-                                constr.min *= scale
-                                constr.max *= scale
-                    elif constr.type == 'LIMIT_LOCATION' and constr.owner_space != 'WORLD':
-                        constr.min_x *= scale
-                        constr.min_y *= scale
-                        constr.min_z *= scale
-
-                        constr.max_x *= scale
-                        constr.max_y *= scale
-                        constr.max_z *= scale
-
-        rigged = (ob for ob in bpy.data.objects if
-                  next((mod for mod in ob.modifiers if mod.type == 'ARMATURE' and mod.object == context.object),
-                       None))
-
-        for ob in rigged:
-            if ob.data.shape_keys:
-                ob.scale *= scale
-            else:
-                ob.data.transform(scale_mat)
-            for mod in ob.modifiers:
-                if mod.type == 'DISPLACE':
-                    mod.strength *= scale
-                elif mod.type == 'SOLIDIFY':
-                    mod.thickness *= scale
-
-        if self.fix_animations:
-            path_resolve = arm_ob.path_resolve
-
-            for action in bpy.data.actions:
-                if not validate_actions(action, path_resolve):
-                    continue
-
-                for fc in get_fcurves(action):
-                    data_path = fc.data_path
-
-                    if not data_path.endswith('location'):
-                        continue
-
-                    for kf in fc.keyframe_points:
-                        kf.co[1] *= scale
-
-        emp_ob = bpy.data.objects.new(self.container_name, None)
-        context.collection.objects.link(emp_ob)
-        emp_ob.matrix_world = Matrix.LocRotScale(arm_loc, arm_rot, Vector((1.0, 1.0, 1.0)))
-        arm_ob.parent = emp_ob
-        arm_ob.matrix_world = Matrix.LocRotScale(arm_loc, arm_rot, base_scale)
-
-        if metarig:
-            metarig.parent = emp_ob
-            metarig.matrix_world = Matrix.LocRotScale(met_loc, met_rot, met_base)
-
-        return {'FINISHED'}
+        return offsets.CreateRotationOffset.poll(context)
 
     def execute(self, context):
-        arm_ob = context.object
-
-        if self.do_parent:
-            return self._apply_scale_finalize(context, arm_ob)
-
-        _offset_container_scale_update(self, context)
+        offsets._begin(context, 'SCALE')
+        self.report({'INFO'}, 'Adjust Scale in the Expy sidebar, then Apply')
         return {'FINISHED'}
 
 
@@ -1834,7 +1608,7 @@ class ConstrainToArmature(bpy.types.Operator):
 
     def _add_limit_constraintss(self, ob, rot=True, loc=True, scale=False):
         limit_constraints = []
-        if self.match_transform == 'Pose':
+        if self.match_transform == 'Pose' or self.match_object_transform:
             return limit_constraints
 
         if rot:
@@ -2076,6 +1850,7 @@ class ConstrainToArmature(bpy.types.Operator):
                     ret_collection.is_visible = False
 
             # create Retarget bones
+            created_helpers = []
             bpy.ops.object.mode_set(mode='EDIT')
             for src_name, trg_name in bone_names_map.items():
                 if not src_name:
@@ -2110,6 +1885,7 @@ class ConstrainToArmature(bpy.types.Operator):
 
                 new_bone = trg_ob.data.edit_bones[new_bone_name]
                 new_bone.parent = new_parent
+                created_helpers.append(new_bone_name)
 
                 if self.match_transform == 'Bone':
                     # counter deformation bone transform
@@ -2231,6 +2007,12 @@ class ConstrainToArmature(bpy.types.Operator):
                 trg_ob.constraints.remove(constr)
 
             bpy.ops.object.mode_set(mode='POSE')
+
+            alignment_scale = offsets.alignment_scale(trg_ob)
+            if alignment_scale != 1.0:
+                # Alignment changes reach, not the receiving character's bone scale.
+                for helper_name in created_helpers:
+                    trg_ob.pose.bones[helper_name].scale = (1.0 / alignment_scale,) * 3
 
             for src_name, trg_name in look_ats.items():
                 ret_bone = trg_ob.pose.bones[f'{src_name}_{cp_suffix}']
@@ -3732,6 +3514,7 @@ class RenameActionsFromFbxFiles(bpy.types.Operator, ImportHelper):
 
 
 def register_classes():
+    offsets.register()
     bpy.utils.register_class(ActionRangeToScene)
     bpy.utils.register_class(ActionEndToLastKeyframe)
     bpy.utils.register_class(ConstraintStatus)
@@ -3753,6 +3536,7 @@ def register_classes():
 
 
 def unregister_classes():
+    offsets.unregister()
     # Clean up SAP sync timer and data
     if bpy.app.timers.is_registered(_sap_sync_timer_func):
         bpy.app.timers.unregister(_sap_sync_timer_func)

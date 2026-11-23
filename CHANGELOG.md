@@ -10,6 +10,29 @@ The updater shows every section newer than the user's installed version, and
 the "What's New" popup shows them once after the update installs. Sections
 that aren't headed by a version number (like "Unreleased") are never shown.
 
+## Unreleased
+
+### Revamp of IK, improvements to Retargetting
+
+apologies for making so many small updates so frequently, this one should be the definitive one
+
+- IK rebuilt as one IK constraint per arm or leg, matched 1:1 to FK: no correction bones, fade drivers or pole-rotation controls, so editing IK is predictable
+- Each IK-driven bone now has exactly one constraint; Stretch, Stretch Chain, Arm Pull and Progressive Scale only add constraints while they are in use
+- Nearly straight arms and legs are bent very slightly (only on the hidden IK bones) so they always fold toward their elbow or knee control
+- Old IK rigs, including ones from 5.0.11, are detected and updated to the new setup with their animation kept
+- Scaling HandIK, FootIK or the foot roll control scales the hand or foot again
+- Animations that slide the elbow, knee, hand or foot (location keys) now put the IK controls on the visible hand/foot, and moving a control moves the limb by the same amount
+
+- Create Scale Offset and the new Create Rotation Offset use persistent controls and a single Apply button inside Ultimate > Retargeting > Actions > Conversion, so the viewport can still be orbited
+- Source offsets preserve animation keys and rest data; retarget helpers compensate alignment scale so the receiving rig does not grow
+- Binding respects the aligned source object's rotation and transforms instead of temporarily stripping them
+- Map by Proximity keeps Arms, Legs, Fingers, Core and other categorized mappings out of Custom Bones, reuses shared FK/IK assignments, and removes stale duplicate custom aliases when remapping
+- Proximity matching accepts nearly coincident bone heads even when nearby helper bones and different bone lengths make midpoint scores ambiguous
+- Binding reads saved custom mapping entries directly, and custom aliases cannot override categorized mappings
+- Removing the final Custom Bone leaves the list empty instead of restoring old aliases; panel drawing is read-only and custom property defaults do not leak between armatures
+- Add Active Bone changes to Add Selected Bones for multiple selected bones, adding all of them with suggested identifiers while keeping the single-bone naming dialog
+- Added regression coverage for old IK upgrades, control scaling, sliding joints, offset binding/baking, proximity categories, custom-list deletion and multi-bone custom additions
+
 ## 5.0.11 - 2026-11-20
 - Old IK rigs are detected when a file opens, with an Update button in the popup and in Misc.; a backup is kept and the rig is restored if the update does not match
 - Updating a posed or stretched old rig now gives the same result as a rig created in T-pose

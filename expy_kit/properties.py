@@ -11,7 +11,7 @@ from . import preset_handler
 
 
 _RESERVED_CUSTOM_ATTRS = frozenset({
-    'name', 'entries', 'entries_index', 'ui_version',
+    'name', 'entries', 'entries_index', 'ui_version', 'entries_initialized',
     'add_bone', 'remove_bone', 'get_bones', 'has_settings',
     'migrate_legacy_bones', 'sync_all_dynamic_props', '_bump_ui',
     '_clean_identifier', '_ensure_dynamic_prop',
@@ -112,6 +112,7 @@ class RetargetCustom(RetargetBase):
     entries: CollectionProperty(type=RetargetCustomBone)
     entries_index: IntProperty(default=0)
     ui_version: IntProperty(default=0)
+    entries_initialized: BoolProperty(default=False, options={'HIDDEN'})
 
     def _bump_ui(self):
         self.ui_version += 1
@@ -124,7 +125,7 @@ class RetargetCustom(RetargetBase):
         if not identifier:
             return
         if not hasattr(self.__class__, identifier):
-            prop = StringProperty(name=identifier, default=bone_name)
+            prop = StringProperty(name=identifier, default="")
             setattr(self.__class__, identifier, prop)
         setattr(self, identifier, bone_name)
 
@@ -152,17 +153,18 @@ class RetargetCustom(RetargetBase):
     def migrate_legacy_bones(self):
         """Move old dynamically-added custom bones into the collection."""
         if self.entries:
+            self.entries_initialized = True
             return
+        if self.entries_initialized:
+            return
+        self.entries_initialized = True
 
-        legacy = []
-        for prop_name in dir(self):
-            if prop_name.startswith('__') or prop_name in _RESERVED_CUSTOM_ATTRS:
-                continue
-            if prop_name.startswith('bl_'):
-                continue
-            value = getattr(self, prop_name, None)
-            if isinstance(value, str) and value:
-                legacy.append((prop_name, value))
+        legacy = [
+            (identifier, self[identifier]) for identifier in sorted(self.keys())
+            if identifier not in _RESERVED_CUSTOM_ATTRS
+            and not identifier.startswith(('__', 'bl_'))
+            and isinstance(self[identifier], str) and self[identifier]
+        ]
 
         for identifier, bone_name in legacy:
             item = self.entries.add()
@@ -202,14 +204,23 @@ class RetargetCustom(RetargetBase):
                 self.entries.remove(index)
                 if hasattr(self, identifier):
                     setattr(self, identifier, "")
+                elif identifier in self:
+                    self[identifier] = ""
                 self._bump_ui()
                 return True
         return False
 
     def get_bones(self):
         """Get all custom bone entries as (identifier, bone_name) pairs."""
-        self.migrate_legacy_bones()
-        return [(item.identifier, item.bone) for item in self.entries if item.identifier and item.bone]
+        if self.entries or self.entries_initialized:
+            return [(item.identifier, item.bone) for item in self.entries if item.identifier and item.bone]
+        # Read only: panels also use this before legacy entries have been migrated.
+        return [
+            (identifier, self[identifier]) for identifier in sorted(self.keys())
+            if identifier not in _RESERVED_CUSTOM_ATTRS
+            and not identifier.startswith(('__', 'bl_'))
+            and isinstance(self[identifier], str) and self[identifier]
+        ]
 
     def has_settings(self):
         """Check if any custom bones are defined."""

@@ -5,9 +5,8 @@ fixture = Path(__file__).with_name('test_ik_control_orientation_blender.py')
 exec(compile(fixture.read_text().split('assert ikc.create_controls')[0], str(fixture), 'exec'))
 assert ikc.create_controls(bpy.context, arm, 'ARMS') == 1
 for name in ('ShoulderL', 'ArmL', 'HandL'):
-    for prefix in (ikc.PULL_PREFIX, ikc.CORRECTION_PREFIX):
-        reference = name if prefix == ikc.PULL_PREFIX else ikc.PREFIX + name
-        actual, expected = data.bones[prefix + name].matrix_local, data.bones[reference].matrix_local
+    for prefix in (ikc.PREFIX, ikc.PULL_PREFIX, ikc.POSE_PREFIX):
+        actual, expected = data.bones[prefix + name].matrix_local, data.bones[name].matrix_local
         assert max(abs(actual[r][c] - expected[r][c]) for r in range(4) for c in range(4)) < 2e-5, (prefix, name)
 control = arm.pose.bones['HandIKL']
 origin = control.matrix.copy()

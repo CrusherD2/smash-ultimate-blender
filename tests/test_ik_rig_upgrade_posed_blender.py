@@ -1,4 +1,4 @@
-"""Updating an old rig on a posed frame leaves the new rig in its rest calibration.
+"""Updating a rig on a posed frame keeps the pose and the control animation.
 
 blender --background --factory-startup --python-exit-code 1 --python tests/test_ik_rig_upgrade_posed_blender.py
 """
@@ -33,14 +33,8 @@ for frame, position in old_feet.items():
     scene.frame_set(frame)
     bpy.context.view_layer.update()
     assert (obj.pose.bones['FootL'].matrix.translation - position).length < 0.05, frame
-# Re-solved limbs must not key seeds or residuals from the posed frames.
-path = ik.limb_path(obj, ('LegL', 'KneeL', 'FootL'))
-internal = {prefix + name for name in path for prefix in (ik.PREFIX, ik.CORRECTION_PREFIX)}
 keyed = {fc.data_path.split('"')[1] for fc in compat.get_all_action_fcurves(obj.animation_data.action)
          if fc.data_path.startswith('pose.bones["')}
-assert not internal & keyed, sorted(internal & keyed)
 assert {'FootIKL', 'KneeIKL'} <= keyed
-_angles, seeds = upgrade._rest_calibration(bpy.context, obj, 'LEGS', {'FootIKL'})
-for name in internal:
-    assert upgrade._matrix_error(obj.pose.bones[name].matrix_basis, seeds[name]) < 1e-5, name
-print('POSED OLD-RIG UPDATE KEEPS CONTROL ANIMATION AND REST SOLVER CALIBRATION PASSED')
+assert not any(bone.name.startswith(ik.CORRECTION_PREFIX) for bone in obj.data.bones)
+print('POSED OLD-RIG UPDATE KEEPS THE POSE AND CONTROL ANIMATION PASSED')

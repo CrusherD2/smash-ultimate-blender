@@ -22,16 +22,30 @@ for suffix in ('L', 'R', 'L2', 'R2', 'L.001', 'R.001'):
         bone.head, bone.tail, bone.parent = head, tail, parent
         parent = bone
 bpy.ops.object.mode_set(mode='POSE')
+import math
+from mathutils import Vector
+def pole_side_ok(pole, root, joint, end, forward, limb):
+    """The pole sits along the joint's bend, or on the forward side when the limb is straight."""
+    axis = (end - root).normalized()
+    bend = joint - root - axis * (joint - root).dot(axis)
+    expected = bend if bend.length >= .01 * limb else forward - axis * forward.dot(axis)
+    toward = pole - root - axis * (pole - root).dot(axis)
+    return toward.length > .5 and toward.normalized().dot(expected.normalized()) > math.cos(math.radians(1))
+
+
 assert ikc.create_controls(bpy.context, arm, 'LEGS') == 6
 for suffix in ('L', 'R', 'L2', 'R2', 'L.001', 'R.001'):
     side = 1 if suffix.startswith('L') else -1
     assert data.bones['KneeIK' + suffix].head_local.x * side > 0
     assert arm.pose.bones['KneeIK' + suffix].head.x * side > 0
-    for pole_head, knee_head in ((data.bones['KneeIK' + suffix].head_local, data.bones['Knee' + suffix].head_local),
-                                  (arm.pose.bones['KneeIK' + suffix].head, arm.pose.bones['Knee' + suffix].head)):
-        offset = pole_head - knee_head
-        assert abs(offset.x) < 1e-4 and abs(offset.z) < 1e-4, (suffix, offset)
-        assert offset.y < -0.5, (suffix, offset)
+    limb = (data.bones['Knee' + suffix].head_local - data.bones['Leg' + suffix].head_local).length         + (data.bones['Foot' + suffix].head_local - data.bones['Knee' + suffix].head_local).length
+    rest = [data.bones[name + suffix] for name in ('Leg', 'Knee')]
+    posed = [arm.pose.bones[ikc.PREFIX + name + suffix] for name in ('Leg', 'Knee')]
+    # Knees point forward (-Y) when straight; otherwise the pole follows the real bend.
+    assert pole_side_ok(data.bones['KneeIK' + suffix].head_local, rest[0].head_local, rest[1].head_local,
+                        rest[1].tail_local, Vector((0, -1, 0)), limb), (suffix, 'rest')
+    assert pole_side_ok(arm.pose.bones['KneeIK' + suffix].head, posed[0].head, posed[1].head,
+                        posed[1].tail, Vector((0, -1, 0)), limb), (suffix, 'pose')
     for control, source, multiple in (('FootIK', 'Foot', 3), ('ToeIK', 'Toe', 2)):
         assert abs(data.bones[control + suffix].length / data.bones[source + suffix].length - multiple) < 1e-5
 ikc.match(bpy.context, arm, 'LEGS', entire=False, key=False)
@@ -39,9 +53,12 @@ bpy.context.view_layer.update()
 for suffix in ('L', 'R', 'L2', 'R2', 'L.001', 'R.001'):
     side = 1 if suffix.startswith('L') else -1
     assert arm.pose.bones['KneeIK' + suffix].head.x * side > 0
-    for pole_head, knee_head in ((data.bones['KneeIK' + suffix].head_local, data.bones['Knee' + suffix].head_local),
-                                  (arm.pose.bones['KneeIK' + suffix].head, arm.pose.bones['Knee' + suffix].head)):
-        offset = pole_head - knee_head
-        assert abs(offset.x) < 1e-4 and abs(offset.z) < 1e-4, (suffix, offset)
-        assert offset.y < -0.5, (suffix, offset)
+    limb = (data.bones['Knee' + suffix].head_local - data.bones['Leg' + suffix].head_local).length         + (data.bones['Foot' + suffix].head_local - data.bones['Knee' + suffix].head_local).length
+    rest = [data.bones[name + suffix] for name in ('Leg', 'Knee')]
+    posed = [arm.pose.bones[ikc.PREFIX + name + suffix] for name in ('Leg', 'Knee')]
+    # Knees point forward (-Y) when straight; otherwise the pole follows the real bend.
+    assert pole_side_ok(data.bones['KneeIK' + suffix].head_local, rest[0].head_local, rest[1].head_local,
+                        rest[1].tail_local, Vector((0, -1, 0)), limb), (suffix, 'rest')
+    assert pole_side_ok(arm.pose.bones['KneeIK' + suffix].head, posed[0].head, posed[1].head,
+                        posed[1].tail, Vector((0, -1, 0)), limb), (suffix, 'pose')
 print('KNEE POLES STAY ON THEIR OWN SIDE AND LONGER FOOT/TOE CONTROLS PASSED')

@@ -1,24 +1,28 @@
-"""Independent IK solve bones. Original bones retain their editable FK action.
+"""Independent IK limbs that match FK 1:1 without correction bones.
 
-Only the output Copy Transforms constraints blend; the IK solver always runs at
-full influence on a separate chain. Matching samples FK before writing IK keys.
+Each limb has a hidden solver chain with one IK constraint, a hidden pose chain
+that adds FK location keys back onto the solved rotations, and one output
+constraint per FK bone. Matching keys the solver with the FK rotations and puts
+the controls where FK puts them, so the solve starts already solved.
 """
 import math
 import json
 import uuid
 import re
-import os
-import sys
-import time
-from contextlib import nullcontext
 import bpy
-from mathutils import Matrix, Quaternion, Vector
+from mathutils import Matrix, Vector
 
 from . import pose_math
 
 PREFIX = 'BL_SUB_IK_'
 PULL_PREFIX = 'BL_SUB_IK_PULL_'
-CORRECTION_PREFIX = 'BL_SUB_IK_MATCH_'
+CORRECTION_PREFIX = 'BL_SUB_IK_MATCH_'  # legacy rigs only; removed on update
+POSE_PREFIX = 'BL_SUB_IK_POSE_'
+OFFSET_PREFIX = 'BL_SUB_IK_OFS_'
+POSE_ROTATION = 'SUB IK Pose Rotation'
+POSE_SCALE = 'SUB IK Pose Scale'
+FITTED_KEY = 'sub_ik_pole_fitted'
+_MIN_UP = 0.35
 OUTPUT = 'SUB IK Blend'
 VERSION = 'sub_independent_ik'
 MATCH_KEY = 'sub_ik_channel_matches'
@@ -30,19 +34,8 @@ PULL_TARGET = 'SUB IK Pull Target'
 PULL_END = 'SUB IK Pull End'
 ARM_PULL_PROPERTY = 'sub_ik_arm_pull'
 PULL_BASE = 'SUB IK Pull Base'
-SOLVER_BASE = 'SUB IK Solver Base'
-PULL_ROTATION = 'SUB IK Matched Rotation'
-PULL_TWIST = 'SUB IK Pole Twist'
 PULL_AIM = 'SUB IK Arm Pull Aim'
 FOLLOW_PROPERTY = 'sub_ik_stretch_follow_'
-# Matched reference, keyed on each IK target/pole per frame. These store the
-# post-placement basis locations -- the same channels the fade drivers read --
-# so live-vs-reference is exactly zero at the matched pose by construction.
-REF_PROPS = ('sub_match_x', 'sub_match_y', 'sub_match_z')
-# Fade radii as fractions of the chain's rest length: full FK residual inside
-# the inner radius, pure solver outside the outer one, linear ramp between.
-_DETAIL_INNER = 0.10
-_DETAIL_OUTER = 0.40
 
 
 def _toe_roots_under(foot_bone):
@@ -134,7 +127,7 @@ def end_constraints(end):
 def wire_end_controls(obj):
     """Repair old endpoint transforms without rebuilding or rematching the rig."""
     from .create_animation_rig import _ensure_constraint_influence_driver
-    for kind, names, target, _ in chains(obj):
+    for _kind, names, target, _ in chains(obj):
         endpoint = endpoint_target(obj, names, target)
         end = obj.pose.bones.get(PREFIX + names[-1])
         if end is None:
@@ -143,9 +136,13 @@ def wire_end_controls(obj):
             if con.type == 'COPY_TRANSFORMS' and con.target == obj and con.subtarget == target:
                 con.driver_remove('influence')
                 end.constraints.remove(con)
+        # Stretch moves the pull bones instead, measured from where the solver reached.
+        old = end.constraints.get(END_LOCATION)
+        if old is not None:
+            old.driver_remove('influence')
+            end.constraints.remove(old)
         for name, type_ in ((END_ROTATION, 'COPY_ROTATION'),
-                            (END_SCALE, 'COPY_SCALE'),
-                            (END_LOCATION, 'COPY_LOCATION')):
+                            (END_SCALE, 'COPY_SCALE')):
             con = end.constraints.get(name)
             if con is None:
                 con = end.constraints.new(type_)
@@ -153,8 +150,6 @@ def wire_end_controls(obj):
                 con.target_space = con.owner_space = 'WORLD'
             con.target = obj
             con.subtarget = endpoint
-            if name == END_LOCATION:
-                _endpoint_stretch_driver(obj, con, kind)
 
 
 def limb_path(obj, names):
@@ -222,7 +217,7 @@ def arm_pull_value(obj, pole):
 
 
 def solve_bone(obj, names):
-    return obj.pose.bones[PREFIX + limb_path(obj, names)[-2]]
+    return obj.pose.bones[PREFIX + limb_path(obj, names)[-1]]
 
 
 def _pole_geometry(obj, names, kind):
@@ -247,6 +242,28 @@ def _pole_position(obj, names, kind, root, mid, end, bend, parent_world=None, ge
         if forward.length > 1e-8:
             return mid + forward.normalized() * distance
     return mid + bend * distance
+
+
+def _rest_pole_head(obj, names, kind, bones):
+    """Where matching will put the pole on the rest pose, so creation and match agree."""
+    path = limb_path(obj, names)
+    root = bones[path[0]].head
+    joint = bones[bend_name(obj, names)].head
+    effector = bones[path[-2]].tail
+    length = max(sum((bones[b].head - bones[a].head).length for a, b in zip(path, path[1:])), 1e-6)
+    axis = effector - root
+    if axis.length < 1e-8:
+        return _pole_position(obj, names, kind, root, joint, bones[path[-1]].head, axis.orthogonal())
+    axis.normalize()
+    bend = joint - root - axis * (joint - root).dot(axis)
+    if bend.length < length * _STRAIGHT:
+        geometry = _pole_geometry(obj, names, kind)
+        side = geometry[0] if geometry is not None else bend
+        bend = side - axis * side.dot(axis)
+        if bend.length < 1e-8:
+            bend = axis.orthogonal()
+    along = axis * axis.dot(joint - root)
+    return root + along + bend.normalized() * max(_chain_rest_length(obj, path), 0.5)
 
 
 def create_controls(context, obj, limbs='BOTH', custom_only=False, custom_targets=None,
@@ -290,12 +307,8 @@ def create_controls(context, obj, limbs='BOTH', custom_only=False, custom_target
                 control.parent = None
                 control.use_deform = False
             if pole not in bones:
-                axis = (end.head-root.head).normalized()
-                bend = mid.head-root.head-axis*(mid.head-root.head).dot(axis)
-                if bend.length < 1e-6:
-                    bend = axis.orthogonal()
                 control = bones.new(pole)
-                control.head = _pole_position(obj, names, kind, root.head, mid.head, end.head, bend.normalized())
+                control.head = _rest_pole_head(obj, names, kind, bones)
                 control.tail = control.head + Vector((0, max(mid.length*.25, .1), 0))
                 control.parent = None
                 control.use_deform = False
@@ -389,24 +402,6 @@ def toe_outputs(obj, limbs='BOTH'):
                 yield toe, con, kind
 
 
-def _ensure_ref_props(obj, controls):
-    """Create (unkeyed) reference slots so fcurve creation never fails."""
-    for name in controls:
-        pb = obj.pose.bones.get(name)
-        if pb is None:
-            continue
-        for prop in REF_PROPS:
-            if prop not in pb:
-                pb[prop] = 0.0
-
-
-def _stash_control_ref(writer, pose_bone, translation, frame):
-    base = pose_bone.path_from_id()
-    for index, prop in enumerate(REF_PROPS):
-        writer.stash_channel(base + '["' + prop + '"]', 0, frame,
-                             float(translation[index]), pose_bone.name)
-
-
 def _chain_rest_length(obj, path):
     total = 0.0
     for first, second in zip(path, path[1:]):
@@ -414,288 +409,13 @@ def _chain_rest_length(obj, path):
     return total
 
 
-def _has_driver(obj, constraint, prop):
-    anim = getattr(obj, 'animation_data', None)
-    if anim is None:
-        return False
-    try:
-        return anim.drivers.find(constraint.path_from_id() + '.' + prop) is not None
-    except Exception:
-        return False
-
-
-def _pull_rotation_axis(obj, names, name):
-    if name == names[0]:
-        return 'X'
-    if name == bend_name(obj, names):
-        return 'Y'
-    return None
-
-
-def _wire_pull_rotation(obj, pull, name, pole, axis):
-    # Translation fades positional residuals, never the limb's matched axial roll.
-    for label, subtarget in ((PULL_ROTATION, CORRECTION_PREFIX + name),
-                             (PULL_TWIST, PREFIX + name)):
-        con = pull.constraints.get(label) or pull.constraints.new('COPY_ROTATION')
-        con.name = label
-        con.target, con.subtarget = obj, subtarget
-        con.target_space = con.owner_space = 'POSE'
-        con.mix_mode = 'REPLACE'
-        index = list(pull.constraints).index(pull.constraints[PULL_BASE]) + 1
-        if label == PULL_TWIST:
-            index += 1
-        pull.constraints.move(list(pull.constraints).index(con), index)
-        con.influence = 1.0 if label == PULL_ROTATION else 0.0
-        if label == PULL_TWIST and axis is not None:
-            driver = con.driver_add('influence').driver
-            driver.type = 'SCRIPTED'
-            for variable in list(driver.variables):
-                driver.variables.remove(variable)
-            variable = driver.variables.new()
-            variable.name, variable.type = 'r', 'TRANSFORMS'
-            target = variable.targets[0]
-            target.id, target.bone_target = obj, pole
-            target.transform_space = 'LOCAL_SPACE'
-            target.transform_type = 'ROT_' + axis
-            target.rotation_mode = 'SWING_TWIST_' + axis
-            driver.expression = 'min(sqrt(r*r)/pi,1)'
-
-
-def _drive_pull_base(obj, pull, target, pole, inner, outer, rotation_axis=None, reach=None):
-    """Fade the frozen FK residual out as controls leave the matched pose.
-
-    The PULL bone already stacks solver then residual. This drives the second
-    copy's influence from the live pole/target distance to their keyed matched
-    references, so a dragged KneeIK/FootIK blends toward the pure solver
-    instead of twisting the limb with a stale offset. At the matched pose the
-    weight is exactly 1.
-    """
-    base = pull.constraints.get(PULL_BASE)
-    if base is None:
-        return
-    driver = base.driver_add('influence').driver
-    driver.type = 'SCRIPTED'
-    for variable in list(driver.variables):
-        driver.variables.remove(variable)
-
-    def live(name, bone, axis):
-        var = driver.variables.new()
-        var.name = name
-        var.type = 'SINGLE_PROP'
-        var.targets[0].id_type = 'OBJECT'
-        var.targets[0].id = obj
-        var.targets[0].data_path = ('pose.bones[' + json.dumps(bone) + ']'
-                                    '.location[' + str(axis) + ']')
-
-    def ref(name, bone, axis):
-        var = driver.variables.new()
-        var.name = name
-        var.type = 'SINGLE_PROP'
-        var.targets[0].id_type = 'OBJECT'
-        var.targets[0].id = obj
-        var.targets[0].data_path = ('pose.bones[' + json.dumps(bone) + ']'
-                                    '["' + REF_PROPS[axis] + '"]')
-
-    for axis in range(3):
-        live(('plx', 'ply', 'plz')[axis], pole, axis)
-    for axis in range(3):
-        ref(('prx', 'pry', 'prz')[axis], pole, axis)
-    for axis in range(3):
-        live(('glx', 'gly', 'glz')[axis], target, axis)
-    for axis in range(3):
-        ref(('grx', 'gry', 'grz')[axis], target, axis)
-    if rotation_axis is not None:
-        variable = driver.variables.new()
-        variable.name, variable.type = 'r', 'TRANSFORMS'
-        rotation_target = variable.targets[0]
-        rotation_target.id, rotation_target.bone_target = obj, pole
-        rotation_target.transform_space = 'LOCAL_SPACE'
-        rotation_target.transform_type = 'ROT_' + rotation_axis
-        rotation_target.rotation_mode = 'SWING_TWIST_' + rotation_axis
-
-    expression = _detail_driver_expression(inner, outer)
-    if rotation_axis is not None:
-        expression = 'min(' + expression + ',max(1-sqrt(r*r)/pi,0))'
-    if reach is not None:
-        # Unreachable targets must not retain a bent FK residual on a straight solver.
-        for name, end in (('d', target), ('s', reach[1])):
-            variable = driver.variables.new()
-            variable.name, variable.type = name, 'LOC_DIFF'
-            for item, bone in zip(variable.targets, (reach[0], end)):
-                item.id, item.bone_target = obj, bone
-                item.transform_space = 'WORLD_SPACE'
-        expression = 'min(' + expression + ',max(1-max(d-s,0)/max(s*.01,1e-6),0))'
-    driver.expression = expression
-
-
-def _detail_driver_expression(inner, outer):
-    span = max(outer - inner, 1e-6)
-
-    def num(value):
-        return repr(round(value, 4))
-
-    # NOTE: driver expressions are truncated at 255 chars, so the fade is a
-    # linear ramp (smoothstep does not fit). Keep this expression short.
-    def weight(cx, cy, cz, rx, ry, rz):
-        dist = 'sqrt((' + cx + '-' + rx + ')**2+(' + cy + '-' + ry + ')**2+(' + cz + '-' + rz + ')**2)'
-        return dist
-
-    return ('max(0,min(1,(' + num(outer) + '-max('
-            + weight('plx', 'ply', 'plz', 'prx', 'pry', 'prz') + ','
-            + weight('glx', 'gly', 'glz', 'grx', 'gry', 'grz') + '))/' + num(span) + '))')
-
-
-def _detail_driver_specs(obj, jobs, owners):
-    """Exact generated fade drivers whose inputs stay in their owner's island."""
-    specs = {}
-    for kind, names, target, pole in jobs:
-        path = limb_path(obj, names)
-        if not path or any(obj.pose.bones[n].parent for n in (target, pole)):
-            continue
-        rest = _chain_rest_length(obj, path)
-        if rest < 1e-6:
-            continue
-        inputs = {}
-        for bone, live, reference in ((pole, ('plx', 'ply', 'plz'), ('prx', 'pry', 'prz')),
-                                      (target, ('glx', 'gly', 'glz'), ('grx', 'gry', 'grz'))):
-            base = 'pose.bones[' + json.dumps(bone) + ']'
-            for axis in range(3):
-                inputs[live[axis]] = base + '.location[' + str(axis) + ']'
-                inputs[reference[axis]] = base + '["' + REF_PROPS[axis] + '"]'
-        expression = _detail_driver_expression(rest * _DETAIL_INNER, rest * _DETAIL_OUTER)
-        for name in path:
-            pull = obj.pose.bones.get(PULL_PREFIX + name)
-            if pull is None or owners.get(pull.name) is None:
-                continue
-            if any(owners.get(n) != owners[pull.name] for n in (target, pole)):
-                continue
-            con = pull.constraints.get(PULL_BASE)
-            if (con is not None and con.type == 'COPY_TRANSFORMS'
-                    and con.target == obj and con.subtarget == CORRECTION_PREFIX + name):
-                axis = _pull_rotation_axis(obj, names, name)
-                bone_inputs = dict(inputs)
-                bone_expression = expression
-                if axis is not None:
-                    bone_inputs['r'] = (pole, 'ROT_' + axis)
-                    bone_expression = 'min(' + expression + ',max(1-sqrt(r*r)/pi,0))'
-                if kind == 'ARMS' and len(path) > 3:
-                    bone_inputs['d'] = (PREFIX + path[0], target, 'LOC_DIFF')
-                    bone_inputs['s'] = (PREFIX + path[0], PREFIX + path[-1], 'LOC_DIFF')
-                    bone_expression = 'min(' + bone_expression + ',max(1-max(d-s,0)/max(s*.01,1e-6),0))'
-                specs[con.path_from_id() + '.influence'] = (bone_expression, bone_inputs)
-                twist = pull.constraints.get(PULL_TWIST)
-                if (axis is not None and twist is not None and twist.type == 'COPY_ROTATION'
-                        and twist.target == obj and twist.subtarget == PREFIX + name):
-                    specs[twist.path_from_id() + '.influence'] = (
-                        'min(sqrt(r*r)/pi,1)', {'r': (pole, 'ROT_' + axis)})
-    return specs
-
-
-def _matches_detail_driver(obj, curve, spec):
-    expression, inputs = spec
-    driver = curve.driver
-    return (
-        curve.array_index == 0 and driver.type == 'SCRIPTED'
-        and not driver.use_self and driver.expression == expression
-        and len(driver.variables) == len(inputs)
-        and {var.name for var in driver.variables} == set(inputs)
-        and all(
-            (var.type == 'LOC_DIFF' and all(
-                target.id == obj and target.bone_target == bone
-                and target.transform_space == 'WORLD_SPACE'
-                for target, bone in zip(var.targets, inputs[var.name][:2])))
-            if isinstance(inputs[var.name], tuple) and len(inputs[var.name]) == 3 else
-            (var.type == 'TRANSFORMS' and var.targets[0].id == obj
-             and var.targets[0].bone_target == inputs[var.name][0]
-             and var.targets[0].transform_type == inputs[var.name][1]
-             and var.targets[0].transform_space == 'LOCAL_SPACE'
-             and var.targets[0].rotation_mode == 'SWING_TWIST_' + inputs[var.name][1][-1])
-            if isinstance(inputs[var.name], tuple) else
-            (var.type == 'SINGLE_PROP' and var.targets[0].id == obj
-             and var.targets[0].data_path == inputs[var.name])
-            for var in driver.variables)
-    )
-
-def _install_detail_drivers(obj, jobs):
-    """(Re)build correction-fade drivers for freshly matched chains."""
-    for _kind, names, target, pole in jobs:
-        path = limb_path(obj, names)
-        if not path:
-            continue
-        parented = False
-        for bone in (target, pole):
-            pb = obj.pose.bones.get(bone)
-            if pb is None or pb.parent is not None:
-                parented = True
-                break
-        if parented:
-            continue
-        rest = _chain_rest_length(obj, path)
-        if rest < 1e-6:
-            continue
-        inner, outer = rest * _DETAIL_INNER, rest * _DETAIL_OUTER
-        for name in path:
-            pull = obj.pose.bones.get(PULL_PREFIX + name)
-            if pull is None or pull.constraints.get(PULL_BASE) is None:
-                continue
-            if obj.pose.bones.get(CORRECTION_PREFIX + name) is None:
-                continue
-            _drive_pull_base(obj, pull, target, pole, inner, outer,
-                             _pull_rotation_axis(obj, names, name),
-                             (PREFIX + path[0], PREFIX + path[-1])
-                             if _kind == 'ARMS' and len(path) > 3 else None)
-
-
 def pole_rotation_names(pole):
     return PREFIX + 'PoleOrbit_' + pole, PREFIX + 'PoleAim_' + pole
 
 
-def _ensure_pole_rotation_controls(obj, context, jobs):
-    limbs = list(jobs)
-    missing = [job for job in limbs
-               if any(name not in obj.data.bones for name in pole_rotation_names(job[3]))]
-    if missing:
-        bpy.ops.object.mode_set(mode='EDIT')
-        bones = obj.data.edit_bones
-        for _kind, names, _target, pole in missing:
-            orbit_name, aim_name = pole_rotation_names(pole)
-            length = sum((bones[b].head - bones[a].head).length
-                         for a, b in zip(limb_path(obj, names), limb_path(obj, names)[1:]))
-            offset = bones[pole].matrix.to_3x3() @ Vector((0.6, 0.5, 0.4)).normalized() * (length * 0.25)
-            orbit = bones.get(orbit_name) or bones.new(orbit_name)
-            orbit.head = offset
-            orbit.tail = orbit.head + Vector((0.3, 0.8, 0.5)).normalized() * max(length * 0.05, 0.01)
-            # A diagonal frame lets every control axis steer the bend without spinning deform bones.
-            orbit.roll = 0.45
-            orbit.use_deform = False
-            aim = bones.get(aim_name) or bones.new(aim_name)
-            aim.head = (0, 0, 0)
-            aim.tail = Vector((0, max(length * 0.05, 0.01), 0))
-            aim.parent = orbit
-            aim.use_deform = False
-        bpy.ops.object.mode_set(mode='POSE')
-    collection = obj.data.collections.get('IK Internal') or obj.data.collections.new('IK Internal')
-    collection.is_visible = False
-    for _kind, names, _target, pole in limbs:
-        orbit_name, aim_name = pole_rotation_names(pole)
-        for name in (orbit_name, aim_name):
-            collection.assign(obj.data.bones[name])
-        orbit = obj.pose.bones[orbit_name]
-        con = orbit.constraints.get('SUB IK Pole Position') or orbit.constraints.new('COPY_LOCATION')
-        con.name = 'SUB IK Pole Position'
-        con.target, con.subtarget = obj, pole
-        con.target_space = con.owner_space = 'POSE'
-        con.use_offset = True
-        rotation = orbit.constraints.get('SUB IK Pole Rotation') or orbit.constraints.new('COPY_ROTATION')
-        rotation.name = 'SUB IK Pole Rotation'
-        rotation.target, rotation.subtarget = obj, pole
-        rotation.target_space = rotation.owner_space = 'LOCAL'
-        rotation.use_x = rotation.use_y = rotation.use_z = True
-        rotation.mix_mode = 'REPLACE'
-        rotation.mute = True
-        orbit.rotation_mode = 'QUATERNION'
-        orbit.rotation_quaternion = (1, 0, 0, 0)
-        solve_bone(obj, names).constraints['SUB IK Solve'].pole_subtarget = aim_name
+def _solver_layout_current(obj, names):
+    path = limb_path(obj, names)
+    return all(obj.data.bones[PREFIX + name].inherit_scale == 'NONE' for name in path[1:])
 
 
 def ensure(obj, context, limbs='BOTH'):
@@ -703,7 +423,10 @@ def ensure(obj, context, limbs='BOTH'):
     jobs = list(chains(obj, limbs))
     if not jobs:
         return
-    fresh = [j for j in jobs if any(PREFIX + n not in obj.data.bones for n in limb_path(obj, j[1]))]
+    # Older rigs solved on the bone above the end; those chains are rebuilt too.
+    fresh = [j for j in jobs if any(PREFIX + n not in obj.data.bones for n in limb_path(obj, j[1]))
+             or solve_bone(obj, j[1]).constraints.get('SUB IK Solve') is None
+             or not _solver_layout_current(obj, j[1])]
     reverse_feet = [j for j in jobs
                     if j[0] == 'LEGS' and foot_controls(j[1], obj)
                     and foot_controls(j[1], obj)[3] in obj.data.bones]
@@ -726,55 +449,21 @@ def ensure(obj, context, limbs='BOTH'):
         bones = obj.data.edit_bones
         for kind, names, target, pole in fresh:
             path = limb_path(obj, names)
-            reflection = None
-            if kind == 'ARMS':
-                joints = (path[0], bend_name(obj, names), path[-1])
-                start, middle, finish = [bones[name].head.copy() for name in joints]
-                axis = (finish - start).normalized()
-                bend = middle - start - axis * (middle - start).dot(axis)
-                if bend.y < -max((finish - start).length * 1e-4, 1e-6):
-                    reflection = (Matrix.Translation(start)
-                                  @ Quaternion(axis, math.pi).to_matrix().to_4x4()
-                                  @ Matrix.Translation(-start))
             for name in path:
                 src = bones[name]
                 dst = bones.get(PREFIX + name) or bones.new(PREFIX + name)
-                # A zero-length bone loses the direction assigned through its matrix.
+                # Same rest as FK, so keyed FK rotations solve to the same pose.
                 dst.length = src.length
                 dst.matrix = src.matrix.copy()
-                if reflection is not None:
-                    dst.matrix = reflection @ dst.matrix
-                    dst.align_roll(src.matrix.col[2].xyz)
                 dst.use_deform = False
                 dst['sub_ik_generation'] = uuid.uuid4().hex
-                dst.inherit_scale = src.inherit_scale
+                # Matching stretches each segment on its own; inheriting would compound it.
+                dst.inherit_scale = 'NONE' if src.parent and src.parent.name in path else src.inherit_scale
                 dst.use_local_location = src.use_local_location
                 dst.use_inherit_rotation = src.use_inherit_rotation
                 parent = src.parent
                 dst.parent = bones.get(PREFIX + parent.name) if parent and parent.name in path else parent
                 dst.use_connect = src.use_connect
-            if kind == 'ARMS' and len(path) > 3 and _pole_geometry(obj, names, kind) is not None:
-                # Display lengths overlap; solver links must span consecutive joints instead.
-                split = path.index(bend_name(obj, names))
-                for section, segment in enumerate((path[:split + 1], path[split:])):
-                    distances = [0.0]
-                    for first, second in zip(segment, segment[1:]):
-                        distances.append(distances[-1] + (bones[second].head - bones[first].head).length)
-                    start = bones[PREFIX + segment[0]].head.copy()
-                    finish = bones[PREFIX + segment[-1]].head.copy()
-                    points = [start.lerp(finish, distance / max(distances[-1], 1e-8))
-                              for distance in distances]
-                    for index, name in enumerate(segment[:-1]):
-                        bone = bones[PREFIX + name]
-                        z_axis = bone.matrix.col[2].xyz.copy()
-                        bone.head, bone.tail = points[index], points[index + 1]
-                        bone.align_roll(z_axis)
-                        bone['sub_ik_section'] = section
-                        bone['sub_ik_fraction'] = distances[index] / max(distances[-1], 1e-8)
-                bones[PREFIX + path[-1]]['sub_ik_section'] = 1
-                bones[PREFIX + path[-1]]['sub_ik_fraction'] = 1.0
-                for name in path[1:]:
-                    bones[PREFIX + name].use_connect = True
             # Controls must not inherit any FK limb rotation.
             for name in (target, pole):
                 control = bones[name]
@@ -866,9 +555,11 @@ def ensure(obj, context, limbs='BOTH'):
             con.target = con.pole_target = obj
             con.subtarget = target
             con.pole_subtarget = pole
+            # The owner is the end bone and is not part of the chain without use_tail.
             con.chain_count = len(path) - 1
+            con.use_tail = False
             con.use_stretch = False
-            con.iterations = 200
+            con.iterations = 500
         controls_collection = obj.data.collections.get('IK Bones') or obj.data.collections.new('IK Bones')
         for _kind, names, _target, _pole in reverse_feet:
             roll_name, toe_name, output_name, original_toe = foot_controls(names, obj)
@@ -934,24 +625,54 @@ def ensure(obj, context, limbs='BOTH'):
         collection.is_visible = False
         for name in missing_pull:
             collection.assign(obj.data.bones[PULL_PREFIX + name])
-    missing_corrections = [name for name in paths if CORRECTION_PREFIX + name not in obj.data.bones]
-    if missing_corrections:
+    missing_pose = [name for name in paths if POSE_PREFIX + name not in obj.data.bones]
+    if missing_pose:
         bpy.ops.object.mode_set(mode='EDIT')
         bones = obj.data.edit_bones
-        for name in missing_corrections:
-            src = bones[PREFIX + name]
-            dst = bones.new(CORRECTION_PREFIX + name)
+        for name in missing_pose:
+            bones.new(POSE_PREFIX + name)
+        for name in missing_pose:
+            src = bones[name]
+            dst = bones[POSE_PREFIX + name]
             dst.length = src.length
             dst.matrix = src.matrix.copy()
-            dst.parent, dst.use_deform = src, False
+            dst.use_deform = False
+            dst.inherit_scale = src.inherit_scale
+            dst.use_local_location = src.use_local_location
+            dst.use_inherit_rotation = src.use_inherit_rotation
+            parent = src.parent
+            # FK's own hierarchy, so FK location keys move it exactly like the FK bone.
+            dst.parent = (bones.get(POSE_PREFIX + parent.name)
+                          if parent and parent.name in paths else parent)
+            dst.use_connect = False
         bpy.ops.object.mode_set(mode='POSE')
         collection = obj.data.collections.get('IK Internal') or obj.data.collections.new('IK Internal')
         collection.is_visible = False
-        for name in missing_corrections:
-            pb = obj.pose.bones[CORRECTION_PREFIX + name]
+        for name in missing_pose:
+            pb = obj.pose.bones[POSE_PREFIX + name]
+            pb.rotation_mode = obj.pose.bones[name].rotation_mode
+            collection.assign(pb.bone)
+    missing_offset = [name for name in paths if OFFSET_PREFIX + name not in obj.data.bones]
+    if missing_offset:
+        bpy.ops.object.mode_set(mode='EDIT')
+        bones = obj.data.edit_bones
+        for name in missing_offset:
+            src = bones[name]
+            dst = bones.new(OFFSET_PREFIX + name)
+            dst.length = src.length
+            dst.matrix = src.matrix.copy()
+            dst.use_deform = False
+            # Same rest as its solver bone: its keyed rotation is the difference back to FK.
+            dst.parent = bones[PREFIX + name]
+            dst.use_connect = False
+            dst.inherit_scale = 'NONE'
+        bpy.ops.object.mode_set(mode='POSE')
+        collection = obj.data.collections.get('IK Internal') or obj.data.collections.new('IK Internal')
+        collection.is_visible = False
+        for name in missing_offset:
+            pb = obj.pose.bones[OFFSET_PREFIX + name]
             pb.rotation_mode = 'QUATERNION'
             collection.assign(pb.bone)
-    _ensure_pole_rotation_controls(obj, context, jobs)
     obj.data[VERSION] = 4
     wire(obj)
     from . import ik_floor_contact
@@ -959,18 +680,98 @@ def ensure(obj, context, limbs='BOTH'):
     context.view_layer.update()
 
 
+def _remove_constraint(pose_bone, name):
+    con = pose_bone.constraints.get(name) if pose_bone else None
+    if con is not None:
+        try:
+            con.driver_remove('influence')
+        except (TypeError, RuntimeError):
+            pass
+        pose_bone.constraints.remove(con)
+
+
+_PULL_OWNED = (PULL_BASE, PULL_TARGET, PULL_END, 'SUB IK Progressive Scale')
+
+
+def _drop_legacy_pull(pull):
+    for con in list(pull.constraints):
+        if con.name not in _PULL_OWNED and not con.name.startswith('SUB IK Arm Pull'):
+            _remove_constraint(pull, con.name)
+
+
+def _clear_pull(pull):
+    for con in list(pull.constraints):
+        try:
+            con.driver_remove('influence')
+        except (TypeError, RuntimeError):
+            pass
+        pull.constraints.remove(con)
+
+
+def _wire_stretch(obj, kind, names, target, path, pull, index, bend_fraction, distances):
+    weight = distances[index] / distances[-1] if distances[-1] > 1e-8 else index / (len(path) - 1)
+    for label, subtarget, sign in (
+            (PULL_TARGET, endpoint_target(obj, names, target), 1.0),
+            (PULL_END, PREFIX + path[-1], -1.0)):
+        # A zero weight contributes nothing at any influence.
+        if abs(weight) < 1e-8:
+            _remove_constraint(pull, label)
+            continue
+        con = pull.constraints.get(label) or pull.constraints.new('TRANSFORM')
+        con.name = label
+        con.target, con.subtarget = obj, subtarget
+        con.target_space = con.owner_space = 'POSE'
+        con.map_from = con.map_to = 'LOCATION'
+        con.mix_mode = 'ADD'
+        con.use_motion_extrapolate = True
+        endpoint = index == len(path) - 1
+        weight_term = None if endpoint else follow_weight(weight, bend_fraction)
+        for axis in 'xyz':
+            setattr(con, 'from_min_' + axis, 0.0)
+            setattr(con, 'from_max_' + axis, 1.0)
+            setattr(con, 'to_min_' + axis, 0.0)
+            setattr(con, 'to_max_' + axis, sign * (1.0 if weight_term else weight))
+        _stretch_chain_driver(obj, con, kind, endpoint, weight_term)
+        con.mute = False
+
+
+def _wire_progressive_scale(obj, kind, names, target, path, pull, index, distances):
+    con = pull.constraints.get('SUB IK Progressive Scale') or pull.constraints.new('COPY_SCALE')
+    con.name = 'SUB IK Progressive Scale'
+    con.target, con.subtarget = obj, endpoint_target(obj, names, target)
+    con.target_space = con.owner_space = 'POSE'
+    weight = distances[index] / distances[-1] if distances[-1] > 1e-8 else index / (len(path) - 1)
+    driver = con.driver_add('influence').driver
+    driver.type = 'SCRIPTED'
+    for var in list(driver.variables):
+        driver.variables.remove(var)
+    var = driver.variables.new()
+    var.name, var.type = 'amount', 'SINGLE_PROP'
+    var.targets[0].id_type = 'ARMATURE'
+    var.targets[0].id = obj.data
+    var.targets[0].data_path = 'sub_ik_progressive_scale_' + kind.lower()
+    driver.expression = f'amount * {weight!r}'
+
+
 def wire(obj):
+    """Connect each limb: FK bone <- pose chain <- solver, plus only the features in use.
+
+    Without Stretch or Progressive Scale a limb bone has exactly one IK
+    constraint. Turning a feature on routes that limb through its hidden pull
+    bones, which carry the feature constraints.
+    """
     from .create_animation_rig import _ensure_constraint_influence_driver, _limb_switch_prop
     wire_end_controls(obj)
     for kind, names, target, pole in chains(obj):
         path = limb_path(obj, names)
-        for name in path[:-1]:
+        used = features(obj, kind, pole)
+        via_pull = used['stretch'] or used['scale']
+        for name in path:
             solver = obj.pose.bones.get(PREFIX + name)
             if solver:
                 solver.driver_remove('ik_stretch')
                 solver.ik_stretch = 0.0
-        solver = solve_bone(obj, names)
-        solve = solver.constraints.get('SUB IK Solve') if solver else None
+        solve = solve_bone(obj, names).constraints.get('SUB IK Solve')
         if solve:
             solve.use_stretch = False
         distances = [0.0]
@@ -982,112 +783,476 @@ def wire(obj):
                          if bend in path and distances[-1] > 1e-8 else None)
         for index, name in enumerate(path):
             source = obj.pose.bones[name]
+            posed = obj.pose.bones.get(POSE_PREFIX + name)
             pull = obj.pose.bones.get(PULL_PREFIX + name)
             blend = source.constraints.get(OUTPUT)
-            if pull is None or blend is None:
+            if posed is None or blend is None:
                 continue
-            correction = CORRECTION_PREFIX + name if CORRECTION_PREFIX + name in obj.pose.bones else None
-            if correction is not None:
-                # Solver first, matched residual second: at full influence the
-                # stack reproduces the old single-constraint result exactly,
-                # and match-installed drivers can fade the second copy toward
-                # the pure solver as controls leave the matched pose.
-                first = pull.constraints.get(SOLVER_BASE) or pull.constraints.new('COPY_TRANSFORMS')
-                first.name = SOLVER_BASE
-                first.target, first.subtarget = obj, PREFIX + name
-                first.target_space = first.owner_space = 'POSE'
-                first.influence = 1.0
-                pull.constraints.move(list(pull.constraints).index(first), 0)
+            rotation = posed.constraints.get(POSE_ROTATION) or posed.constraints.new('COPY_ROTATION')
+            rotation.name = POSE_ROTATION
+            offset = OFFSET_PREFIX + name
+            rotation.target = obj
+            rotation.subtarget = offset if offset in obj.pose.bones else PREFIX + name
+            rotation.target_space = rotation.owner_space = 'POSE'
+            rotation.mix_mode = 'REPLACE'
+            if index == len(path) - 1:
+                # The solver end takes the hand/foot control's scale; pass it on to the real bone.
+                scale = posed.constraints.get(POSE_SCALE) or posed.constraints.new('COPY_SCALE')
+                scale.name = POSE_SCALE
+                scale.target, scale.subtarget = obj, PREFIX + name
+                scale.target_space = scale.owner_space = 'POSE'
             else:
-                old = pull.constraints.get(SOLVER_BASE)
-                if old is not None:
-                    try:
-                        old.driver_remove('influence')
-                    except Exception:
-                        pass
-                    pull.constraints.remove(old)
-            base = pull.constraints.get(PULL_BASE) or pull.constraints.new('COPY_TRANSFORMS')
-            base.name = PULL_BASE
-            base.target, base.subtarget = obj, (correction or PREFIX + name)
-            base.target_space = base.owner_space = 'POSE'
-            if correction is not None:
-                pull.constraints.move(list(pull.constraints).index(base), 1)
-                if not _has_driver(obj, base, 'influence'):
-                    # Pre-match or legacy rig: exact legacy result until a
-                    # match keys references and installs the fade driver.
-                    base.influence = 1.0
-            if correction is not None and index < len(path) - 1:
-                _wire_pull_rotation(obj, pull, name, pole, _pull_rotation_axis(obj, names, name))
-            blend.subtarget = pull.name
+                _remove_constraint(posed, POSE_SCALE)
+            if pull is not None and via_pull:
+                _drop_legacy_pull(pull)
+                base = pull.constraints.get(PULL_BASE) or pull.constraints.new('COPY_TRANSFORMS')
+                base.name = PULL_BASE
+                base.target, base.subtarget = obj, posed.name
+                base.target_space = base.owner_space = 'POSE'
+                base.influence = 1.0
+                pull.constraints.move(list(pull.constraints).index(base), 0)
+                if used['stretch']:
+                    _wire_stretch(obj, kind, names, target, path, pull, index, bend_fraction, distances)
+                else:
+                    _remove_constraint(pull, PULL_TARGET)
+                    _remove_constraint(pull, PULL_END)
+                if used['scale'] and index < len(path) - 1:
+                    _wire_progressive_scale(obj, kind, names, target, path, pull, index, distances)
+                else:
+                    _remove_constraint(pull, 'SUB IK Progressive Scale')
+                blend.subtarget = pull.name
+            else:
+                if pull is not None:
+                    _clear_pull(pull)
+                blend.subtarget = posed.name
             _ensure_constraint_influence_driver(obj, source, blend, _limb_switch_prop(kind))
             blend.mute = False
-            weight = distances[index] / distances[-1] if distances[-1] > 1e-8 else index / (len(path) - 1)
-            for label, subtarget, sign in (
-                    (PULL_TARGET, endpoint_target(obj, names, target), 1.0),
-                    (PULL_END, PREFIX + path[-1], -1.0)):
-                # A zero weight contributes nothing at any influence. Drop the
-                # constraint and its driver instead of evaluating both per frame.
-                if abs(weight) < 1e-8:
-                    old = pull.constraints.get(label)
-                    if old:
-                        old.driver_remove('influence')
-                        pull.constraints.remove(old)
-                    continue
-                con = pull.constraints.get(label) or pull.constraints.new('TRANSFORM')
-                con.name = label
-                con.target, con.subtarget = obj, subtarget
-                con.target_space = con.owner_space = 'POSE'
-                con.map_from = con.map_to = 'LOCATION'
-                con.mix_mode = 'ADD'
-                con.use_motion_extrapolate = True
-                endpoint = index == len(path) - 1
-                weight_term = None if endpoint else follow_weight(weight, bend_fraction)
-                for axis in 'xyz':
-                    setattr(con, 'from_min_' + axis, 0.0)
-                    setattr(con, 'from_max_' + axis, 1.0)
-                    setattr(con, 'to_min_' + axis, 0.0)
-                    setattr(con, 'to_max_' + axis, sign * (1.0 if weight_term else weight))
-                _stretch_chain_driver(obj, con, kind, endpoint, weight_term)
-                con.mute = False
-    for _kind, names, _target, pole in chains(obj):
         obj.pose.bones[pole].lock_rotation = (False, False, False)
-        for name in limb_path(obj, names)[:-1]:
-            pull = obj.pose.bones.get(PULL_PREFIX + name)
-            if pull is None:
-                continue
-            con = pull.constraints.get('SUB IK Knee Twist')
-            if con is not None:
-                pull.constraints.remove(con)
-        aim = pole_rotation_names(pole)[1]
-        if aim in obj.pose.bones:
-            solve_bone(obj, names).constraints['SUB IK Solve'].pole_subtarget = aim
+        if solve:
+            solve.pole_subtarget = pole
     wire_arm_pulls(obj)
-    for kind, names, target, _pole in chains(obj):
-        path = limb_path(obj, names)
-        distances = [0.0]
-        for a, b in zip(path, path[1:]):
-            distances.append(distances[-1] + (obj.data.bones[b].head_local - obj.data.bones[a].head_local).length)
-        for index, name in enumerate(path[:-1]):
-            pull = obj.pose.bones.get(PULL_PREFIX + name)
-            if pull is None:
-                continue
-            con = pull.constraints.get('SUB IK Progressive Scale') or pull.constraints.new('COPY_SCALE')
-            con.name = 'SUB IK Progressive Scale'
-            con.target, con.subtarget = obj, endpoint_target(obj, names, target)
-            con.target_space = con.owner_space = 'POSE'
-            weight = distances[index] / distances[-1] if distances[-1] > 1e-8 else index / (len(path)-1)
-            driver = con.driver_add('influence').driver
-            driver.type = 'SCRIPTED'
-            for var in list(driver.variables):
-                driver.variables.remove(var)
-            var = driver.variables.new()
-            var.name, var.type = 'amount', 'SINGLE_PROP'
-            var.targets[0].id_type = 'ARMATURE'
-            var.targets[0].id = obj.data
-            var.targets[0].data_path = 'sub_ik_progressive_scale_' + kind.lower()
-            driver.expression = f'amount * {weight!r}'
     from . import ik_floor_contact
     ik_floor_contact.rewire(obj)
+
+
+def _animated(id_data, path):
+    """True when ``path`` on ``id_data`` has keys or a driver in its active action."""
+    from ..anim.fcurve_compat import get_all_action_fcurves
+    anim = getattr(id_data, 'animation_data', None)
+    if anim is None:
+        return False
+    if anim.drivers.find(path) is not None:
+        return True
+    id_type = 'ARMATURE' if isinstance(id_data, bpy.types.Armature) else 'OBJECT'
+    return anim.action is not None and any(
+        curve.data_path == path for curve in get_all_action_fcurves(anim.action, id_type=id_type))
+
+
+def _feature(obj, prop):
+    return bool(getattr(obj.data, prop, 0.0)) or _animated(obj.data, prop)
+
+
+def features(obj, kind, pole):
+    """Which optional limb features need constraints; everything else stays unbuilt."""
+    k = kind.lower()
+    stretch = _feature(obj, 'sub_ik_stretch_' + k)
+    chain = stretch and _feature(obj, 'sub_ik_stretch_chain_' + k)
+    scale = _feature(obj, 'sub_ik_progressive_scale_' + k)
+    pull = False
+    if kind == 'ARMS' and chain and pole in obj.data.bones:
+        bone = obj.data.bones[pole]
+        pull = (float(getattr(bone, ARM_PULL_PROPERTY, 0.0)) > 0.0
+                or _animated(obj.data, bone.path_from_id() + '.' + ARM_PULL_PROPERTY))
+    return {'stretch': stretch, 'chain': chain, 'scale': scale, 'pull': pull}
+
+
+def _basis(pose_bone, world, parent_world):
+    """``matrix_basis`` placing ``pose_bone`` at ``world`` under a known parent pose."""
+    bone = pose_bone.bone
+    parent = bone.parent
+    if parent is None:
+        return bone.convert_local_to_pose(world, bone.matrix_local, invert=True)
+    return bone.convert_local_to_pose(world, bone.matrix_local, parent_matrix=parent_world,
+                                      parent_matrix_local=parent.matrix_local, invert=True)
+
+
+def _world(pose_bone, basis, parent_world):
+    bone = pose_bone.bone
+    parent = bone.parent
+    if parent is None:
+        return bone.convert_local_to_pose(basis, bone.matrix_local)
+    return bone.convert_local_to_pose(basis, bone.matrix_local, parent_matrix=parent_world,
+                                      parent_matrix_local=parent.matrix_local)
+
+
+def _rest_relation(obj, ancestor, name):
+    """World of ``name`` per unit ancestor world, with every basis between them at rest."""
+    bones = obj.data.bones
+    return bones[ancestor].matrix_local.inverted_safe() @ bones[name].matrix_local
+
+
+def _plans(obj, jobs):
+    plans = []
+    for kind, names, target, pole in jobs:
+        path = limb_path(obj, names)
+        root_parent = obj.data.bones[path[0]].parent
+        foot = foot_controls(names, obj) if kind == 'LEGS' else None
+        if foot and not all(name in obj.pose.bones for name in foot):
+            foot = None
+        plans.append({
+            'kind': kind, 'names': names, 'target': target, 'pole': pole, 'path': path,
+            'parent': root_parent.name if root_parent else None,
+            'goal': endpoint_target(obj, names, target),
+            'foot': foot,
+            'articulation': toe_articulation(obj, names) if foot else None,
+            'bend': bend_name(obj, names),
+            # Without use_tail the IK pulls the tail of the bone above the end, not the end's head.
+            'reach': obj.data.bones[path[-2]].length,
+            'length': max(_chain_rest_length(obj, path), 1e-6),
+            'forward': _pole_geometry(obj, names, kind),
+        })
+    return plans
+
+
+def _plan_sample_names(plans):
+    names = []
+    for plan in plans:
+        names.extend(plan['path'])
+        if plan['parent']:
+            names.append(plan['parent'])
+        if plan['foot']:
+            names.append(plan['foot'][3])
+        if plan['articulation']:
+            names.append(plan['articulation'][2])
+    return list(dict.fromkeys(names))
+
+
+def _aimed(head, rotation, offset, toward):
+    """Bone at ``head`` turned the least amount, and scaled uniformly, so the point
+    ``offset`` (bone space, unscaled) lands on ``toward``. Twist about it is kept."""
+    current = rotation.to_matrix() @ offset
+    wanted = toward - head
+    if current.length < 1e-8 or wanted.length < 1e-8:
+        return Matrix.LocRotScale(head, rotation, None)
+    turn = current.rotation_difference(wanted)
+    scale = wanted.length / current.length
+    return Matrix.LocRotScale(head, turn @ rotation, Vector((scale, scale, scale)))
+
+
+def _solver_chain(obj, plan, fk):
+    """FK bases for the pose chain, solver bases, and where the solver bones end up.
+
+    Blender's IK ignores pose location inside the chain. When FK slides the
+    elbow/knee or hand/foot with location keys, each solver bone is turned and
+    scaled so its child starts exactly where the FK child does; without slides
+    it is the FK pose itself. The solver then passes through the visible
+    joints, so the controls sit on the visible hand/foot. The offset bones key
+    the rotation back to FK, and the pose chain re-adds the FK location keys,
+    which keeps the visible limb 1:1.
+    """
+    path, parent = plan['path'], plan['parent']
+    bones = obj.data.bones
+    bases, worlds = {}, {}
+    above = fk.get(parent) if parent else None
+    head = fk[path[0]].translation
+    for index, name in enumerate(path):
+        fk_basis = _basis(obj.pose.bones[name], fk[name], fk[path[index - 1]] if index else above)
+        bases[name] = [fk_basis, None]
+        rotation = fk[name].to_quaternion()
+        if index < len(path) - 1:
+            child = path[index + 1]
+            offset = (bones[name].matrix_local.inverted_safe() @ bones[child].head_local)
+            worlds[name] = _aimed(head, rotation, offset, fk[child].translation)
+            head = worlds[name] @ offset
+        else:
+            worlds[name] = Matrix.LocRotScale(head, rotation, fk[name].to_scale())
+    _nudge_straight(plan, worlds, _forward_world(plan, fk))
+    for index, name in enumerate(path):
+        solver = obj.pose.bones[PREFIX + name]
+        basis = _basis(solver, worlds[name], worlds[path[index - 1]] if index else above)
+        if index:
+            basis.translation = (0.0, 0.0, 0.0)
+        bases[name][1] = basis
+        # Offset bones share the solver rest, so this rotation turns the solver back into FK.
+        offset = worlds[name].to_quaternion().inverted() @ fk[name].to_quaternion()
+        bases[name].append(Matrix.LocRotScale(None, offset, None))
+    return {name: tuple(value) for name, value in bases.items()}, worlds
+
+
+# Below this bend (fraction of limb length) a limb counts as straight; the solver
+# seed is then bent this far toward the rig's knee-forward / elbow-back side.
+_STRAIGHT = 0.01
+_NUDGE = 0.001
+
+
+def _nudge_straight(plan, worlds, forward):
+    """Give a near-straight solver seed a tiny bend toward the pole side, in place.
+
+    Only the hidden solver keys change. FK bones and their keys are never
+    touched; the IK result on these frames differs from FK by about the nudge.
+    """
+    if forward is None or plan['bend'] not in plan['path'][1:-1]:
+        return False
+    axis, offset = _bend_offset(worlds, plan)
+    if axis is None or offset.length >= plan['length'] * _STRAIGHT:
+        return False
+    side = forward - axis * forward.dot(axis)
+    if side.length < 1e-8:
+        return False
+    side.normalize()
+    # Keep any bend already on the pole side; only drop sideways noise or a wrong-side bend.
+    bent = side * max(offset.dot(side), plan['length'] * _NUDGE)
+    if (bent - offset).length < plan['length'] * 1e-6:
+        return False
+    path = plan['path']
+    split = path.index(plan['bend'])
+    root = worlds[path[0]].translation.copy()
+    joint = worlds[plan['bend']].translation.copy()
+    effector = _effector(worlds, plan)
+    wanted = root + axis * axis.dot(joint - root) + bent
+    first = (joint - root).rotation_difference(wanted - root).to_matrix().to_4x4()
+    swing = Matrix.Translation(root) @ first @ Matrix.Translation(-root)
+    moved_joint = swing @ joint
+    moved_effector = swing @ effector
+    second = (moved_effector - moved_joint).rotation_difference(effector - moved_joint).to_matrix().to_4x4()
+    fold = Matrix.Translation(moved_joint) @ second @ Matrix.Translation(-moved_joint)
+    for index, name in enumerate(path):
+        worlds[name] = (swing if index < split else fold @ swing) @ worlds[name]
+    return True
+
+
+def _effector(worlds, plan):
+    return worlds[plan['path'][-2]] @ Vector((0.0, plan['reach'], 0.0))
+
+
+def _bend_offset(worlds, plan):
+    path = plan['path']
+    root, tip = worlds[path[0]].translation, _effector(worlds, plan)
+    axis = tip - root
+    if axis.length < 1e-8:
+        return None, None
+    axis.normalize()
+    offset = worlds[plan['bend']].translation - root
+    offset -= axis * offset.dot(axis)
+    return axis, offset
+
+
+def _up_axis(worlds, plan, angle, axis):
+    # Blender's pole reference: the root's X axis turned by pole_angle around its Y.
+    rotation = worlds[plan['path'][0]].to_3x3()
+    up = rotation.col[0] * math.cos(angle) + rotation.col[2] * math.sin(angle)
+    return up - axis * up.dot(axis)
+
+
+def _exact_angle(worlds, plan, axis, direction):
+    """Pole angle whose reference axis points along ``direction`` (perpendicular to ``axis``)."""
+    rotation = worlds[plan['path'][0]].to_3x3()
+    x_axis, z_axis = rotation.col[0], rotation.col[2]
+    normal = axis.cross(direction)
+    angle = math.atan2(-x_axis.dot(normal), z_axis.dot(normal))
+    if (x_axis * math.cos(angle) + z_axis * math.sin(angle)).dot(direction) < 0.0:
+        angle += math.pi
+    return angle
+
+
+def _bend_angle(worlds, plan):
+    axis, offset = _bend_offset(worlds, plan)
+    if offset is None or offset.length < 1e-6:
+        return None
+    return _exact_angle(worlds, plan, axis, offset.normalized())
+
+
+def fit_pole_angle(chains, plan, preferred=None):
+    """One pole angle per limb and action.
+
+    Start where the knee or elbow points on average, then tilt only as far as
+    needed so the pole reference never lines up with the root-to-tip axis,
+    where a small pole move would spin the limb.
+    """
+    total = Vector((0.0, 0.0))
+    for worlds in chains:
+        angle = _bend_angle(worlds, plan)
+        if angle is not None:
+            total += Vector((math.cos(angle), math.sin(angle)))
+    front = math.atan2(total.y, total.x) if total.length > 1e-8 else 0.0
+
+    def worst(angle):
+        lengths = []
+        for worlds in chains:
+            axis, _offset = _bend_offset(worlds, plan)
+            if axis is not None:
+                lengths.append(_up_axis(worlds, plan, angle, axis).length)
+        return min(lengths, default=1.0)
+
+    if preferred is not None and worst(preferred) >= _MIN_UP:
+        return preferred
+    best = (worst(front), front)
+    for degrees in range(5, 95, 5):
+        if best[0] >= _MIN_UP:
+            break
+        for sign in (1, -1):
+            angle = front + sign * math.radians(degrees)
+            best = max(best, (worst(angle), angle))
+    return math.atan2(math.sin(best[1]), math.cos(best[1]))
+
+
+def _forward_world(plan, fk):
+    if plan['forward'] is None:
+        return None
+    forward, parent_inverse = plan['forward']
+    parent = fk.get(plan['parent']) if plan['parent'] else None
+    space = parent @ parent_inverse if parent is not None else Matrix.Identity(4)
+    return space.to_3x3() @ forward
+
+
+def _pole_world(obj, plan, worlds, angle, at_bend):
+    path = plan['path']
+    axis, offset = _bend_offset(worlds, plan)
+    if axis is None:
+        return None
+    orientation = obj.data.bones[plan['pole']].matrix_local.to_3x3().to_4x4()
+    if at_bend:
+        # Arm Pull pulls toward the pole, so it must sit on the elbow to add nothing.
+        return Matrix.Translation(worlds[plan['bend']].translation) @ orientation
+    up = _up_axis(worlds, plan, angle, axis)
+    if up.length < 1e-6:
+        up = offset if offset is not None and offset.length > 1e-6 else axis.orthogonal()
+    root = worlds[path[0]].translation
+    along = axis * axis.dot(worlds[plan['bend']].translation - root)
+    distance = max(_chain_rest_length(obj, path), 0.5)
+    return Matrix.Translation(root + along + up.normalized() * distance) @ orientation
+
+
+def _write_match(obj, plans, samples, writer):
+    """Stash solver, pose chain and control keys that reproduce the sampled FK pose."""
+    frames = sorted(samples)
+    for plan in plans:
+        path = plan['path']
+        solved = {frame: _solver_chain(obj, plan, samples[frame]) for frame in frames}
+        solve = solve_bone(obj, plan['names']).constraints['SUB IK Solve']
+        at_bend = plan['kind'] == 'ARMS' and features(obj, plan['kind'], plan['pole'])['pull']
+        # A one-frame match keeps the limb's angle when it works, so neighbours stay put.
+        owner = solve_bone(obj, plan['names'])
+        preferred = solve.pole_angle if len(frames) == 1 and owner.get(FITTED_KEY) else None
+        angle = 0.0 if at_bend else fit_pole_angle([solved[f][1] for f in frames], plan, preferred)
+        target = obj.pose.bones[plan['target']]
+        target.rotation_mode = 'QUATERNION'
+        # Reverse feet aim the solver at FootTarget, a child of FootIK.
+        goal_to_target = _rest_relation(obj, plan['goal'], plan['target'])
+        pole = obj.pose.bones[plan['pole']]
+        for frame in frames:
+            fk = samples[frame]
+            bases, worlds = solved[frame]
+            for name in path:
+                fk_basis, solver_basis, offset_basis = bases[name]
+                writer.stash_matrix_basis(obj.pose.bones[PREFIX + name], frame, solver_basis)
+                writer.stash_matrix_basis(obj.pose.bones[POSE_PREFIX + name], frame, fk_basis)
+                offset = obj.pose.bones.get(OFFSET_PREFIX + name)
+                if offset is not None:
+                    writer.stash_matrix_basis(offset, frame, offset_basis)
+            goal = fk[path[-1]].copy()
+            goal.translation = _effector(worlds, plan)
+            placement = goal @ goal_to_target
+            writer.stash_matrix_basis(target, frame, _basis(target, placement, None))
+            if at_bend:
+                bent = _bend_angle(worlds, plan)
+                angle = bent if bent is not None else angle
+            writer.stash_channel(solve.path_from_id('pole_angle'), 0, frame, angle, PREFIX + path[-1])
+            pole_world = _pole_world(obj, plan, worlds, angle, at_bend)
+            if pole_world is not None:
+                writer.stash_matrix_basis(pole, frame, _basis(pole, pole_world, None))
+            foot = plan['foot']
+            if not foot:
+                continue
+            roll, toe, output, fk_toe = foot
+            # The goal hangs off the roll at rest; a stray pose there would move the solve.
+            writer.stash_matrix_basis(obj.pose.bones[roll], frame, Matrix.Identity(4))
+            writer.stash_matrix_basis(obj.pose.bones[output], frame, Matrix.Identity(4))
+            toe_pb = obj.pose.bones[toe]
+            writer.stash_matrix_basis(toe_pb, frame, _basis(
+                toe_pb, fk[fk_toe], placement @ _rest_relation(obj, plan['target'], toe_pb.parent.name)))
+            articulation = plan['articulation']
+            if articulation:
+                bend, basis_name, root_toe = articulation
+                writer.stash_matrix_basis(obj.pose.bones[bend], frame, Matrix.Identity(4))
+                basis_pb = obj.pose.bones[basis_name]
+                writer.stash_matrix_basis(basis_pb, frame, _basis(
+                    basis_pb, fk[root_toe],
+                    placement @ _rest_relation(obj, plan['target'], basis_pb.parent.name)))
+        solve.pole_angle = angle
+        owner[FITTED_KEY] = True
+
+
+def _refine_offsets(context, obj, plans, samples, writer=None):
+    """Re-key offset bones from the evaluated solve.
+
+    Blender's IK can land a hair away from its seed (up to about 0.05 degrees
+    on aimed or stretched segments); reading where it actually landed keeps
+    the visible limb 1:1.
+    """
+    scene = context.scene
+    sink = writer or _PoseSink()
+    for frame in sorted(samples):
+        if writer is not None:
+            scene.frame_set(frame)
+        context.view_layer.update()
+        for plan in plans:
+            fk = samples[frame]
+            for name in plan['path']:
+                offset = obj.pose.bones.get(OFFSET_PREFIX + name)
+                if offset is None:
+                    continue
+                solved = obj.pose.bones[PREFIX + name].matrix.to_quaternion()
+                basis = Matrix.LocRotScale(None, solved.inverted() @ fk[name].to_quaternion(), None)
+                sink.stash_matrix_basis(offset, frame, basis)
+
+
+def _owned_match_bones(plans):
+    owned = set()
+    for plan in plans:
+        owned.update(prefix + name for name in plan['path'] for prefix in (PREFIX, POSE_PREFIX, OFFSET_PREFIX))
+        owned.update((plan['target'], plan['pole']))
+        if plan['foot']:
+            owned.update(plan['foot'][:3])
+        if plan['articulation']:
+            owned.update(plan['articulation'][:2])
+    return owned
+
+
+def _linear_match_curves(obj, plans):
+    from ..anim import fcurve_bulk
+    from ..anim.fcurve_compat import get_all_action_fcurves
+    action = obj.animation_data.action if obj.animation_data else None
+    if action is None:
+        return
+    paths = tuple(obj.pose.bones[name].path_from_id() + '.'
+                  for name in sorted(_owned_match_bones(plans)) if name in obj.pose.bones)
+    angles = {solve_bone(obj, plan['names']).constraints['SUB IK Solve'].path_from_id('pole_angle')
+              for plan in plans}
+    for curve in get_all_action_fcurves(action, id_type='OBJECT'):
+        if curve.data_path.startswith(paths) or curve.data_path in angles:
+            fcurve_bulk.set_interpolation(curve, 'LINEAR')
+
+
+class _KeySink:
+    """Keys refined offset rotations directly, replacing the first pass's keys."""
+
+    @staticmethod
+    def stash_matrix_basis(pose_bone, frame, basis):
+        pose_bone.matrix_basis = basis
+        pose_bone.keyframe_insert('rotation_quaternion', frame=frame, group=pose_bone.name)
+
+
+class _PoseSink:
+    """Writer stand-in for an unkeyed single-frame match: pose instead of key."""
+
+    @staticmethod
+    def stash_matrix_basis(pose_bone, _frame, basis):
+        pose_bone.matrix_basis = basis
+
+    @staticmethod
+    def stash_channel(*_args):
+        pass
 
 
 def _num(value):
@@ -1139,25 +1304,6 @@ def _stretch_chain_driver(obj, constraint, kind, endpoint, weight_term=None):
         driver.expression = 'stretch * chain' if len(props) == 2 else '0'
 
 
-def _endpoint_stretch_driver(obj, constraint, kind):
-    """Keep endpoint-only stretch active when full-chain stretch is off."""
-    driver = constraint.driver_add('influence').driver
-    driver.type = 'SCRIPTED'
-    for variable in list(driver.variables):
-        driver.variables.remove(variable)
-    props = [('stretch', 'sub_ik_stretch_' + kind.lower())]
-    chain_prop = 'sub_ik_stretch_chain_' + kind.lower()
-    if hasattr(obj.data, chain_prop):
-        props.append(('chain', chain_prop))
-    for variable_name, prop in props:
-        variable = driver.variables.new()
-        variable.name, variable.type = variable_name, 'SINGLE_PROP'
-        variable.targets[0].id_type = 'ARMATURE'
-        variable.targets[0].id = obj.data
-        variable.targets[0].data_path = prop
-    driver.expression = 'stretch * (1-chain)' if len(props) == 2 else 'stretch'
-
-
 def _arm_pull_driver(obj, constraint, pole, position=None):
     driver = constraint.driver_add('influence').driver
     driver.type = 'SCRIPTED'
@@ -1206,6 +1352,13 @@ def wire_arm_pulls(obj):
         path = limb_path(obj, names)
         middle = bend_name(obj, names)
         if middle not in path or pole not in obj.pose.bones:
+            continue
+        if not features(obj, 'ARMS', pole)['pull']:
+            for name in path:
+                pull = obj.pose.bones.get(PULL_PREFIX + name)
+                for con in list(pull.constraints) if pull else ():
+                    if con.name.startswith('SUB IK Arm Pull'):
+                        _remove_constraint(pull, con.name)
             continue
         bend_index = path.index(middle)
         distances = [0.0]
@@ -1265,9 +1418,7 @@ def upgrade_pull_controls(context, obj):
     jobs = list(chains(obj))
     if not any(prefix + name not in obj.data.bones
                for _, names, _, _ in jobs for name in limb_path(obj, names)
-               for prefix in (PULL_PREFIX, CORRECTION_PREFIX)) and not any(
-                   name not in obj.data.bones for _, _, _, pole in jobs
-                   for name in pole_rotation_names(pole)):
+               for prefix in (PULL_PREFIX, POSE_PREFIX, OFFSET_PREFIX)):
         wire(obj)
         return
     from . import create_animation_rig as rig
@@ -1302,14 +1453,6 @@ def _key(pb, frame, previous):
     _key_pose_bone(pb, frame)
 
 
-def _angle(a, b, axis):
-    a = a - axis * a.dot(axis)
-    b = b - axis * b.dot(axis)
-    if min(a.length, b.length) < 1e-8:
-        return 0.0
-    return math.atan2(axis.dot(a.cross(b)), a.dot(b))
-
-
 def clean_animation(obj, limbs='BOTH', tolerance=1e-4):
     """Reduce baked transform curves, validating against the original at quarter frames.
 
@@ -1325,7 +1468,7 @@ def clean_animation(obj, limbs='BOTH', tolerance=1e-4):
     names = set()
     for _, group, target, pole in chains(obj, limbs):
         names.update(limb_path(obj, group))
-        names.update(PREFIX + n for n in limb_path(obj, group))
+        names.update(prefix + n for n in limb_path(obj, group) for prefix in (PREFIX, POSE_PREFIX, OFFSET_PREFIX))
         names.update((target, pole))
         controls = foot_controls(group, obj)
         if controls:
@@ -1393,676 +1536,20 @@ def clean_animation(obj, limbs='BOTH', tolerance=1e-4):
     return removed
 
 
-def _inherit_helper_islands(obj, owners):
-    """Include downstream HLPB readers without admitting feedback into a chain."""
-    from .rig_export import _is_helper_constraint
-
-    # An unowned ancestor is an input to the original FK/solver hierarchy,
-    # not a downstream helper. Never promote it based on what it reads.
-    ancestors = {parent.name for name in owners if name in obj.pose.bones
-                 for parent in obj.pose.bones[name].parent_recursive}
-    changed = True
-    while changed:
-        changed = False
-        for bone in obj.pose.bones:
-            if bone.name in owners or bone.name in ancestors:
-                continue
-            if bone.parent and bone.parent.name in owners:
-                owners[bone.name] = owners[bone.parent.name]
-                changed = True
-                continue
-            if not bone.constraints or not all(
-                    _is_helper_constraint(con) and con.target == obj
-                    for con in bone.constraints):
-                continue
-            inputs = {owners[con.subtarget] for con in bone.constraints
-                      if con.subtarget in owners}
-            if len(inputs) == 1:
-                owners[bone.name] = inputs.pop()
-                changed = True
     # The regular audit still checks EVERY constraint/driver and rejects
     # cross-island readers, external targets and any upstream feedback.
 
 
-def _dependency_audit(obj, jobs, separate):
-    """Owner map for the rig's dependency islands, or None if it is not closed.
-
-    ``separate=True`` gives each selected chain its own island, which is what
-    scheduling two limbs into one graph update requires. ``separate=False``
-    puts every chain in one island, which is what isolating the rig into a
-    temporary scene -- and hiding downstream meshes -- requires. Cross-limb
-    sharing fails the first and is fine for the second; an external parent, an
-    outside constraint target or a pose-reading driver fails both.
-
-    `jobs` is intentionally unused: the audit always walks
-    `chains(obj, 'BOTH')`, the whole rig, regardless of which chains were
-    selected. Unselected limbs' solvers evaluate too, so narrowing this to
-    the selected chains would weaken the guard, not simplify it.
-    """
-    from . import ik_match_diag as diag
-    guard = 'batch' if separate else 'selfcontained'
-    if obj.parent:
-        return diag.reject(guard, 'object_parent')
-    if obj.constraints:
-        return diag.reject(guard, 'object_constraints')
-    all_jobs = list(chains(obj, 'BOTH'))
-    owners = {}
-    muted_outputs = {con.as_pointer() for _, con, _ in
-                     (*outputs(obj, 'BOTH'), *toe_outputs(obj, 'BOTH')) if con.mute}
-    # Include unselected limbs: their solvers also evaluate, but do not make
-    # otherwise independent selected chains unsafe to schedule together.
-    for index, (_, names, target, pole) in enumerate(all_jobs):
-        island = index if separate else 0
-        path = limb_path(obj, names)
-        # A mixed/legacy rig may have controls on an unselected limb without
-        # the independent solver generation. Do not upgrade it just to batch.
-        if any(PREFIX + name not in obj.pose.bones for name in path):
-            return diag.reject(guard, 'legacy_controls')
-        if solve_bone(obj, names).constraints.get('SUB IK Solve') is None:
-            return diag.reject(guard, 'missing_solver')
-        controls = foot_controls(names, obj)
-        articulation = toe_articulation(obj, names)
-        owned = [*path, *(PREFIX + n for n in path),
-                 *(PULL_PREFIX + n for n in path), target, pole]
-        if pole_rotation_names(pole)[1] in obj.pose.bones:
-            owned.extend(pole_rotation_names(pole))
-        if controls:
-            owned.extend(controls)
-        if articulation:
-            owned.extend(articulation)
-        for name in dict.fromkeys(owned):
-            if name in owners and owners[name] != island:
-                return diag.reject(guard, 'shared_bone')
-            owners[name] = island
-    # Descendants (fingers and toe tips, for example) belong to the same
-    # dependency island. A separately owned descendant is checked below.
-    for bone in obj.pose.bones:
-        if bone.name in owners:
-            continue
-        parent = bone.parent
-        while parent is not None and parent.name not in owners:
-            parent = parent.parent
-        if parent is not None:
-            owners[bone.name] = owners[parent.name]
-    _inherit_helper_islands(obj, owners)
-    props = {'sub_use_ik_arms', 'sub_use_ik_legs',
-             'sub_ik_stretch_arms', 'sub_ik_stretch_legs',
-             'sub_ik_stretch_chain_arms', 'sub_ik_stretch_chain_legs',
-             'sub_ik_progressive_scale_arms', 'sub_ik_progressive_scale_legs',
-             FOLLOW_PROPERTY + 'arms', FOLLOW_PROPERTY + 'legs'}
-    props.update(obj.data.bones[pole].path_from_id() + '.' + ARM_PULL_PROPERTY
-                 for kind, _, _, pole in chains(obj, 'ARMS'))
-    if obj.data.animation_data and obj.data.animation_data.drivers:
-        return diag.reject(guard, 'armature_data_driver')
-    if obj.animation_data and obj.animation_data.action:
-        from ..anim.fcurve_compat import get_all_action_fcurves
-        pole_paths = {solve_bone(obj, names).constraints['SUB IK Solve'].path_from_id() + '.pole_angle'
-                      for _, names, _, _ in all_jobs}
-        for curve in get_all_action_fcurves(obj.animation_data.action, id_type='OBJECT'):
-            # Animated constraint settings can change dependencies after the
-            # initial check. Our own pole-angle keys only affect their own limb.
-            if '.constraints[' in curve.data_path:
-                if curve.data_path not in pole_paths:
-                    return diag.reject(guard, 'animated_constraint')
-    detail_specs = _detail_driver_specs(obj, all_jobs, owners)
-    for curve in obj.animation_data.drivers if obj.animation_data else ():
-        if curve.data_path in detail_specs:
-            if not _matches_detail_driver(obj, curve, detail_specs[curve.data_path]):
-                return diag.reject(guard, 'modified_detail_driver')
-            continue
-        driver = curve.driver
-        if not curve.data_path.endswith('.influence') or not driver.variables:
-            return diag.reject(guard, 'pose_driver')
-        # Only pure expressions emitted by our wiring helpers. All inputs are
-        # armature properties, so none can read another chain's evaluated pose.
-        expressions = {driver.variables[0].name, 'stretch * chain',
-                       'stretch * (1-chain)', 'pull * stretch * chain', '0'}
-        # 'SUB IK Progressive Scale' bakes each link's fraction of the chain
-        # length into its own expression, so the text differs per bone and
-        # cannot be enumerated the way the others are. Match the shape instead:
-        # the driver variable scaled by one literal, nothing else. The input is
-        # still a single armature property, checked against `props` below.
-        progressive = re.fullmatch(re.escape(driver.variables[0].name)
-                                   + r' \* -?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?',
-                                   driver.expression)
-        follow = re.fullmatch(r'(?:pull \* )?stretch \* chain \* [-+*()0-9.,e ]*'
-                              r'(?:(?:min|max|follow)[-+*()0-9.,e ]*)+', driver.expression)
-        if driver.type != 'SCRIPTED' or not (
-                driver.expression in expressions or progressive or follow):
-            return diag.reject(guard, 'foreign_driver_expression')
-        for var in driver.variables:
-            if (var.type != 'SINGLE_PROP' or var.targets[0].id != obj.data
-                    or var.targets[0].data_path not in props):
-                return diag.reject(guard, 'foreign_driver_input')
-    for bone in obj.pose.bones:
-        owner = owners.get(bone.name)
-        if bone.parent and bone.parent.name in owners:
-            if owner != owners[bone.parent.name]:
-                return diag.reject(guard, 'cross_island_parent')
-        for con in bone.constraints:
-            # Only the output blends stay muted throughout matching. Check all
-            # other constraints, including ones animated from muted to active.
-            if con.as_pointer() in muted_outputs:
-                continue
-            if con.type not in {'COPY_TRANSFORMS', 'COPY_LOCATION', 'COPY_ROTATION',
-                                'COPY_SCALE', 'DAMPED_TRACK', 'IK', 'TRANSFORM'}:
-                return diag.reject(guard, 'unsupported_constraint')
-            if getattr(con, 'use_bbone_shape', False):
-                return diag.reject(guard, 'bbone_shape_constraint')
-            if con.type == 'IK' and (owner is None or con.chain_count < 1):
-                return diag.reject(guard, 'unowned_ik')
-            if con.type == 'IK':
-                ancestor = bone
-                for _ in range(con.chain_count):
-                    if ancestor is None or owners.get(ancestor.name) != owner:
-                        return diag.reject(guard, 'ik_chain_crosses_island')
-                    ancestor = ancestor.parent
-            targets = [(con.target, con.subtarget)]
-            if getattr(con, 'space_object', None) is not None:
-                targets.append((con.space_object, con.space_subtarget))
-            if con.type == 'IK':
-                targets.append((con.pole_target, con.pole_subtarget))
-            for target, name in targets:
-                if target is None:
-                    continue
-                if target != obj or not name:
-                    return diag.reject(guard, 'external_constraint_target')
-                if name in owners and owners[name] != owner:
-                    return diag.reject(guard, 'cross_island_constraint_target')
-    diag.accept(guard)
-    return owners
-
-
-def _can_batch_match(obj, jobs):
-    """Only combine evaluations when each limb reads independent pose inputs."""
-    from . import ik_match_diag as diag
-    if len(jobs) < 2:
-        return bool(diag.reject('batch', 'single_chain'))
-    return _dependency_audit(obj, jobs, separate=True) is not None
-
-
-def _is_self_contained(obj, jobs):
-    """True when the rig is one closed dependency island.
-
-    Isolating the rig into a temporary scene, and hiding downstream meshes,
-    both need this, and neither needs the limbs to be independent of each other.
-    """
-    return _dependency_audit(obj, jobs, separate=False) is not None
-
-
-def _evaluate_match_steps(context, steps, batch):
-    from .ik_native import evaluate_steps
-    evaluate_steps(context, steps, batch)
-
-
-def _defer_match_meshes(context, obj, enabled):
-    """Defer downstream geometry only after proving the rig is independent.
-
-    The mechanism is shared with component matching; see mesh_deferral. The
-    `enabled` flag is where this caller passes its proof -- _is_self_contained
-    having shown the rig is one closed dependency island -- so nothing outside
-    the rig can feed the solve through a mesh this hides.
-    """
-    from . import mesh_deferral
-    return mesh_deferral.deferred(context, obj, enabled)
-
-
-# Residual at or below which the solved chain is treated as matching the
-# sampled FK pose. Same threshold the refinement already used to stop.
-_POLE_TOLERANCE = 1e-9
-# Golden-section iterations used to refine the pole angle. See the note in
-# _match_chain_steps for why the search is kept at all.
-#
-# 18 -> 12 when the residual was the output: below 12, limb error regressed.
-# The BL_SUB_IK_MATCH_ correction bones changed what this number buys. The
-# deform bones now land on sampled FK exactly whatever the pole angle is, and
-# the pole *control* is placed by arithmetic the search never touches, so
-# neither the posed character nor any visible control depends on this at all.
-# Swept 12..0 on the benchmark clip, 157 frames, four chains, both Blender
-# versions and all three native modes (tests/benchmark_pole_refine_sweep_blender.py,
-# docs/benchmarks/pole-refine-2026-09-15.md): worst FK drift is 7.63e-06 at
-# *every* budget including 0. Exactness does not depend on this number.
-#
-# What it still buys is a smaller residual for the corrections to absorb, and
-# that residual is frozen into a local offset -- so it is what goes wrong once
-# an animator drags the IK target away from the matched pose. That degrades in
-# two clear steps: 12 -> 4 moves the worst and p99 correction by nothing
-# (0.4726 -> 0.4724, 0.3458 -> 0.3467) and the median by 8% (0.0349 ->
-# 0.0376); 4 -> 1 costs 44% of the median (0.0541) and 1 -> 0 doubles the
-# worst outright (0.9104, 14.0deg). So 4 is the last budget that is free on
-# every measure, and 0 is never acceptable.
-#
-# Cutting to 4 saves nothing in the shipped default mode, where the search is
-# resolved inside the DLL for a flat 314 evaluations at any budget. It pays in
-# every fallback: Blender-only drops 2983 -> 1727 evaluations (-42%) and
-# verification 3140 -> 1884. Those paths are reached with the preference off,
-# on the chain-frames the native guard declines (up to 21.3% of one corpus
-# rig), and whenever a match cannot batch.
-_POLE_REFINE_STEPS = 4
-
-
-def _chain_cache(obj, jobs):
-    """Per-chain topology and pole angle, resolved once instead of per frame."""
-    cache = {}
-    for _kind, names, target, _pole in jobs:
-        path = limb_path(obj, names)
-        solver_root = obj.pose.bones.get(PREFIX + path[0]) if path else None
-        parent = solver_root.parent if solver_root is not None else None
-        cache[target] = {
-            'path': path,
-            'solver': solve_bone(obj, names).name,
-            'sections': {name: (obj.data.bones[PREFIX + name]['sub_ik_section'],
-                                obj.data.bones[PREFIX + name]['sub_ik_fraction'])
-                         for name in path if 'sub_ik_section' in obj.data.bones[PREFIX + name]},
-            # The solver chain hangs off the FK root's parent, which sits
-            # outside the limb and so needs sampling as a placement reference.
-            'parent': parent.name if parent is not None else None,
-            'angle': None,
-            'pole_geometry': _pole_geometry(obj, names, _kind),
-            'foot': foot_controls(names, obj),
-            'articulation': toe_articulation(obj, names),
-        }
-        if _kind == 'ARMS' and cache[target]['pole_geometry'] is not None:
-            root, mid, end = [obj.data.bones[PREFIX + name].head_local
-                              for name in (path[0], bend_name(obj, names), path[-1])]
-            axis = (end - root).normalized()
-            calibration = mid - root - axis * (mid - root).dot(axis)
-            basis = obj.data.bones[PREFIX + path[0]].matrix_local.to_3x3()
-            # Near-straight imported arms contain numerical offsets, not a reliable bend plane.
-            if calibration.length < max((end - root).length * 1e-4, 1e-6):
-                calibration = basis.col[0]
-            cache[target]['pole_angle'] = math.atan2(
-                calibration.dot(basis.col[2]), calibration.dot(basis.col[0]))
-    return cache
-
-
-def _sample_names(obj, jobs, cache):
-    """Bones whose world matrices the match needs, in a stable order."""
-    names = []
-    for _kind, _chain, target, _pole in jobs:
-        entry = cache[target]
-        names.extend(entry['path'])
-        if entry['foot'] and entry['foot'][3] in obj.pose.bones:
-            names.append(entry['foot'][3])
-        if entry['articulation']:
-            names.append(entry['articulation'][2])
-        if entry['parent']:
-            names.append(entry['parent'])
-    return list(dict.fromkeys(names))
-
-
-
-def _match_chain_steps(obj, job, matrices, frame, key, writer, entry, previous_pole, _native=None,
-                       _direct_calibration=False):
-    """Yield at evaluation barriers; preserve each chain's original solve order.
-
-    Seed, target and pole placement use arithmetic where possible. Independent
-    chains share evaluations during the pole search without changing its order
-    or convergence tolerance.
-    """
-    from . import ik_match_diag as diag
-    kind, names, target, pole = job
-    path = entry['path']
-    calibrated = (_direct_calibration and entry['pole_geometry'] is not None
-                  and (kind == 'LEGS' or (kind == 'ARMS' and len(path) == 3)))
-    solver = [obj.pose.bones[PREFIX + name] for name in path]
-    con = obj.pose.bones[entry['solver']].constraints['SUB IK Solve']
-    endpoints = end_constraints(solver[-1])
-
-    # Place the solver seed. Every target matrix is already sampled, so these
-    # are basis writes with nothing to evaluate between them. A bone pose_math
-    # cannot model falls back to the setter, which does need a barrier -- and
-    # then the solver has to be muted so it does not fight the placement.
-    parent_world = matrices.get(entry['parent'])
-    seed_matrices = {}
-    if entry['pole_geometry'] is not None and (len(path) == 3 or con.chain_count == 2):
-        joints = (path[0], bend_name(obj, names), path[-1])
-        start, joint, finish = [matrices[name].translation for name in joints]
-        direction = finish - start
-        if direction.length > 1e-8:
-            direction.normalize()
-            offset = joint - start - direction * (joint - start).dot(direction)
-            inverted = kind == 'ARMS' and offset.dot(entry['pole_geometry'][0]) < -1e-6
-            if inverted or offset.length < max((finish - start).length * 1e-4, 1e-6):
-                # Seed the bend toward the pole without introducing an axial half-turn.
-                side = matrices[path[0]].to_3x3().col[0]
-                side = (side - direction * side.dot(direction)).normalized()
-                joint = (joint - 2 * offset if inverted else
-                         joint + side * max((finish - start).length * .001, 1e-5))
-                for name, head, tail in ((joints[0], start, joint), (joints[1], joint, finish)):
-                    source = matrices[name]
-                    rotation = source.to_3x3().col[1].rotation_difference(tail - head)
-                    seed = rotation.to_matrix().to_4x4() @ source.to_3x3().to_4x4()
-                    seed.translation = head
-                    seed_matrices[name] = seed
-    if entry['sections']:
-        joints = (path[0], bend_name(obj, names), path[-1])
-        positions = [matrices[name].translation.copy() for name in joints]
-        axis = (positions[2] - positions[0]).normalized()
-        offset = positions[1] - positions[0] - axis * (positions[1] - positions[0]).dot(axis)
-        if offset.dot(entry['pole_geometry'][0]) < -1e-6:
-            positions[1] -= 2 * offset
-        heads = {name: positions[section].lerp(positions[section + 1], fraction)
-                 for name, (section, fraction) in entry['sections'].items()}
-        for name, following in zip(path, path[1:]):
-            source = matrices[name]
-            direction = heads[following] - heads[name]
-            rotation = source.to_3x3().col[1].rotation_difference(direction)
-            seed = rotation.to_matrix().to_4x4() @ source.to_3x3().to_4x4()
-            seed.translation = heads[name]
-            seed_matrices[name] = seed
-    for index, name in enumerate(path):
-        pose_bone = obj.pose.bones[PREFIX + name]
-        parent_name = pose_bone.parent.name.removeprefix(PREFIX) if pose_bone.parent else None
-        reference = seed_matrices.get(parent_name, matrices.get(parent_name, parent_world))
-        placement = seed_matrices.get(name, matrices[name])
-        if not pose_math.apply_world(pose_bone, placement, reference):
-            con.mute = True
-            for endpoint in endpoints:
-                endpoint.mute = True
-            pose_bone.matrix = placement
-            yield
-
-    # Independent seed channels preserve animated bone length,
-    # translation and axial twist without reading FK during playback.
-    if key:
-        for name in path:
-            writer.stash_pose_bone(obj.pose.bones[PREFIX + name], frame)
-
-    middle = bend_name(obj, names)
-    root, mid, end = [matrices[n].translation for n in (path[0], middle, path[-1])]
-    axis = end - root
-    if axis.length < 1e-8:
-        axis = matrices[names[0]].to_3x3().col[1].normalized()
-    else:
-        axis.normalize()
-    bend = mid - root - axis * (mid - root).dot(axis)
-    if bend.length < max((mid-root).length, 1.0) * 1e-5:
-        bend = previous_pole.get(target, matrices[names[0]].to_3x3().col[0]).copy()
-        bend -= axis * bend.dot(axis)
-        if bend.length < 1e-8:
-            bend = axis.orthogonal()
-    bend.normalize()
-    previous_pole[target] = bend.copy()
-
-    control = obj.pose.bones[target]
-    control.rotation_mode = 'QUATERNION'
-    if not pose_math.apply_world(control, matrices[path[-1]], None):
-        control.matrix = matrices[path[-1]]
-        yield
-
-    foot = entry.get('foot')
-    if foot and all(name in obj.pose.bones for name in foot[:3]) and foot[3] in matrices:
-        roll_pb = obj.pose.bones[foot[0]]
-        roll_pb.matrix_basis = Matrix.Identity(4)
-        toe_pb = obj.pose.bones[foot[1]]
-        if not pose_math.apply_world(toe_pb, matrices[foot[3]], matrices[path[-1]]):
-            toe_pb.matrix = matrices[foot[3]]
-            yield
-
-    articulation = entry.get('articulation')
-    if articulation:
-        bend_name_, basis_name, root_toe = articulation
-        obj.pose.bones[bend_name_].matrix_basis = Matrix.Identity(4)
-        # Match in the known neutral-roll frame rather than reading a stale
-        # evaluated parent during per-chain matching.
-        roll_world = matrices[path[-1]] @ pose_math.offset_matrix(obj.data.bones[foot[0]])
-        basis_pb = obj.pose.bones[basis_name]
-        if not pose_math.apply_world(basis_pb, matrices[root_toe], roll_world):
-            yield
-            basis_pb.matrix = matrices[root_toe]
-            yield
-
-    pole_pb = obj.pose.bones[pole]
-    if pole_rotation_names(pole)[1] in obj.pose.bones:
-        # Matching starts a fresh twist correction; the imported twist stays in the residual bones.
-        pole_pb.matrix_basis = Matrix.LocRotScale(pole_pb.location, None, pole_pb.scale)
-    current = pose_math.world_from_basis(pole_pb, pole_pb.matrix_basis, None)
-    if current is None:
-        # Parented pole control: its world matrix has to be read, not derived.
-        yield
-        current = pole_pb.matrix.copy()
-    placed = current.copy()
-    if kind == 'ARMS' and arm_pull_value(obj, pole) > 0.0 \
-            and obj.data.sub_ik_stretch_arms and obj.data.sub_ik_stretch_chain_arms:
-        placed.translation = mid
-    else:
-        placed.translation = _pole_position(obj, names, kind, root, mid, end, bend, parent_world, entry['pole_geometry'])
-    if not pose_math.apply_world(pole_pb, placed, None):
-        pole_pb.matrix = placed
-        yield
-
-    con.mute = False
-    for endpoint in endpoints:
-        endpoint.mute = False
-
-    # Repeated candidates do not need another scene evaluation.
-    native = None
-    if _native is not None and not calibrated:
-        # Capture the exact pre-IK pose once, sharing this barrier across limbs.
-        con.mute = True
-        yield
-        native = _native(obj, job, solver[:-1], con, frame)
-        con.mute = False
-    # Creation calibrates these angles independently of the discarded pole search.
-    if not calibrated:
-        reference_columns = [tuple(matrices[name].col[i].copy() for i in range(4))
-                             for name in path[:-1]]
-        errors = {}
-        def error(angle):
-            if angle in errors:
-                return errors[angle]
-            # After the memo check on purpose: a repeated candidate costs no
-            # evaluation and must not inflate the count.
-            diag.add('candidates', 0.0, 1)
-            con.pole_angle = math.atan2(math.sin(angle), math.cos(angle))
-            if native is not None:
-                from .ik_native import Request
-                request = Request(native, con.pole_angle)
-                yield request
-                evaluated = request.matrices
-            else:
-                yield
-                evaluated = [bone.matrix for bone in solver[:-1]]
-            # Read each evaluated RNA matrix once; keep the original arithmetic
-            # and summation order so even tie-breaking in the search stays exact.
-            score = sum(sum((matrix.col[i] - reference[i]).length_squared for i in range(4))
-                        for matrix, reference in
-                        zip(evaluated, reference_columns))
-            errors[angle] = score
-            return score
-        def best(candidates):
-            scores = []
-            for candidate in candidates:
-                scores.append((candidate, (yield from error(candidate))))
-            return min(scores, key=lambda pair: pair[1])[0]
-
-        con.pole_angle = 0.0
-        if native is not None:
-            from .ik_native import Request
-            request = Request(native, 0.0)
-            yield request
-            zero = request.matrices
-        else:
-            yield
-            zero = [bone.matrix for bone in solver[:-1]]
-        # Angle from the zero-angle solve to the desired bend plane.
-        bend_index = path.index(middle)
-        delta = _angle(zero[bend_index].translation-root, mid-root, axis)
-        if (mid-root-axis*(mid-root).dot(axis)).length < 1e-5:
-            delta = _angle(zero[0].to_3x3().col[0], matrices[names[0]].to_3x3().col[0], axis)
-        seeds = [delta, -delta, entry['angle'] or 0.0]
-        # One native call per chain and frame instead of one crossing per
-        # candidate. Verification mode keeps the per-candidate path, because its
-        # whole purpose is comparing each candidate against Blender. The mode is
-        # resolved by ik_native rather than read from the environment here, so this
-        # gate and get_factory's cannot disagree about what an unset variable means.
-        #
-        # `not verifying()` alone is also true under SUB_NATIVE_IK=0. That is safe
-        # only because `native is not None` implies get_factory admitted the mode,
-        # which is true but only at a distance, so the enabled-mode test is spelled
-        # out here rather than left to be re-derived by the next reader.
-        from . import ik_native
-        found = None
-        if (native is not None and os.environ.get('SUB_NATIVE_SEARCH', '1') == '1'
-                and ik_native.enabled() and not ik_native.verifying()):
-            found = native.search(reference_columns, seeds, _POLE_TOLERANCE, _POLE_REFINE_STEPS)
-            if found is None:
-                # The native collinearity guard refused this chain-frame and the
-                # Python search below will do the whole thing instead. Counted per
-                # chain-frame so it is directly comparable to native_solves: the
-                # ratio is the fallback rate, and the fallback rate is the whole
-                # difference between the accelerator helping and doing nothing.
-                #
-                # This is the only user-visible handle on why the default might not
-                # speed a particular rig up. Everything else about a decline is
-                # silent by design -- the output stays correct, it just costs what
-                # it always cost. Measured 0% on 24 of the 28 corpus rows and 21.3%
-                # on the worst; see docs/benchmarks/native-default-2026-09-13.md.
-                diag.add('native_declined', 0.0, 1)
-        if found is not None:
-            # found[1] is the pose the native search settled on, and it is bit-identical
-            # to Blender's at this angle -- 632/632 chain-frames on both supported
-            # versions. It is still deliberately unused: the correction below needs
-            # path[-1] too, and the endpoint bone is outside the native model (Solver
-            # is built over solver[:-1]). Computing path[:-1] from here saves nothing,
-            # because the barrier is one per frame shared across chains and path[-1]
-            # still needs it -- and the endpoint is not the parent's tail, which is
-            # the derivation that looks right and is wrong by up to 0.34.
-            # See docs/benchmarks/correction-barrier-2026-09-15.md.
-            angle = found[0]
-        else:
-            angle = yield from best(seeds)
-            # Refine both bone orientations, not just the knee position. This handles
-            # axial twist and near-straight chains where a position-only pole test has
-            # almost no useful signal.
-            #
-            # This search is the bulk of what a match still costs -- about 18 of its
-            # evaluations per chain per frame -- but it is kept.
-            #
-            # Its objective looks analytically solvable: changing the pole angle
-            # should rotate the solved chain rigidly about the root-to-target axis,
-            # making the residual exactly C + A*cos(t) + B*sin(t), which three samples
-            # would pin down. In practice it is not. Solving it that way finds angles
-            # that score *lower* on this measure yet drift the end effector further
-            # from the FK pose (worst-case limb error on the benchmark rig 0.415 ->
-            # 0.622, median 0.039 -> 0.049), and clamping the closed form to this same
-            # bracket does not fix it. The likely cause is that Blender's IK solver
-            # warm-starts from the previous evaluation, so the residual depends on the
-            # path taken through angles, not just the angle -- which makes a
-            # small-step local search meaningful and a three-probe fit not.
-            #
-            # The iteration count *was* cut, from 18 to 12, once there was multi-clip
-            # evidence for it -- see _POLE_REFINE_STEPS. The rest of the speedups in
-            # this module come from not evaluating the *placement*, which is exact
-            # arithmetic.
-            if (yield from error(angle)) > _POLE_TOLERANCE:
-                lo, hi = angle - .2, angle + .2
-                ratio = (math.sqrt(5.0)-1.0)*.5
-                a, b = hi-ratio*(hi-lo), lo+ratio*(hi-lo)
-                fa = yield from error(a)
-                fb = yield from error(b)
-                for _ in range(_POLE_REFINE_STEPS):
-                    if fa < fb:
-                        hi, b, fb = b, a, fa
-                        a = hi-ratio*(hi-lo)
-                        fa = yield from error(a)
-                    else:
-                        lo, a, fa = a, b, fb
-                        b = lo+ratio*(hi-lo)
-                        fb = yield from error(b)
-                angle = yield from best((angle, a, b))
-    if kind == 'ARMS' and entry['pole_geometry'] is not None and len(path) == 3:
-        # Two-joint calibration cannot represent distributed roll in a longer chain.
-        angle = entry['pole_angle']
-    elif kind == 'LEGS' and entry['pole_geometry'] is not None:
-        # Calibrate the solver's bend axis, not the old FK bend's direction relative to the pole.
-        basis = matrices[path[0]].to_3x3()
-        calibration = seed_matrices[path[1]].translation - mid if seed_matrices else bend
-        angle = math.atan2(calibration.dot(basis.col[2]), calibration.dot(basis.col[0]))
-    bend_radius = (mid - root - axis * (mid - root).dot(axis)).length
-    if len(path) == 3 and bend_radius > (end - root).length * .01:
-        # Verify the native result once in Blender before trusting its calibration.
-        found = (native.calibrate(root, mid, axis, angle)
-                 if native is not None and not ik_native.verifying()
-                 and os.environ.get('SUB_NATIVE_CALIBRATION', '1') == '1' else None)
-        accepted = False
-        if found is not None:
-            con.pole_angle = math.atan2(math.sin(found[0]), math.cos(found[0]))
-            yield
-            accepted = max(abs(a - b) for bone, expected in zip(solver[:-1], found[1])
-                           for row, reference in zip(bone.matrix, expected)
-                           for a, b in zip(row, reference)) < 2e-4
-            if accepted:
-                angle = found[0]
-                diag.add('native_calibrations', 0.0, 1)
-        if not accepted:
-            diag.add('calibration_fallbacks', 0.0, 1)
-            # Keep Blender's original calibration for rejected or unsupported native solves.
-            con.pole_angle = math.atan2(math.sin(angle), math.cos(angle))
-            yield
-            for _ in range(8):
-                if (solver[1].head - mid).length_squared < 1e-10:
-                    break
-                delta = _angle(solver[1].head - root, mid - root, axis)
-                candidates = []
-                for candidate in (angle, angle + delta, angle - delta):
-                    con.pole_angle = math.atan2(math.sin(candidate), math.cos(candidate))
-                    yield
-                    candidates.append(((solver[1].head - mid).length_squared, candidate))
-                angle = min(candidates, key=lambda item: item[0])[1]
-                con.pole_angle = math.atan2(math.sin(angle), math.cos(angle))
-                yield
-    if native is not None:
-        native.close()
-    entry['angle'] = angle
-
-    con.pole_angle = math.atan2(math.sin(angle), math.cos(angle))
-    yield
-    # Keep the sampled match residual in an independent child of each solved
-    # bone. Pole IK cannot exactly reproduce arbitrary FK twist/offset chains.
-    # These keys retain that detail without reading the original FK at playback.
-    for name in path:
-        correction = obj.pose.bones.get(CORRECTION_PREFIX + name)
-        if correction is not None:
-            solved = obj.pose.bones[PREFIX + name].matrix.copy()
-            correction.matrix_basis = solved.inverted_safe() @ matrices[name]
-            if key:
-                writer.stash_pose_bone(correction, frame)
-    if key:
-        writer.stash_pose_bone(control, frame)
-        writer.stash_pose_bone(pole_pb, frame)
-        if foot and all(name in obj.pose.bones for name in foot[:2]):
-            writer.stash_pose_bone(obj.pose.bones[foot[0]], frame)
-            writer.stash_pose_bone(obj.pose.bones[foot[1]], frame)
-        if articulation:
-            for name in articulation[:2]:
-                writer.stash_pose_bone(obj.pose.bones[name], frame)
-        writer.stash_channel(con.path_from_id() + '.pole_angle', 0, frame,
-                             con.pole_angle, solver[-2].name)
-        # Matched references for the detail-fade drivers. These must be the
-        # live basis channels -- the same values stash_pose_bone just keyed
-        # (placement maps through the control's rest orientation, so basis
-        # location is not world translation). Read here, after all barriers,
-        # so refs always agree with the keyed controls.
-        _stash_control_ref(writer, control, control.location, frame)
-        _stash_control_ref(writer, pole_pb, pole_pb.location, frame)
-
-
 def match(context, obj, limbs='BOTH', entire=True, key=True, clean=False, _batch=False,
           _fast=True, _targets=None):
+    """Match IK to FK 1:1: FK rotations on the solver, controls where FK puts them."""
     from . import create_animation_rig as rig, anim_layers_compat
-    from ..anim.fcurve_compat import get_all_action_fcurves
     from ..anim import fcurve_bulk
     ensure(obj, context, limbs)
-    from . import ik_match_diag as diag
-    diag.reset()
     jobs = [job for job in chains(obj, limbs) if _targets is None or job[2] in _targets]
     if not jobs:
         raise RuntimeError('No complete IK chains for the requested limbs')
-    if key:
-        # A keyed match rewrites these anyway; older rigs' expressions would block the native path.
-        _install_detail_drivers(obj, jobs)
+    plans = _plans(obj, jobs)
     scene = context.scene
     original = scene.frame_current
     frames = range(scene.frame_start, scene.frame_end + 1) if entire else [original]
@@ -2070,87 +1557,33 @@ def match(context, obj, limbs='BOTH', entire=True, key=True, clean=False, _batch
     states.extend((con, con.mute) for _, con, _ in toe_outputs(obj, limbs))
     paused = rig._IK_FK_MUTE_SYNC_PAUSED
     rig.pause_ik_fk_mute_sync(True)
-    cache = _chain_cache(obj, jobs)
-    sampled = _sample_names(obj, jobs, cache)
+    names = _plan_sample_names(plans)
     samples = {}
-    previous_pole = {}
-    writer = fcurve_bulk.PoseKeyWriter(obj) if key else None
-    native_factory = None
-    if key:
-        # Reference slots must exist before the writer flush creates curves.
-        _ensure_ref_props(obj, [n for _, _, target, pole in jobs for n in (target, pole)])
     try:
-        from . import ik_match_fast
-        with rig.defer_pose_tool_updates(), rig._disable_autokey(context), anim_layers_compat.bind_driving_action_for_bake(obj, context), ik_match_fast.suspend_viewport_handlers():
+        with rig.defer_pose_tool_updates(), rig._disable_autokey(context), \
+                anim_layers_compat.bind_driving_action_for_bake(obj, context):
             for con, _ in states:
                 con.mute = True
-            self_contained = _is_self_contained(obj, jobs)
-            batch = _batch and self_contained and _can_batch_match(obj, jobs)
-            native_safe = batch or (_batch and self_contained and len(jobs) == 1
-                                    and _dependency_audit(obj, jobs, separate=True) is not None)
-            if native_safe:
-                from . import ik_native
-                native_factory = ik_native.get_factory()
-            # Capture the entire source before writing any destination channels.
-            with _defer_match_meshes(context, obj, self_contained and len(frames) > 1):
-                # Isolation and direct sampling need the rig to be one closed
-                # dependency island. They do not need two limbs to be
-                # independent of each other -- that is only what scheduling
-                # them into a shared graph update requires.
-                fast = (_fast and self_contained and key and entire and len(frames) >= 16
-                        and bpy.app.version[:2] in {(4, 5), (5, 2)})
-                with diag.stage('sample'):
-                    if fast:
-                        from . import ik_match_fast
-                        samples = ik_match_fast.sample_fk(obj, frames, sampled,
-                            get_all_action_fcurves(obj.animation_data.action, id_type='OBJECT')
-                            if obj.animation_data and obj.animation_data.action else ())
-                    if not samples:
-                        samples = {}
-                        for frame in frames:
-                            scene.frame_set(frame)
-                            context.view_layer.update()
-                            samples[frame] = {name: obj.pose.bones[name].matrix.copy() for name in sampled}
-                solve_context = (ik_match_fast.isolated(context, obj, jobs, sys.modules[__name__])
-                                 if fast and ik_match_fast.can_isolate(obj, jobs, sys.modules[__name__])
-                                 else nullcontext((context, obj, scene)))
-                with solve_context as (work_context, work_obj, work_scene):
-                    for frame, matrices in samples.items():
-                        work_scene.frame_set(frame)
-                        with diag.stage('place'):
-                            steps = [
-                                _match_chain_steps(work_obj, job, matrices, frame, key, writer,
-                                                   cache[job[2]], previous_pole, native_factory)
-                                for job in jobs
-                            ]
-                        _evaluate_match_steps(work_context, steps, batch)
-            with diag.stage('write'):
-                if writer is not None:
-                    writer.flush()
-                if key and obj.animation_data and obj.animation_data.action:
-                    owned = {prefix+n for _, _, target, _ in jobs for n in cache[target]['path']
-                             for prefix in (PREFIX, CORRECTION_PREFIX)} | {n for _, _, target, pole in jobs for n in (target, pole)}
-                    owned.update(name for entry in cache.values() if entry['foot'] for name in entry['foot'][:3])
-                    owned.update(name for entry in cache.values() if entry['articulation'] for name in entry['articulation'][:2])
-                    paths = tuple(obj.pose.bones[n].path_from_id() + '.' for n in owned if n in obj.pose.bones)
-                    refs = {obj.pose.bones[n].path_from_id() + '["' + prop + '"]'
-                            for _, _, target, pole in jobs for n in (target, pole)
-                            for prop in REF_PROPS if n in obj.pose.bones}
-                    for fc in get_all_action_fcurves(obj.animation_data.action, id_type='OBJECT'):
-                        if fc.data_path.startswith(paths):
-                            fcurve_bulk.set_interpolation(fc, 'LINEAR')
-                        elif fc.data_path in refs:
-                            fcurve_bulk.set_interpolation(fc, 'LINEAR')
+            for frame in frames:
+                scene.frame_set(frame)
+                context.view_layer.update()
+                samples[frame] = {name: obj.pose.bones[name].matrix.copy() for name in names}
             if key:
-                _install_detail_drivers(obj, jobs)
+                writer = fcurve_bulk.PoseKeyWriter(obj)
+                _write_match(obj, plans, samples, writer)
+                writer.flush()
+                _linear_match_curves(obj, plans)
+                _refine_offsets(context, obj, plans, samples, writer=_KeySink())
+                _linear_match_curves(obj, plans)
+            else:
+                _write_match(obj, plans, {original: samples[original]}, _PoseSink())
+                _refine_offsets(context, obj, plans, {original: samples[original]})
             if entire and key and clean:
                 clean_animation(obj, limbs)
             if entire and key:
                 from .anim_rig_extras import mark_ik_matched
                 mark_ik_matched(obj, limbs)
     finally:
-        if native_factory is not None:
-            native_factory.close()
         for con, mute in states:
             con.mute = mute
         rig.pause_ik_fk_mute_sync(paused)
@@ -2278,7 +1711,7 @@ def remove(context, obj, limbs='BOTH', targets=None):
     names = {prefix + name
              for _, group, _, _ in jobs
              for name in limb_path(obj, group)
-             for prefix in (PREFIX, PULL_PREFIX, CORRECTION_PREFIX)}
+             for prefix in (PREFIX, PULL_PREFIX, POSE_PREFIX, OFFSET_PREFIX, CORRECTION_PREFIX)}
     names.update(n for _, _, target, pole in jobs for n in (target, pole))
     names.update(n for _, _, _, pole in jobs for n in pole_rotation_names(pole))
     for kind, group, _, _ in jobs:

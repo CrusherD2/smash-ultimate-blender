@@ -181,7 +181,8 @@ def _find_best_target(ref_armature, ref_bone, target_armature, used_bones, paren
     # overlaps used to lose every slot because helper/twist bones sat nearby.
     if (
         second_score is not None
-        and best_score > max_distance * 0.12
+        and (_bone_world_head(target_armature, best_name)
+             - _bone_world_head(ref_armature, ref_bone)).length > max_distance * 0.12
         and second_score <= best_score * 1.08
     ):
         return ""
@@ -276,6 +277,16 @@ def map_bones_by_proximity(reference_armature_obj, target_armature_obj, radius_s
     mapped_count = 0
     custom_count = 0
     ref_has_preset = ref_settings.has_settings()
+    categorized_refs = {
+        name for group, finger, slot in _SLOT_PRIORITY
+        if (name := _get_slot_bone_name(ref_settings, group, finger, slot))
+    }
+    categorized_identifiers = set()
+    from ...expy_kit.properties import _clean_custom_identifier
+    ref_settings.custom.migrate_legacy_bones()
+    for identifier, name in ref_settings.custom.get_bones():
+        if name in categorized_refs:
+            categorized_identifiers.add(identifier)
 
     if ref_has_preset:
         for group_name, finger_name, slot_name in _SLOT_PRIORITY:
@@ -283,7 +294,7 @@ def map_bones_by_proximity(reference_armature_obj, target_armature_obj, radius_s
             if not ref_bone_name:
                 continue
 
-            nearest = _find_best_target(
+            nearest = parent_map.get(ref_bone_name) or _find_best_target(
                 reference_armature_obj,
                 ref_bone_name,
                 target_armature_obj,
@@ -300,8 +311,21 @@ def map_bones_by_proximity(reference_armature_obj, target_armature_obj, radius_s
             parent_map[ref_bone_name] = nearest
             mapped_count += 1
 
+        categorized_targets = {
+            name for group, finger, slot in _SLOT_PRIORITY
+            if (name := _get_slot_bone_name(target_settings, group, finger, slot))
+        }
+        used_targets.update(categorized_targets)
+        for identifier, name in list(target_settings.custom.get_bones()):
+            if name in categorized_targets or identifier in categorized_identifiers:
+                target_settings.custom.remove_bone(identifier)
+        if target_settings.custom.name in categorized_targets:
+            target_settings.custom.name = ''
+
         ref_settings.custom.migrate_legacy_bones()
         for identifier, ref_bone in ref_settings.custom.get_bones():
+            if ref_bone in categorized_refs:
+                continue
             nearest = _find_best_target(
                 reference_armature_obj,
                 ref_bone,
@@ -319,7 +343,7 @@ def map_bones_by_proximity(reference_armature_obj, target_armature_obj, radius_s
             parent_map[ref_bone] = nearest
             custom_count += 1
 
-        if ref_settings.custom.name:
+        if ref_settings.custom.name and ref_settings.custom.name not in categorized_refs:
             ref_bone = ref_settings.custom.name
             nearest = _find_best_target(
                 reference_armature_obj,
@@ -345,7 +369,7 @@ def map_bones_by_proximity(reference_armature_obj, target_armature_obj, radius_s
     for dist, ref_bone, target_bone in _collect_close_bone_pairs(
         reference_armature_obj, target_armature_obj, parent_map, max_distance
     ):
-        if ref_bone in mapped_ref_bones or target_bone in used_targets:
+        if ref_bone in categorized_refs or ref_bone in mapped_ref_bones or target_bone in used_targets:
             continue
 
         identifier = _clean_custom_identifier(ref_bone)

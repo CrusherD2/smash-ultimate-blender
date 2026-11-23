@@ -25,19 +25,31 @@ for index, suffix in enumerate(suffixes):
         bone.roll = index * .7
         parent = bone
 bpy.ops.object.mode_set(mode='POSE')
+import math
+from mathutils import Vector
+def pole_side_ok(pole, root, joint, end, forward, limb):
+    """The pole sits along the joint's bend, or on the forward side when the limb is straight."""
+    axis = (end - root).normalized()
+    bend = joint - root - axis * (joint - root).dot(axis)
+    expected = bend if bend.length >= .01 * limb else forward - axis * forward.dot(axis)
+    toward = pole - root - axis * (pole - root).dot(axis)
+    return toward.length > .5 and toward.normalized().dot(expected.normalized()) > math.cos(math.radians(1))
+
+
 assert ikc.create_controls(bpy.context, arm, 'ARMS') == len(suffixes)
 for matched in (False, True):
     if matched:
         ikc.match(bpy.context, arm, 'ARMS', entire=False, key=False)
         bpy.context.view_layer.update()
     for suffix in suffixes:
-        for pole, joint in (
-            (data.bones['ArmIK' + suffix].head_local, data.bones['Arm' + suffix].head_local),
-            (arm.pose.bones['ArmIK' + suffix].head, arm.pose.bones['Arm' + suffix].head),
-        ):
-            delta = pole - joint
-            assert abs(delta.x) < 1e-4 and abs(delta.z) < 1e-4, (suffix, matched, delta)
-            assert delta.y > .5, (suffix, matched, delta)
+        limb = (data.bones['Arm' + suffix].head_local - data.bones['Shoulder' + suffix].head_local).length             + (data.bones['Hand' + suffix].head_local - data.bones['Arm' + suffix].head_local).length
+        rest = [data.bones[name + suffix] for name in ('Shoulder', 'Arm')]
+        posed = [arm.pose.bones[ikc.PREFIX + name + suffix] for name in ('Shoulder', 'Arm')]
+        # Elbows point back (+Y) when straight; otherwise the pole follows the real bend.
+        assert pole_side_ok(data.bones['ArmIK' + suffix].head_local, rest[0].head_local, rest[1].head_local,
+                            rest[1].tail_local, Vector((0, 1, 0)), limb), (suffix, matched, 'rest')
+        assert pole_side_ok(arm.pose.bones['ArmIK' + suffix].head, posed[0].head, posed[1].head,
+                            posed[1].tail, Vector((0, 1, 0)), limb), (suffix, matched, 'pose')
 for suffix in suffixes:
     control = arm.pose.bones['HandIK' + suffix]
     matrix = control.matrix.copy()

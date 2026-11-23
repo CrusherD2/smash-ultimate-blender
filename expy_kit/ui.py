@@ -11,6 +11,7 @@ from bl_operators.presets import AddPresetBase
 from . import operators
 from . import preset_handler
 from . import properties
+from ..source.blender_compat import is_pose_bone_selected
 
 
 def menu_header(layout):
@@ -27,6 +28,7 @@ def object_context_options(self, context):
 
     row = layout.row()
     row.operator(operators.CreateTransformOffset.bl_idname)
+    layout.operator(operators.offsets.CreateRotationOffset.bl_idname)
 
 
 class BindingsMenu(bpy.types.Menu):
@@ -68,6 +70,7 @@ class ConvertMenu(bpy.types.Menu):
 
         row = layout.row()
         row.operator(operators.CreateTransformOffset.bl_idname)
+        layout.operator(operators.offsets.CreateRotationOffset.bl_idname)
 
 
 class AnimMenu(bpy.types.Menu):
@@ -982,6 +985,13 @@ def poll_armature_bind_to(self, object):
     return object != bpy.context.object and object.type == 'ARMATURE'
 
 
+def _selected_custom_bones(context):
+    obj = context.active_object
+    if obj is None or obj.type != 'ARMATURE' or obj.mode != 'POSE':
+        return []
+    return sorted((bone for bone in obj.pose.bones if is_pose_bone_selected(bone)), key=lambda bone: bone.name)
+
+
 class AddCustomBone(bpy.types.Operator):
     """Add a bone to the custom bone list"""
     bl_description = 'Add a bone to the custom bone list'
@@ -994,18 +1004,24 @@ class AddCustomBone(bpy.types.Operator):
     
     @classmethod
     def poll(cls, context):
-        return context.active_object and context.active_object.type == 'ARMATURE' and context.active_pose_bone
-    
+        return bool(_selected_custom_bones(context) or (
+            context.active_object and context.active_object.type == 'ARMATURE' and context.active_pose_bone
+        ))
+
     def execute(self, context):
         skeleton = context.active_object.data.expykit_retarget
-        custom = getattr(skeleton, "custom", None)
-        if context.active_pose_bone and custom is not None and hasattr(custom, "add_bone"):
-            identifier = self._clean_identifier(self.identifier)
-
-            if custom.add_bone(identifier, context.active_pose_bone.name):
-                self.report({'INFO'}, f"Added custom bone '{identifier}'")
-            else:
+        custom = skeleton.custom
+        selected = _selected_custom_bones(context)
+        bones = selected if len(selected) > 1 else [context.active_pose_bone]
+        if not all(bones):
+            self.report({'ERROR'}, "No active bone")
+            return {'CANCELLED'}
+        for bone in bones:
+            identifier = self._clean_identifier(bone.name if len(selected) > 1 else self.identifier)
+            if not custom.add_bone(identifier, bone.name):
                 self.report({'ERROR'}, f"Failed to add custom bone '{identifier}'")
+                return {'CANCELLED'}
+        self.report({'INFO'}, f"Added {len(bones)} custom bone(s)")
 
         for window in context.window_manager.windows:
             for area in window.screen.areas:
@@ -1017,8 +1033,10 @@ class AddCustomBone(bpy.types.Operator):
         return identifier.lower().replace(" ", "_").replace("-", "_").replace(".", "_")
     
     def invoke(self, context, event):
+        if len(_selected_custom_bones(context)) > 1:
+            return self.execute(context)
         if context.active_pose_bone:
-            self.identifier = context.active_pose_bone.name.lower().replace(".", "_").replace(" ", "_")
+            self.identifier = self._clean_identifier(context.active_pose_bone.name)
         return context.window_manager.invoke_props_dialog(self)
 
 
@@ -1060,12 +1078,12 @@ class VIEW3D_PT_expy_retarget_custom(RetargetBasePanel, bpy.types.Panel):
         custom = skeleton.custom
 
         row = layout.row()
-        row.operator("object.expy_kit_add_custom_bone", text="Add Active Bone")
+        label = "Add Selected Bones" if len(_selected_custom_bones(context)) > 1 else "Add Active Bone"
+        row.operator("object.expy_kit_add_custom_bone", text=label)
 
         row = layout.row()
         row.label(text="Custom bones with the same identifier will be matched when binding")
 
-        custom.migrate_legacy_bones()
         _ = custom.ui_version
 
         if custom.entries:
@@ -1081,6 +1099,13 @@ class VIEW3D_PT_expy_retarget_custom(RetargetBasePanel, bpy.types.Panel):
 
                 remove_op = row.operator("object.expy_kit_remove_custom_bone", text="", icon='X')
                 remove_op.identifier = item.identifier
+        else:
+            for identifier, bone_name in custom.get_bones():
+                row = layout.row(align=True)
+                row.label(text=identifier)
+                row.label(text=bone_name)
+                remove_op = row.operator("object.expy_kit_remove_custom_bone", text="", icon='X')
+                remove_op.identifier = identifier
 
 
 def register_classes():

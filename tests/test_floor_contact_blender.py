@@ -133,8 +133,11 @@ left.softness = 0
 close(matrix(left.solved).translation.z, .1, 'floor clamp')
 close(matrix(left.raw).translation.z, -1, 'unmodified control')
 arm.data.sub_ik_stretch_legs = True
+# The add-on's property update rewires; this test registers a bare property instead.
+channels.wire(arm)
 arm.data.update_tag()
-end = arm.evaluated_get(update()).pose.bones[channels.PREFIX + 'FootL']
+# Stretch moves the visible limb (through the pull bones), not the hidden solver.
+end = arm.evaluated_get(update()).pose.bones['FootL']
 close(end.matrix.translation.z, .1, 'stretch stops at floor')
 arm.data.sub_ik_stretch_legs = False
 arm.data.update_tag()
@@ -239,7 +242,7 @@ for frame in [10, 1, 7, 5, 3]:
 floor.remove(bpy.context, arm)
 assert not arm.sub_floor_contact.limbs
 assert not any(obj.get('sub_floor_owner') == arm for obj in bpy.data.objects)
-con = arm.pose.bones[channels.PREFIX + 'KneeL'].constraints['SUB IK Solve']
+con = arm.pose.bones[channels.PREFIX + 'FootL'].constraints['SUB IK Solve']
 assert con.target == arm and con.subtarget == 'FootIKL'
 floor.load_calibration(bpy.context, arm, saved)
 assert len(arm.sub_floor_contact.limbs) == 2
@@ -249,7 +252,7 @@ with RestrictBlend():
     floor.register()
 floor._restore_contacts()  # Simulate the first post-registration timer tick.
 left, right = arm.sub_floor_contact.limbs
-assert arm.pose.bones[channels.PREFIX + 'KneeL'].constraints['SUB IK Solve'].target == left.solved
+assert arm.pose.bones[channels.PREFIX + 'FootL'].constraints['SUB IK Solve'].target == left.solved
 
 # The existing collection-preset format carries calibration and excludes helpers.
 presets = importlib.import_module('floor_test.source.extras.collection_presets')
@@ -282,6 +285,8 @@ assert root_z < -.8 and root_z > -1, ('body height', root_z)
 end = arm.evaluated_get(graph).pose.bones[channels.PREFIX + 'FootL']
 assert (end.matrix.translation - matrix(left.solved).translation).length < .005, 'body reaches target'
 arm.data.sub_ik_stretch_legs = True
+# The add-on's property update rewires; this test registers a bare property instead.
+channels.wire(arm)
 arm.data.update_tag()
 close(arm.evaluated_get(update()).pose.bones['Trans'].matrix.translation.z, 0, 'stretch bypasses body correction')
 arm.data.sub_ik_stretch_legs = False

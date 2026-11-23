@@ -33,7 +33,8 @@ for side in ('L', 'R'):
     names = ('Shoulder' + side, 'Arm' + side, 'Hand' + side)
     solve = ik.solve_bone(obj, names).constraints['SUB IK Solve']
     assert solve.chain_count == len(parts) - 1
-    assert ik.solve_bone(obj, names).name == ik.PREFIX + 'Wrist' + side
+    # The single IK constraint lives on the chain's end bone.
+    assert ik.solve_bone(obj, names).name == ik.PREFIX + 'Hand' + side
     path = ik.limb_path(obj, names)
     for parent, child in zip(path, path[1:]):
         assert data.bones[ik.PREFIX + child].parent.name == ik.PREFIX + parent
@@ -76,14 +77,17 @@ for side in ('L', 'R'):
                 obj.update_tag()
                 bpy.context.view_layer.update()
                 evaluated = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+                # Overreaching points the whole arm at the hand control. The solver keeps
+                # the FK rest exactly (so matching is 1:1), and these joints are offset,
+                # so the bones themselves need not be collinear.
                 root = evaluated.pose.bones[ik.PREFIX + path[0]].head
-                end = evaluated.pose.bones[ik.PREFIX + path[-1]].head
-                axis = (end - root).normalized()
-                for name in path[1:-1]:
-                    for prefix in ('', ik.PREFIX):
-                        delta = evaluated.pose.bones[prefix + name].head - root
-                        deviation = (delta - axis * delta.dot(axis)).length
-                        assert deviation < .02, (side, stretch, full_chain_stretch, step, prefix, name, deviation)
+                goal = evaluated.pose.bones['HandIK' + side].head
+                for prefix in ('', ik.PREFIX):
+                    # Blender's IK aims the wrist's tail; Stretch then carries the hand onto the control.
+                    end = (evaluated.pose.bones[path[-1]].head if stretch and not prefix
+                           else evaluated.pose.bones[prefix + path[-2]].tail)
+                    miss = (end - root).angle(goal - root)
+                    assert miss < .02, (side, stretch, full_chain_stretch, step, prefix, miss)
         control.matrix = origin
         obj.update_tag()
         bpy.context.view_layer.update()

@@ -355,11 +355,15 @@ class HumanSkeleton:
         trg_fingers = target_skeleton.right_fingers
         fingers_mapping(self.right_fingers, trg_fingers)
         
+        categorized_sources = set(bone_map)
+        categorized_targets = set(bone_map.values())
+
         # Legacy support for single custom bone
         src_custom = getattr(self, "custom", None)
         tgt_custom = getattr(target_skeleton, "custom", None)
         if src_custom and getattr(src_custom, "name", "") and tgt_custom and getattr(tgt_custom, "name", ""):
-            bone_map[src_custom.name] = tgt_custom.name
+            if src_custom.name not in categorized_sources and tgt_custom.name not in categorized_targets:
+                bone_map[src_custom.name] = tgt_custom.name
 
         # Support for dynamic custom bone properties
         if src_custom and tgt_custom:
@@ -389,9 +393,16 @@ class HumanSkeleton:
                 if bone_name and isinstance(bone_name, str):
                     trg_props[attr_name] = bone_name
             
+            if hasattr(src_custom, 'get_bones'):
+                src_props = dict(src_custom.get_bones())
+            if hasattr(tgt_custom, 'get_bones'):
+                trg_props = dict(tgt_custom.get_bones())
+
             # Map source bones to target bones by matching property names
             for prop_name in src_props:
-                if prop_name in trg_props:
+                if (prop_name in trg_props
+                        and src_props[prop_name] not in categorized_sources
+                        and trg_props[prop_name] not in categorized_targets):
                     bone_map[src_props[prop_name]] = trg_props[prop_name]
 
         return bone_map

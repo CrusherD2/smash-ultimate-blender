@@ -2,13 +2,14 @@ import math
 
 import bpy
 from bpy.app.handlers import persistent
-from mathutils import Matrix
 
 from . import create_animation_rig as rig, ik_channels as ik
 from ..anim.fcurve_compat import get_all_action_fcurves
 
 REVISION_KEY = 'sub_ik_rig_revision'
-CURRENT_REVISION = 1
+# 2: one IK per limb matched 1:1 from FK; no correction bones or pole orbit.
+# 3: the solver follows FK joints moved by location keys, so controls sit on the visible hand/foot.
+CURRENT_REVISION = 3
 BACKUP_KEY = 'sub_ik_update_backup'
 BACKUP_SUFFIX = ' [before IK update]'
 SWITCH_PATHS = ('sub_use_ik', 'sub_use_ik_arms', 'sub_use_ik_legs')
@@ -38,6 +39,37 @@ def _frame_range(obj, scene):
 
 def _matrix_error(a, b):
     return max(abs(x - y) for row_a, row_b in zip(a, b) for x, y in zip(row_a, row_b))
+
+
+def _straight_limbs(obj, jobs, matrices):
+    """Limb bones on near-straight limbs, with each limb's length.
+
+    The new IK bends these very slightly toward their pole so they fold the
+    right way when edited, so they may differ from the old pose by that much.
+    """
+    straight = {}
+    for _kind, names, _target, _pole in jobs:
+        path = ik.limb_path(obj, names)
+        bend = ik.bend_name(obj, names)
+        if bend not in path or not all(name in matrices for name in path):
+            continue
+        root, joint, end = (matrices[name].translation for name in (path[0], bend, path[-1]))
+        length = sum((matrices[b].translation - matrices[a].translation).length for a, b in zip(path, path[1:]))
+        axis = end - root
+        if length < 1e-8 or axis.length < 1e-8:
+            continue
+        axis.normalize()
+        offset = joint - root
+        offset -= axis * offset.dot(axis)
+        if offset.length < length * ik._STRAIGHT:
+            straight.update((name, length) for name in path)
+    return straight
+
+
+def _nudged_within(actual, wanted, length):
+    angle = actual.to_quaternion().rotation_difference(wanted.to_quaternion()).angle
+    angle = min(angle, 2 * math.pi - angle)
+    return angle < math.radians(1.5) and (actual.translation - wanted.translation).length < length * 0.015
 
 
 def _owned_actions(obj):
@@ -144,144 +176,15 @@ def _limb_bake_names(obj, jobs):
     return limbs, body
 
 
-def _transfer_names(obj, jobs):
-    """Animator-facing controls per chain; their world placement is the animation's intent."""
-    result = {}
-    for kind, names, target, pole in jobs:
-        bones = [target, pole]
-        if kind == 'LEGS':
-            feet = ik.foot_controls(names, obj)
-            if feet:
-                bones.extend(feet[:2])
-            articulation = ik.toe_articulation(obj, names)
-            if articulation:
-                bones.append(articulation[0])
-        result[target] = [name for name in bones if name in obj.pose.bones]
-    return result
-
-
 def _depth_order(obj, names):
     return sorted(names, key=lambda name: len(obj.pose.bones[name].parent_recursive))
 
 
-_CHANNELS = ('location', 'rotation_quaternion', 'rotation_euler', 'rotation_axis_angle', 'scale')
-
-
-def _rest_calibration(context, obj, limb_kind, targets):
-    """Pole angles and solver seeds a freshly built rig calibrates on its rest pose."""
-    anim = obj.animation_data
-    action = anim.action
-    slot = getattr(anim, 'action_slot', None)
-    identifier = slot.identifier if slot else None
-    saved = {pb.name: [tuple(getattr(pb, channel)) for channel in _CHANNELS] for pb in obj.pose.bones}
-    anim.action = None
-    try:
-        for pb in obj.pose.bones:
-            pb.matrix_basis = Matrix.Identity(4)
-        context.view_layer.update()
-        ik.match(context, obj, limb_kind, entire=False, key=False, _targets=set(targets))
-        angles, seeds = {}, {}
-        for _, names, target, _ in ik.chains(obj):
-            if target not in targets:
-                continue
-            angles[target] = ik.solve_bone(obj, names).constraints['SUB IK Solve'].pole_angle
-            # The seed's slight rest bend decides which way a straight limb folds.
-            for name in ik.limb_path(obj, names):
-                for prefix in (ik.PREFIX, ik.CORRECTION_PREFIX):
-                    pb = obj.pose.bones.get(prefix + name)
-                    if pb is not None:
-                        seeds[pb.name] = pb.matrix_basis.copy()
-        return angles, seeds
-    finally:
-        anim.action = action
-        if identifier and identifier in action.slots:
-            anim.action_slot = action.slots[identifier]
-        for pb in obj.pose.bones:
-            for channel, value in zip(_CHANNELS, saved.get(pb.name, ())):
-                setattr(pb, channel, value)
-        context.view_layer.update()
-
-
-def _solve_intended(context, obj, retarget, limbs, transfer, old_controls, intended, angles, seeds,
-                    factors):
-    """Pose the new rig from the old controls and read the whole pose it produces.
-
-    Solver seeds and residuals stay at rest, as on a freshly built rig, so later
-    control edits behave the same as on a rig created in T-pose. Returns the
-    control bases to key per frame.
-    """
-    scene = context.scene
-    switches = {path: getattr(obj.data, path) for path in ('sub_use_ik_arms', 'sub_use_ik_legs')
-                if hasattr(obj.data, path)}
-    solvers = {target: ik.solve_bone(obj, names).constraints['SUB IK Solve']
-               for _, names, target, _ in ik.chains(obj) if target in retarget}
-    retargeted = {name for target in retarget for name in limbs[target]}
-    outputs = [(pb.name, con, con.mute) for pb, con, _ in (*ik.outputs(obj), *ik.toe_outputs(obj))]
-    control_keys = {}
-    rig._IK_FK_APPLYING = True
-    try:
-        for current in sorted(intended):
-            scene.frame_set(current)
-            for name, basis in seeds.items():
-                obj.pose.bones[name].matrix_basis = basis
-            # The old switch blend is replayed against the old FK keys, which stay as they are.
-            for path in switches:
-                setattr(obj.data, path, factors[current][path.rsplit('_', 1)[1].upper()])
-            for name, con, mute in outputs:
-                con.mute = mute or name not in retargeted
-            control_keys[current] = {}
-            # Controls follow the old animation on every frame, including FK-mode ones.
-            for target in retarget:
-                solvers[target].pole_angle = angles[target]
-                for name in _depth_order(obj, transfer[target]):
-                    if name in old_controls[current] and name in obj.pose.bones:
-                        obj.pose.bones[name].matrix = old_controls[current][name]
-                        context.view_layer.update()
-                        control_keys[current][name] = obj.pose.bones[name].matrix_basis.copy()
-            context.view_layer.update()
-            # Helpers and children follow the re-solved limbs, so they are re-read too.
-            for name in intended[current]:
-                intended[current][name] = obj.pose.bones[name].matrix.copy()
-    finally:
-        for _name, con, mute in outputs:
-            con.mute = mute
-        for path, value in switches.items():
-            setattr(obj.data, path, value)
-        rig._IK_FK_APPLYING = False
-    return control_keys
-
-
-def _check_end_drift(obj, jobs, retarget, factors, visual, intended, old_controls):
-    """Hands and feet must land where the old controls ask for them.
-
-    The old rig's matched residual could leave the end away from its control (most
-    visibly with stretch on), so moving the end *toward* its control is the fix,
-    not a regression. Only an end that ends up farther from its control fails.
-    """
-    for kind, names, target, _ in jobs:
-        if target not in retarget:
-            continue
-        path = ik.limb_path(obj, names)
-        bound = max(ik._chain_rest_length(obj, path) * 5e-2, TOLERANCE)
-        for current in retarget[target]:
-            if factors[current][kind] < 0.999 or target not in old_controls[current]:
-                continue
-            goal = old_controls[current][target].translation
-            new_end = intended[current][path[-1]].translation
-            old_end = visual[current][path[-1]].translation
-            drift = (new_end - old_end).length
-            if drift > bound and (new_end - goal).length > (old_end - goal).length + bound:
-                raise RuntimeError(f'{path[-1]} would move by {drift:.4f} at frame {current}; rig restored')
-
-
-def _bake_intended(obj, names, intended, control_keys):
+def _bake_intended(obj, names, intended):
     from . import pose_math
     from ..anim.fcurve_bulk import PoseKeyWriter
     order = _depth_order(obj, names)
     writer = PoseKeyWriter(obj)
-    for current, bases in control_keys.items():
-        for name, basis in bases.items():
-            writer.stash_matrix_basis(obj.pose.bones[name], current, basis)
     for current, matrices in intended.items():
         for name in order:
             pb = obj.pose.bones[name]
@@ -325,8 +228,7 @@ def update_in_place(context, obj):
              and not bone.name.startswith((ik.PREFIX, ik.PULL_PREFIX, ik.CORRECTION_PREFIX))]
     limbs, body = _limb_bake_names(obj, jobs)
     outputs = [con for _, con, _ in (*ik.outputs(obj), *ik.toe_outputs(obj))] + ([body] if body else [])
-    transfer = _transfer_names(obj, jobs)
-    visual, fk_only, old_controls, factors = {}, {}, {}, {}
+    visual, fk_only, factors = {}, {}, {}
     objects_before = set(bpy.data.objects)
     backup = actions = None
     try:
@@ -338,8 +240,6 @@ def update_in_place(context, obj):
                     scene.frame_set(current)
                     context.view_layer.update()
                     visual[current] = {name: obj.pose.bones[name].matrix.copy() for name in names}
-                    old_controls[current] = {name: obj.pose.bones[name].matrix.copy()
-                                             for bones in transfer.values() for name in bones}
                     factors[current] = {kind: float(getattr(obj.data, 'sub_use_ik_' + kind.lower(), 0.0) or 0.0)
                                         for kind in ('ARMS', 'LEGS')}
                 for con in outputs:
@@ -377,36 +277,34 @@ def update_in_place(context, obj):
             for pole, value in pulls.items():
                 if pole in obj.data.bones:
                     setattr(obj.data.bones[pole], ik.ARM_PULL_PROPERTY, value)
-            intended = {current: dict(matrices) for current, matrices in visual.items()}
-            if retarget:
-                angles, seeds = _rest_calibration(context, obj, limb_kind, retarget)
-                kind_of = {target: kind for kind, _, target, _ in jobs}
-                control_keys = _solve_intended(
-                    context, obj, retarget, limbs, transfer, old_controls, intended, angles, seeds, factors)
-                _check_end_drift(obj, jobs, retarget, factors, visual, intended, old_controls)
-                # FK keys follow the new IK only where it fully drives the limb.
-                fk_world = {}
-                for current, matrices in intended.items():
-                    fk_world[current] = dict(matrices)
-                    for target in retarget:
-                        if factors[current][kind_of[target]] < 1.0 - 1e-6:
-                            fk_world[current].update((name, fk_only[current][name]) for name in limbs[target])
-                    if 'Trans' in visual[current]:
-                        fk_world[current]['Trans'] = visual[current]['Trans']
-                _bake_intended(obj, bake, fk_world, control_keys)
-            # Limbs the old IK never moved are matched from their FK keys as usual.
-            others = {target for _, _, target, _ in jobs} - set(retarget)
-            if others:
-                ik.match(context, obj, limb_kind, entire=True, key=True, _batch=True, _targets=others)
+            kind_of = {target: kind for kind, _, target, _ in jobs}
+            # The new rig matches FK 1:1, so what the old IK showed becomes FK keys
+            # wherever IK fully drove the limb; partly blended frames keep their FK.
+            fk_world = {}
+            for current, matrices in visual.items():
+                fk_world[current] = dict(matrices)
+                for target in retarget:
+                    if factors[current][kind_of[target]] < 1.0 - 1e-6:
+                        fk_world[current].update((name, fk_only[current][name]) for name in limbs[target])
+            if bake:
+                _bake_intended(obj, bake, fk_world)
+            ik.match(context, obj, limb_kind, entire=True, key=True)
             from .anim_rig_extras import mark_ik_matched
             mark_ik_matched(obj, limb_kind)
             _restore_switches(obj, switches)
             rig.pause_ik_fk_mute_sync(paused)
-            for current, matrices in intended.items():
+            for current, matrices in visual.items():
+                if any(1e-6 < value < 1.0 - 1e-6 for value in factors[current].values()):
+                    continue  # A partial IK/FK blend now blends toward FK-identical IK.
                 scene.frame_set(current)
                 context.view_layer.update()
+                straight = _straight_limbs(obj, jobs, matrices)
                 for name, matrix in matrices.items():
-                    error = _matrix_error(obj.pose.bones[name].matrix, matrix)
+                    actual = obj.pose.bones[name].matrix
+                    error = _matrix_error(actual, matrix)
+                    if (math.isfinite(error) and error > TOLERANCE and name in straight
+                            and _nudged_within(actual, matrix, straight[name])):
+                        continue
                     if not math.isfinite(error) or error > TOLERANCE:
                         raise RuntimeError(f'{name} moved by {error:.4f} at frame {current}; rig restored')
             obj.data[REVISION_KEY] = CURRENT_REVISION

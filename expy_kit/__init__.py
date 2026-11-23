@@ -26,6 +26,7 @@ bl_info = {
 }
 
 
+from . import offsets
 from . import operators
 from . import ui
 from . import preferences

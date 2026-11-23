@@ -91,7 +91,7 @@ for key, points in original_channels.items():
 assert any('HandIKL' in path for path, _ in now)
 assert any('FootIKL' in path for path, _ in now)
 assert any('BL_CC_' in path for path, _ in now)
-assert any('Tail' in path and ik.CORRECTION_PREFIX in path for path, _ in now)
+assert not any(ik.CORRECTION_PREFIX in path for path, _ in now)
 # A failure after one solved frame must restore the action, helpers and IK state.
 original_channels = channels()
 original_bones = set(obj.pose.bones.keys())

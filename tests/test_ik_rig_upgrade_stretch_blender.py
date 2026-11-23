@@ -1,4 +1,4 @@
-"""An old rig with stretch on and a stale residual updates; the end lands on its control.
+"""A rig with stretch on updates; settings survive and the end lands on its control.
 
 blender --background --factory-startup --python-exit-code 1 --python tests/test_ik_rig_upgrade_stretch_blender.py
 """
@@ -12,19 +12,12 @@ del obj.data[upgrade.REVISION_KEY]
 obj.data.sub_ik_stretch_legs = True
 obj.data.sub_ik_stretch_chain_legs = True
 setattr(obj.data.bones['KneeIKL'], ik.ARM_PULL_PROPERTY, 0.38)
-# Old-rig bug: a keyed residual leaves the stretched foot away from its control.
-residual = obj.pose.bones[ik.CORRECTION_PREFIX + 'FootL']
-for frame in (1, 16):
-    residual.location = Vector((0.6, -0.4, 0.3))
-    residual.keyframe_insert('location', frame=frame)
 foot = obj.pose.bones['FootIKL']
 for frame, offset in ((1, Vector((0.2, -0.5, 1.5))), (16, Vector((-0.2, 0.4, 1.2)))):
     foot.location = offset
     foot.keyframe_insert('location', frame=frame)
 scene.frame_set(1)
 bpy.context.view_layer.update()
-gap = (obj.pose.bones['FootL'].matrix.translation - foot.matrix.translation).length
-assert gap > 0.05, gap
 upgrade.update_in_place(bpy.context, obj)
 assert not upgrade.needs_update(obj)
 assert obj.data.sub_ik_stretch_legs and obj.data.sub_ik_stretch_chain_legs

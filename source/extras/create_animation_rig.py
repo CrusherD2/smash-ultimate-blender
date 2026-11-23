@@ -3899,8 +3899,20 @@ def _heal_widgets_once():
 
 
 def _update_stretch_chain(self, context):
+    # Feature constraints exist only while a feature is in use, so rewire on change.
+    armature = getattr(self, 'id_data', self)
     for obj in bpy.data.objects:
-        if obj.type == 'ARMATURE' and obj.data == self:
+        if obj.type == 'ARMATURE' and obj.data == armature:
+            if obj.data.get('sub_independent_ik') and not obj.library:
+                from . import ik_channels
+                # Rewiring drivers re-applies keyed values; keep unkeyed edits the animator made.
+                saved = {pb.name: pb.matrix_basis.copy() for pb in obj.pose.bones}
+                ik_channels.wire(obj)
+                (context or bpy.context).view_layer.update()
+                for name, basis in saved.items():
+                    pb = obj.pose.bones.get(name)
+                    if pb is not None:
+                        pb.matrix_basis = basis
             obj.update_tag(refresh={'OBJECT'})
 
 
@@ -3943,6 +3955,7 @@ def register():
         max=1.0,
         subtype='FACTOR',
         options={'ANIMATABLE'},
+        update=_update_stretch_chain,
     )
     for kind in ('arms', 'legs'):
         setattr(bpy.types.Armature, 'sub_ik_progressive_scale_' + kind, bpy.props.FloatProperty(

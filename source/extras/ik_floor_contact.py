@@ -307,9 +307,8 @@ def rewire(arm):
         if not limb:
             continue
         path = ik_channels.limb_path(arm, names)
-        mid = arm.pose.bones.get(ik_channels.PREFIX + path[-2]) if len(path) >= 2 else None
         end = arm.pose.bones.get(ik_channels.PREFIX + path[-1]) if path else None
-        constraints = ([mid.constraints.get('SUB IK Solve')] if mid else [])
+        constraints = [end.constraints.get('SUB IK Solve')] if end else []
         constraints += ik_channels.end_constraints(end) if end else []
         for con in constraints:
             if con:
