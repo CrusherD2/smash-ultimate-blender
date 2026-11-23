@@ -10,6 +10,58 @@ The updater shows every section newer than the user's installed version, and
 the "What's New" popup shows them once after the update installs. Sections
 that aren't headed by a version number (like "Unreleased") are never shown.
 
+## 5.1.0 - 2026-11-22
+
+Revamp of IK, improvements to Retargetting
+
+apologies for making so many small updates so frequently, this one should be the definitive one
+
+IK revamp
+- Replace correction/fade/pole-orbit matching machinery with one hidden IK solve per limb and one blend constraint per driven FK bone.
+- Match solver, pose, target, pole and pole angle directly from sampled FK, avoiding iterative searches while retaining the existing native solver code for other uses.
+- Preserve FK location animation through pose and hidden rotation-offset bones; aim and scale the solver through sliding elbows, knees, hands and feet so controls stay on the visible endpoints.
+- Keep nearly straight limbs stable with a tiny hidden-solver-only bend; do not nudge original bones, rest poses or FK animation keys.
+- Fit consistent pole angles and rest pole positions; retain pole twist and floor contact on the rebuilt setup.
+- Retain IK Stretch, Stretch Chain, Arm Pull and Progressive Scale, creating their additional constraints only while enabled or animated.
+- Preserve unkeyed control poses when stretch settings rewire the chain, and pass hand/foot control scale to the affected endpoint bones.
+- Upgrade old IK rigs to revision 3 by preserving/baking their poses, rebuilding the chain and rematching; cover old revision-1 fixtures and intermediate layouts.
+- Update floor-contact lookup and the combined animation-rig matcher for the new solver and offset key-writing path.
+
+Retargeting improvements
+- Replace the scale-offset popup with persistent controls and one Apply button inside Ultimate > Retargeting > Actions > Conversion; allow viewport navigation while adjusting.
+- Add Create Rotation Offset with the same workflow and remove the separate offset panel from the Expy sidebar.
+- Store alignment on source-only parent empties without rewriting source animation keys or rest data; compensate alignment scale in retarget helpers so the receiving rig does not grow.
+- Respect source object transforms during binding instead of temporarily stripping its alignment rotation.
+- Map proximity matches into their reference categories (Core, Arms, Legs, Fingers and other preset slots), reusing shared FK/IK bone assignments and keeping categorized bones out of Custom Bones.
+- Remove stale duplicate custom aliases when remapping, reserve categorized bones even when no match is available, and accept nearly coincident heads despite ambiguous midpoint/length scores from nearby helpers.
+- Read saved custom mapping entries directly during binding and prevent custom aliases from overriding categorized mappings.
+- Make custom-panel drawing read-only, prevent per-armature custom defaults from leaking, and preserve an intentionally empty custom list after its final entry is removed instead of resurrecting legacy aliases.
+- Switch Add Active Bone to Add Selected Bones for multiple selected bones; add each with its suggested identifier while preserving the single-bone naming dialog and Blender selection compatibility.
+
+Documentation and regression coverage
+- Update the changelog and IK/FK workflow documentation.
+- Add regression tests for sliding-joint matching, control scaling, legacy rig upgrades, source-offset binding/baking, categorized proximity mapping, final custom-entry deletion and multi-bone additions.
+- Update tests that depended on the previous IK implementation and remove four tests specific to retired matching machinery; retain native solver source/binaries unchanged.
+
+Verification
+- Eight selected Blender regression scripts pass in the exact publish copy: addon registration, sliding joints, control scaling, old-file upgrade, source offsets, proximity categories, custom removal and selected custom additions.
+- Central.blend was tested on a copy: remapping, binding and a 51-frame visual bake preserve sampled evaluated transforms within 0.000004; the original file is unchanged.
+- Earlier full IK suite retained the same 16 pre-existing failures; interactive viewport behavior and the previously noted stretch/scale edge combinations were not comprehensively tested.
+
+Batch baking fixes
+- Select populated Blender action slots, including imported Legacy Slots, rather than empty source-named slots so non-current clips no longer bake as T-poses.
+- Save full scene copies for background bake workers so batch snapshots load correctly, without replacing the user's project.
+- Add serial and parallel legacy-slot regression coverage; all 23 Central(1).blend clips were verified on a copy against sampled evaluated poses with maximum matrix error 0.000091553; the original file is unchanged.
+
+Benchmarks
+- Compared the complete old implementation at 028e0a43afad2e88dd7aecc3b3cda5fa42ac94ff against the installed IK implementation in Blender 5.2.0 LTS.
+- Identical synthetic 15-bone rig, both arms and legs, three runs per version and clip length; figures are medians, with startup, registration and accuracy checks excluded.
+- 24 frames: create IK controls 0.0902s -> 0.0661s (1.37x); match IK to FK 0.5729s -> 0.1263s (4.54x); bake/remove IK 0.1121s -> 0.0971s (1.15x).
+- 120 frames: create IK controls 0.0867s -> 0.0674s (1.29x); match IK to FK 2.3262s -> 0.6754s (3.44x); bake/remove IK 0.2768s -> 0.2089s (1.33x).
+- Accuracy checks passed in all 12 scenarios: worst matching matrix error 0.000005186 and worst baking error 0.000010103 across both implementations.
+- Creation measures IK controls only, not full Animation Rig creation or matching. Synthetic background CPU results exclude meshes and viewport drawing; old runs preceded new runs, so small differences should be treated cautiously.
+- Include the reproducible benchmark script and detailed report in docs/benchmarks/ik-old-new-2026-11-22.md.
+
 ## 5.0.12 - 2026-11-22
 
 ### Revamp of IK, improvements to Retargetting

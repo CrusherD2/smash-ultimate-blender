@@ -46,8 +46,19 @@ def _assign_driving_action(source, action, slot_handle=None):
     slots = getattr(action, 'slots', ())
     slot = next((s for s in slots if s.handle == slot_handle), None)
     if slot is None:
-        slot = next((s for s in slots if slot_id_type(s) == 'OBJECT'
-                     and slot_display_name(s) == source.name), None)
+        object_slots = [s for s in slots if slot_id_type(s) == 'OBJECT']
+        populated = []
+        for candidate in object_slots:
+            if any(
+                bag is not None and len(bag.fcurves) > 0
+                for layer in action.layers for strip in layer.strips
+                for bag in [strip.channelbag(candidate, ensure=False)]
+            ):
+                populated.append(candidate)
+        # Imported legacy clips may have an unrelated slot name, plus an empty owner slot.
+        candidates = populated or object_slots
+        slot = next((s for s in candidates if slot_display_name(s) == source.name),
+                    candidates[0] if candidates else None)
     if slot is not None:
         source.animation_data.action_slot = slot
     else:
@@ -169,8 +180,7 @@ def _parallel_samples(context, source, dest, actions, names, bases, slots, progr
         directory = Path(directory)
         snapshot = directory / 'preview.blend'
         # This leaves the user's current filename and saved project untouched.
-        bpy.data.libraries.write(str(snapshot), set(bpy.data.scenes) | set(actions),
-                                 path_remap='ABSOLUTE', fake_user=True)
+        bpy.ops.wm.save_as_mainfile(filepath=str(snapshot), copy=True, check_existing=False)
         jobs = []
         try:
             for index in range(workers):
