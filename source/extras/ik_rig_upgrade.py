@@ -9,7 +9,8 @@ from ..anim.fcurve_compat import get_all_action_fcurves
 REVISION_KEY = 'sub_ik_rig_revision'
 # 2: one IK per limb matched 1:1 from FK; no correction bones or pole orbit.
 # 3: the solver follows FK joints moved by location keys, so controls sit on the visible hand/foot.
-CURRENT_REVISION = 3
+# 4: solver keys live on the hand/foot and pole controls, so deleting control keys deletes them too.
+CURRENT_REVISION = 4
 BACKUP_KEY = 'sub_ik_update_backup'
 BACKUP_SUFFIX = ' [before IK update]'
 SWITCH_PATHS = ('sub_use_ik', 'sub_use_ik_arms', 'sub_use_ik_legs')
@@ -21,6 +22,11 @@ def needs_update(obj):
         return False
     revision = obj.data.get(REVISION_KEY, 0)
     return (not isinstance(revision, int) or revision < CURRENT_REVISION) and bool(list(ik.chains(obj)))
+
+
+def has_nla_strips(obj):
+    anim = obj.animation_data
+    return bool(anim and any(track.strips for track in anim.nla_tracks))
 
 
 def pending_rigs(scene):
@@ -196,13 +202,32 @@ def _bake_intended(obj, names, intended):
     writer.flush()
 
 
-def update_in_place(context, obj):
+def _verify(context, obj, jobs, visual, factors):
+    scene = context.scene
+    for current, matrices in visual.items():
+        if any(1e-6 < value < 1.0 - 1e-6 for value in factors[current].values()):
+            continue  # A partial IK/FK blend now blends toward FK-identical IK.
+        scene.frame_set(current)
+        context.view_layer.update()
+        straight = _straight_limbs(obj, jobs, matrices)
+        for name, matrix in matrices.items():
+            actual = obj.pose.bones[name].matrix
+            error = _matrix_error(actual, matrix)
+            if (math.isfinite(error) and error > TOLERANCE and name in straight
+                    and _nudged_within(actual, matrix, straight[name])):
+                continue
+            if not math.isfinite(error) or error > TOLERANCE:
+                raise RuntimeError(f'{name} moved by {error:.4f} at frame {current}; rig restored')
+
+
+def update_in_place(context, obj, remove_nla=False):
     if not needs_update(obj):
         raise RuntimeError('This rig does not need an IK update')
     if context.mode not in {'OBJECT', 'POSE'}:
         raise RuntimeError('Leave Edit Mode before updating the IK rig')
-    if obj.animation_data and any(track.strips for track in obj.animation_data.nla_tracks):
-        raise RuntimeError('Rigs with NLA strips or animation layers cannot be updated automatically')
+    if has_nla_strips(obj) and not remove_nla:
+        raise RuntimeError('Rigs with NLA strips or animation layers cannot be updated automatically; '
+                           'turn on Remove NLA Strips to update it (the backup keeps them)')
     scene = context.scene
     frame, subframe = scene.frame_current, scene.frame_subframe
     start_before, end_before = scene.frame_start, scene.frame_end
@@ -266,6 +291,18 @@ def update_in_place(context, obj):
             if context.object and context.object.mode != 'OBJECT':
                 bpy.ops.object.mode_set(mode='OBJECT')
             rig._activate_armature(context, obj)
+            if remove_nla and obj.animation_data:
+                # The backup copy keeps its own tracks, so the strips and their actions survive there.
+                for track in list(obj.animation_data.nla_tracks):
+                    obj.animation_data.nla_tracks.remove(track)
+            if obj.data.get(REVISION_KEY) == 3:
+                # Same rig, only its solver keys move onto the controls; nothing is re-solved.
+                ik.ensure(obj, context)
+                rig.pause_ik_fk_mute_sync(paused)
+                _verify(context, obj, jobs, visual, factors)
+                obj.data[REVISION_KEY] = CURRENT_REVISION
+                obj[BACKUP_KEY] = backup.name
+                return obj
             if obj.animation_data is None or obj.animation_data.action is None:
                 from ..blender_compat import assign_action
                 assign_action(obj.animation_data_create(), bpy.data.actions.new(obj.name + ' Action'))
@@ -293,20 +330,7 @@ def update_in_place(context, obj):
             mark_ik_matched(obj, limb_kind)
             _restore_switches(obj, switches)
             rig.pause_ik_fk_mute_sync(paused)
-            for current, matrices in visual.items():
-                if any(1e-6 < value < 1.0 - 1e-6 for value in factors[current].values()):
-                    continue  # A partial IK/FK blend now blends toward FK-identical IK.
-                scene.frame_set(current)
-                context.view_layer.update()
-                straight = _straight_limbs(obj, jobs, matrices)
-                for name, matrix in matrices.items():
-                    actual = obj.pose.bones[name].matrix
-                    error = _matrix_error(actual, matrix)
-                    if (math.isfinite(error) and error > TOLERANCE and name in straight
-                            and _nudged_within(actual, matrix, straight[name])):
-                        continue
-                    if not math.isfinite(error) or error > TOLERANCE:
-                        raise RuntimeError(f'{name} moved by {error:.4f} at frame {current}; rig restored')
+            _verify(context, obj, jobs, visual, factors)
             obj.data[REVISION_KEY] = CURRENT_REVISION
             obj[BACKUP_KEY] = backup.name
             return obj
@@ -343,6 +367,14 @@ class SUB_OT_update_old_ik(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     rig_name: bpy.props.StringProperty(options={'HIDDEN'})
+    remove_nla: bpy.props.BoolProperty(
+        name='Remove NLA Strips',
+        description="Delete this rig's NLA tracks and strips (including animation layers) so it can be updated. "
+                    'The backup keeps them; if removing them changes the pose, the update is undone',
+        default=False)
+
+    def _rig(self, context):
+        return context.scene.objects.get(self.rig_name) if self.rig_name else context.object
 
     def invoke(self, context, event):
         return context.window_manager.invoke_props_dialog(self, width=460)
@@ -354,16 +386,25 @@ class SUB_OT_update_old_ik(bpy.types.Operator):
         self.layout.label(text='IK/FK switch keys are kept.')
         self.layout.label(text='A backup of the rig and its actions is saved in this file.')
         self.layout.label(text='If the result does not match, the rig is restored automatically.')
+        obj = self._rig(context)
+        if obj is not None and has_nla_strips(obj):
+            box = self.layout.box()
+            box.label(text='This rig has NLA strips or animation layers.', icon='ERROR')
+            box.prop(self, 'remove_nla')
+            box.label(text='They stay on the backup. If they change the pose, nothing is updated.')
 
     def execute(self, context):
-        obj = context.scene.objects.get(self.rig_name) if self.rig_name else context.object
+        obj = self._rig(context)
         if obj is None:
             self.report({'ERROR'}, 'The old IK rig is no longer available')
             return {'CANCELLED'}
         try:
-            update_in_place(context, obj)
+            update_in_place(context, obj, remove_nla=self.remove_nla)
         except (RuntimeError, ValueError, KeyError, TypeError) as error:
-            self.report({'ERROR'}, str(error))
+            message = str(error)
+            if self.remove_nla and 'moved by' in message:
+                message += ' (its NLA strips animate the rig; bake them into the action first)'
+            self.report({'ERROR'}, message)
             return {'CANCELLED'}
         self.report({'INFO'}, 'Updated ' + obj.name + '; backup kept as ' + obj[BACKUP_KEY])
         return {'FINISHED'}

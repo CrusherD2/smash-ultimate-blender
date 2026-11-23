@@ -4,6 +4,11 @@ Each limb has a hidden solver chain with one IK constraint, a hidden pose chain
 that adds FK location keys back onto the solved rotations, and one output
 constraint per FK bone. Matching keys the solver with the FK rotations and puts
 the controls where FK puts them, so the solve starts already solved.
+
+The hidden bones are never keyed themselves: their channels are driven from
+hidden (``_IK ...``) properties on the hand/foot control, and the pole angle
+from one on the pole. Deleting or retiming a control's keys therefore takes
+the matching solver keys with it.
 """
 import math
 import json
@@ -36,6 +41,15 @@ ARM_PULL_PROPERTY = 'sub_ik_arm_pull'
 PULL_BASE = 'SUB IK Pull Base'
 PULL_AIM = 'SUB IK Arm Pull Aim'
 FOLLOW_PROPERTY = 'sub_ik_stretch_follow_'
+STORE_KEY = 'sub_ik_store'
+POLE_STORE_KEY = 'sub_ik_pole_store'
+POLE_ANGLE_PROP = '_IK Pole Angle'
+STORE_PROP_PREFIX = '_IK '
+# Part of each action's match record; actions matched before stored channels need a new match.
+LAYOUT = ':5'
+_STORE_PREFIXES = ((POSE_PREFIX, 'Pose'), (OFFSET_PREFIX, 'Offset'), (PREFIX, 'Solve'))
+_CHANNEL_LABELS = {'location': 'Location', 'rotation_quaternion': 'Rotation',
+                   'rotation_axis_angle': 'Rotation', 'rotation_euler': 'Rotation', 'scale': 'Scale'}
 
 
 def _toe_roots_under(foot_bone):
@@ -338,8 +352,8 @@ def create_controls(context, obj, limbs='BOTH', custom_only=False, custom_target
     return len(jobs)
 
 
-def _signature(obj, kind):
-    return [obj.data.bones[PREFIX + names[0]].get('sub_ik_generation', '') + ':4'
+def _signature(obj, kind, layout=LAYOUT):
+    return [obj.data.bones[PREFIX + names[0]].get('sub_ik_generation', '') + layout
             for _, names, _, _ in chains(obj, kind) if PREFIX + names[0] in obj.data.bones]
 
 
@@ -674,10 +688,220 @@ def ensure(obj, context, limbs='BOTH'):
             pb.rotation_mode = 'QUATERNION'
             collection.assign(pb.bone)
     obj.data[VERSION] = 4
+    install_store(obj, jobs)
     wire(obj)
     from . import ik_floor_contact
     ik_floor_contact.restore_pending(context, obj)
     context.view_layer.update()
+
+
+def _store_kind(name):
+    for prefix, kind in _STORE_PREFIXES:
+        if name.startswith(prefix):
+            return kind, name[len(prefix):]
+    return None, name
+
+
+def _prop_name(kind, name, channel):
+    prop = f'{STORE_PROP_PREFIX}{kind} {name} {channel}'
+    if len(prop.encode()) <= 63:
+        return prop
+    # ID property names are limited to 63 bytes.
+    return f'{STORE_PROP_PREFIX}{kind} {uuid.uuid5(uuid.NAMESPACE_OID, name).hex[:12]} {channel}'
+
+
+def _prop_path(owner, prop):
+    return f'{owner.path_from_id()}["{bpy.utils.escape_identifier(prop)}"]'
+
+
+def _rotation_attr(mode):
+    if mode == 'QUATERNION':
+        return 'rotation_quaternion', 4
+    if mode == 'AXIS_ANGLE':
+        return 'rotation_axis_angle', 4
+    return 'rotation_euler', 3
+
+
+def stored_channels(pose_bone):
+    """(channel, size, property name) for a hidden bone whose keys live on a control."""
+    kind, name = _store_kind(pose_bone.name)
+    rotation = _rotation_attr(pose_bone.rotation_mode)
+    # Offsets only ever rotate; their location and scale stay at rest.
+    channels = [rotation] if kind == 'Offset' else [('location', 3), rotation, ('scale', 3)]
+    return [(attr, size, _prop_name(kind, name, _CHANNEL_LABELS[attr])) for attr, size in channels]
+
+
+def store_owner(obj, pose_bone):
+    name = pose_bone.bone.get(STORE_KEY)
+    return obj.pose.bones.get(name) if isinstance(name, str) else None
+
+
+def _channel_values(attr, mode, location, rotation, scale):
+    if attr == 'location':
+        return tuple(location)
+    if attr == 'scale':
+        return tuple(scale)
+    if attr == 'rotation_quaternion':
+        return tuple(rotation)
+    if attr == 'rotation_axis_angle':
+        axis, angle = rotation.to_axis_angle()
+        return (angle, *axis)
+    return tuple(rotation.to_euler(mode))
+
+
+def _drive(obj, owner_path, prop, holder, attr, size):
+    """Drive ``holder.attr`` from the stored property, without Python expressions."""
+    drivers = obj.animation_data.drivers
+    for index in range(size):
+        source = f'{owner_path}["{bpy.utils.escape_identifier(prop)}"]' + (f'[{index}]' if size > 1 else '')
+        found = drivers.find(holder.path_from_id(attr), index=index)
+        if (found is not None and found.driver.type == 'AVERAGE' and len(found.driver.variables) == 1
+                and found.driver.variables[0].targets[0].data_path == source
+                and not found.keyframe_points and not found.modifiers):
+            continue
+        curve = holder.driver_add(attr, index) if size > 1 else holder.driver_add(attr)
+        # New drivers map through a 0-1 curve that rounds tiny values to zero; pass values straight through.
+        curve.keyframe_points.clear()
+        for modifier in list(curve.modifiers):
+            curve.modifiers.remove(modifier)
+        driver = curve.driver
+        driver.type = 'AVERAGE'
+        for variable in list(driver.variables):
+            driver.variables.remove(variable)
+        variable = driver.variables.new()
+        variable.name, variable.type = 'stored', 'SINGLE_PROP'
+        variable.targets[0].id_type = 'OBJECT'
+        variable.targets[0].id = obj
+        variable.targets[0].data_path = source
+
+
+def _ensure_prop(owner, prop, values):
+    current = owner.get(prop)
+    if current is None or not hasattr(current, '__len__') or len(current) != len(values):
+        owner[prop] = [float(value) for value in values]
+
+
+def install_store(obj, jobs):
+    """Drive each hidden limb bone from properties on its control; move old keys there.
+
+    Moving renames the existing F-curves, so every key, handle and
+    interpolation is kept and the limb looks exactly the same afterwards.
+    """
+    from . import create_animation_rig as rig
+    from ..anim.fcurve_compat import get_all_action_fcurves
+    if obj.animation_data is None:
+        obj.animation_data_create()
+    moves = {}
+    for _kind, names, target, pole in jobs:
+        owner = obj.pose.bones.get(target)
+        if owner is None:
+            continue
+        owner_path = owner.path_from_id()
+        for name in limb_path(obj, names):
+            for prefix, _label in _STORE_PREFIXES:
+                pb = obj.pose.bones.get(prefix + name)
+                if pb is None:
+                    continue
+                for attr, size, prop in stored_channels(pb):
+                    # Read before driving: afterwards the bone shows the property.
+                    _ensure_prop(owner, prop, list(getattr(pb, attr))[:size])
+                    moves[pb.path_from_id(attr)] = _prop_path(owner, prop)
+                    _drive(obj, owner_path, prop, pb, attr, size)
+                if prefix == OFFSET_PREFIX:
+                    for attr in ('location', 'scale'):
+                        moves[pb.path_from_id(attr)] = None
+                    pb.location, pb.scale = (0.0, 0.0, 0.0), (1.0, 1.0, 1.0)
+                pb.bone[STORE_KEY] = target
+        end = obj.pose.bones.get(PREFIX + limb_path(obj, names)[-1])
+        solve = end.constraints.get('SUB IK Solve') if end else None
+        pole_pb = obj.pose.bones.get(pole)
+        if solve is None or pole_pb is None:
+            continue
+        if not isinstance(pole_pb.get(POLE_ANGLE_PROP), float):
+            pole_pb[POLE_ANGLE_PROP] = float(solve.pole_angle)
+        moves[solve.path_from_id('pole_angle')] = _prop_path(pole_pb, POLE_ANGLE_PROP)
+        _drive(obj, pole_pb.path_from_id(), POLE_ANGLE_PROP, solve, 'pole_angle', 1)
+        end.bone[POLE_STORE_KEY] = pole
+    for action in rig._iter_armature_actions(obj):
+        moved = False
+        existing = list(get_all_action_fcurves(action, id_type='OBJECT'))
+        taken = {(curve.data_path, curve.array_index) for curve in existing}
+        for curve in existing:
+            if curve.data_path in moves:
+                _move_curve(action, curve, moves[curve.data_path], taken)
+                moved = True
+        if moved:
+            _relabel_match(obj, action)
+
+
+_KEY_FIELDS = (('co', 2, float), ('handle_left', 2, float), ('handle_right', 2, float),
+               ('interpolation', 1, int), ('easing', 1, int), ('handle_left_type', 1, int),
+               ('handle_right_type', 1, int), ('type', 1, int), ('back', 1, float),
+               ('amplitude', 1, float), ('period', 1, float))
+
+
+def _curve_bag(action, curve):
+    """Where new curves next to ``curve`` go: its channelbag, or a legacy action."""
+    for layer in getattr(action, 'layers', ()):
+        for strip in layer.strips:
+            for bag in getattr(strip, 'channelbags', ()):
+                if any(item == curve for item in bag.fcurves):
+                    return bag
+    return action
+
+
+def _move_curve(action, curve, path, taken):
+    """Copy ``curve`` to ``path`` with every key and handle, then delete it.
+
+    A new curve keeps Blender's curve lookup current; renaming in place does not.
+    """
+    from ..anim.fcurve_compat import remove_fcurve
+    index = curve.array_index
+    if path is None or (path, index) in taken:
+        remove_fcurve(action, curve, id_type='OBJECT')
+        return
+    bag = _curve_bag(action, curve)
+    owner = bpy.utils.unescape_identifier(path.split('"]', 1)[0].split('["', 1)[1])
+    old_group = curve.group.name if curve.group is not None else None
+    if bag is action:
+        moved = action.fcurves.new(path, index=index, action_group=owner)
+    else:
+        moved = bag.fcurves.new(path, index=index, group_name=owner)
+    points = curve.keyframe_points
+    moved.keyframe_points.add(len(points))
+    for field, width, kind in _KEY_FIELDS:
+        values = [kind(0)] * (len(points) * width)
+        points.foreach_get(field, values)
+        moved.keyframe_points.foreach_set(field, values)
+    moved.extrapolation, moved.mute, moved.hide = curve.extrapolation, curve.mute, True
+    moved.update()
+    taken.add((path, index))
+    remove_fcurve(action, curve, id_type='OBJECT')
+    groups = getattr(bag, 'groups', None)
+    emptied = groups.get(old_group) if groups is not None and old_group else None
+    if emptied is not None and not list(emptied.channels):
+        groups.remove(emptied)
+
+
+def _relabel_match(obj, action):
+    """A match made before the move is still exact, so keep it marked as matched."""
+    try:
+        records = json.loads(action.get(MATCH_KEY, '{}'))
+    except (ValueError, TypeError):
+        return
+    for kind in ('ARMS', 'LEGS'):
+        if records.get(kind) and records.get(kind) == _signature(obj, kind, ':4'):
+            records[kind] = _signature(obj, kind)
+    action[MATCH_KEY] = json.dumps(records)
+
+
+def _set_pole_angle(obj, solve_owner, solve, angle):
+    pole = obj.pose.bones.get(solve_owner.bone.get(POLE_STORE_KEY) or '')
+    if pole is not None:
+        pole[POLE_ANGLE_PROP] = float(angle)
+        obj.update_tag(refresh={'OBJECT'})
+    else:
+        solve.pole_angle = angle
 
 
 def _remove_constraint(pose_bone, name):
@@ -1179,7 +1403,7 @@ def _write_match(obj, plans, samples, writer):
                 writer.stash_matrix_basis(basis_pb, frame, _basis(
                     basis_pb, fk[root_toe],
                     placement @ _rest_relation(obj, plan['target'], basis_pb.parent.name)))
-        solve.pole_angle = angle
+        _set_pole_angle(obj, owner, solve, angle)
         owner[FITTED_KEY] = True
 
 
@@ -1191,7 +1415,7 @@ def _refine_offsets(context, obj, plans, samples, writer=None):
     the visible limb 1:1.
     """
     scene = context.scene
-    sink = writer or _PoseSink()
+    sink = writer or _StoredSink(obj)
     for frame in sorted(samples):
         if writer is not None:
             scene.frame_set(frame)
@@ -1227,32 +1451,71 @@ def _linear_match_curves(obj, plans):
         return
     paths = tuple(obj.pose.bones[name].path_from_id() + '.'
                   for name in sorted(_owned_match_bones(plans)) if name in obj.pose.bones)
+    stored = _stored_paths(obj, plans)
     angles = {solve_bone(obj, plan['names']).constraints['SUB IK Solve'].path_from_id('pole_angle')
               for plan in plans}
     for curve in get_all_action_fcurves(action, id_type='OBJECT'):
-        if curve.data_path.startswith(paths) or curve.data_path in angles:
+        if curve.data_path.startswith(stored):
+            fcurve_bulk.set_interpolation(curve, 'LINEAR')
+            # Kept out of the Graph Editor so they do not crowd the control's own curves.
+            curve.hide = True
+        elif curve.data_path.startswith(paths) or curve.data_path in angles:
             fcurve_bulk.set_interpolation(curve, 'LINEAR')
 
 
-class _KeySink:
-    """Keys refined offset rotations directly, replacing the first pass's keys."""
-
-    @staticmethod
-    def stash_matrix_basis(pose_bone, frame, basis):
-        pose_bone.matrix_basis = basis
-        pose_bone.keyframe_insert('rotation_quaternion', frame=frame, group=pose_bone.name)
+def _stored_paths(obj, plans):
+    return tuple(obj.pose.bones[name].path_from_id() + '["' + STORE_PROP_PREFIX
+                 for plan in plans for name in (plan['target'], plan['pole']) if name in obj.pose.bones)
 
 
-class _PoseSink:
-    """Writer stand-in for an unkeyed single-frame match: pose instead of key."""
+class _StoredSink:
+    """Sends hidden-bone channels to their control's properties.
 
-    @staticmethod
-    def stash_matrix_basis(pose_bone, _frame, basis):
-        pose_bone.matrix_basis = basis
+    With a key writer they are keyed there; without one (an unkeyed match)
+    the property values are set, which the drivers pass on to the bones.
+    """
 
-    @staticmethod
-    def stash_channel(*_args):
-        pass
+    def __init__(self, obj, writer=None):
+        self.obj, self.writer = obj, writer
+        self.poles = {}
+        for pb in obj.pose.bones:
+            pole = obj.pose.bones.get(pb.bone.get(POLE_STORE_KEY) or '')
+            solve = pb.constraints.get('SUB IK Solve')
+            if pole is not None and solve is not None:
+                self.poles[solve.path_from_id('pole_angle')] = pole
+
+    def stash_matrix_basis(self, pose_bone, frame, basis):
+        owner = store_owner(self.obj, pose_bone)
+        if owner is None:
+            if self.writer is None:
+                pose_bone.matrix_basis = basis
+            else:
+                self.writer.stash_matrix_basis(pose_bone, frame, basis)
+            return
+        location, rotation, scale = basis.decompose()
+        for attr, _size, prop in stored_channels(pose_bone):
+            values = _channel_values(attr, pose_bone.rotation_mode, location, rotation, scale)
+            if self.writer is None:
+                owner[prop] = values
+                # Setting an ID property sends no update, so the drivers would not re-read it.
+                self.obj.update_tag(refresh={'OBJECT'})
+            else:
+                self.writer.stash_vector(_prop_path(owner, prop), frame, values, owner.name,
+                                         quaternion=attr == 'rotation_quaternion')
+
+    def stash_channel(self, data_path, index, frame, value, group=''):
+        pole = self.poles.get(data_path)
+        if self.writer is None:
+            if pole is not None:
+                pole[POLE_ANGLE_PROP] = float(value)
+                self.obj.update_tag(refresh={'OBJECT'})
+            return
+        if pole is not None:
+            data_path, group = _prop_path(pole, POLE_ANGLE_PROP), pole.name
+        self.writer.stash_channel(data_path, index, frame, value, group)
+
+    def flush(self):
+        return self.writer.flush() if self.writer is not None else 0
 
 
 def _num(value):
@@ -1481,10 +1744,13 @@ def clean_animation(obj, limbs='BOTH', tolerance=1e-4):
                ('location', 'rotation_euler', 'rotation_quaternion', 'rotation_axis_angle', 'scale')}
     allowed.update(solve_bone(obj, group).constraints['SUB IK Solve'].path_from_id() + '.pole_angle'
                    for _, group, _, _ in chains(obj, limbs))
+    stored = tuple(obj.pose.bones[name].path_from_id() + '["' + STORE_PROP_PREFIX
+                   for _, _, target, pole in chains(obj, limbs) for name in (target, pole))
     removed = 0
     for fc in get_all_action_fcurves(action, id_type='OBJECT'):
         points = fc.keyframe_points
-        if fc.data_path not in allowed or len(points) < 3 or fc.modifiers or fc.mute or fc.lock:
+        if ((fc.data_path not in allowed and not fc.data_path.startswith(stored))
+                or len(points) < 3 or fc.modifiers or fc.mute or fc.lock):
             continue
         if any(p.interpolation not in {'LINEAR', 'BEZIER'} for p in points):
             continue
@@ -1569,14 +1835,15 @@ def match(context, obj, limbs='BOTH', entire=True, key=True, clean=False, _batch
                 context.view_layer.update()
                 samples[frame] = {name: obj.pose.bones[name].matrix.copy() for name in names}
             if key:
-                writer = fcurve_bulk.PoseKeyWriter(obj)
+                writer = _StoredSink(obj, fcurve_bulk.PoseKeyWriter(obj))
                 _write_match(obj, plans, samples, writer)
                 writer.flush()
-                _linear_match_curves(obj, plans)
-                _refine_offsets(context, obj, plans, samples, writer=_KeySink())
+                refined = _StoredSink(obj, fcurve_bulk.PoseKeyWriter(obj))
+                _refine_offsets(context, obj, plans, samples, writer=refined)
+                refined.flush()
                 _linear_match_curves(obj, plans)
             else:
-                _write_match(obj, plans, {original: samples[original]}, _PoseSink())
+                _write_match(obj, plans, {original: samples[original]}, _StoredSink(obj))
                 _refine_offsets(context, obj, plans, {original: samples[original]})
             if entire and key and clean:
                 clean_animation(obj, limbs)
@@ -1742,7 +2009,12 @@ def remove(context, obj, limbs='BOTH', targets=None):
         if solver:
             for constraint in solver.constraints:
                 constraint.driver_remove('influence')
-    paths = tuple(obj.pose.bones[n].path_from_id() + '.' for n in names if n in obj.pose.bones)
+    paths = tuple(obj.pose.bones[n].path_from_id() + suffix for n in names if n in obj.pose.bones
+                  for suffix in ('.', '['))
+    if obj.animation_data and paths:
+        for curve in list(obj.animation_data.drivers):
+            if curve.data_path.startswith(paths):
+                obj.animation_data.drivers.remove(curve)
     for action in rig._iter_armature_actions(obj):
         for fc in list(get_all_action_fcurves(action, id_type='OBJECT')):
             if paths and fc.data_path.startswith(paths):

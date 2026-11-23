@@ -95,8 +95,10 @@ class PoseKeyWriter:
         channel['frames'].append(float(frame))
         channel['values'].append(float(value))
 
-    def stash_vector(self, data_path, frame, values, group=''):
+    def stash_vector(self, data_path, frame, values, group='', quaternion=False):
         values = tuple(values)
+        if quaternion:
+            self._quaternion_paths.add(data_path)
         key = (data_path, len(values))
         channels = self._vector_channels.get(key)
         if channels is None:

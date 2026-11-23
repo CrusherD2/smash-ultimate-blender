@@ -10,6 +10,13 @@ The updater shows every section newer than the user's installed version, and
 the "What's New" popup shows them once after the update installs. Sections
 that aren't headed by a version number (like "Unreleased") are never shown.
 
+## 5.1.1 - 2026-11-23
+
+IK fix for edited matched animations
+- Matched IK solver keys now live on the hand/foot and pole controls, so deleting or moving those control keys removes the hidden solver keys too and limbs no longer bend the wrong way in between.
+- Update IK Rig moves an existing rig's hidden keys onto its controls without changing the pose, and keeps a backup.
+- Update IK Rig can now remove a rig's NLA strips / animation layers (new "Remove NLA Strips" option); the backup keeps them, and the update is undone if the strips were animating the rig.
+
 ## 5.1.0 - 2026-11-22
 
 Revamp of IK, improvements to Retargetting
