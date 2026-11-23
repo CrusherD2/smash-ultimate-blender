@@ -10,7 +10,7 @@ The updater shows every section newer than the user's installed version, and
 the "What's New" popup shows them once after the update installs. Sections
 that aren't headed by a version number (like "Unreleased") are never shown.
 
-## Unreleased
+## 5.0.12 - 2026-11-22
 
 ### Revamp of IK, improvements to Retargetting
 
