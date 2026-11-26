@@ -10,6 +10,11 @@ The updater shows every section newer than the user's installed version, and
 the "What's New" popup shows them once after the update installs. Sections
 that aren't headed by a version number (like "Unreleased") are never shown.
 
+## 5.1.2 - 2026-11-26
+
+Retargeting: one offset tool for location, rotation and scale
+- Create Scale Offset and Create Rotation Offset are merged into one Create Transforms Offset button, which also adds Location. Adjust location, rotation and scale together in the sidebar, then Apply.
+
 ## 5.1.1 - 2026-11-23
 
 IK fix for edited matched animations

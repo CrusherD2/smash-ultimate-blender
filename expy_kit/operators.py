@@ -437,17 +437,20 @@ class ConvertBoneNaming(bpy.types.Operator):
 
 class CreateTransformOffset(bpy.types.Operator):
     bl_idname = "object.expykit_create_offset"
-    bl_label = "Create Scale Offset"
-    bl_description = "Align source scale using a parent offset without rewriting animation"
+    bl_label = "Create Transforms Offset"
+    bl_description = "Align source location, rotation and scale using a parent offset without rewriting animation"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
-        return offsets.CreateRotationOffset.poll(context)
+        return (context.object is not None and context.object.type == 'ARMATURE'
+                and context.mode in {'OBJECT', 'POSE'}
+                and context.object.parent_type == 'OBJECT'
+                and context.scene.expykit_offset.container is None)
 
     def execute(self, context):
-        offsets._begin(context, 'SCALE')
-        self.report({'INFO'}, 'Adjust Scale in the Expy sidebar, then Apply')
+        offsets._begin(context)
+        self.report({'INFO'}, 'Adjust Location, Rotation and Scale, then Apply')
         return {'FINISHED'}
 
 

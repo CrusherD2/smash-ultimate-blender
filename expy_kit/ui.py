@@ -28,7 +28,6 @@ def object_context_options(self, context):
 
     row = layout.row()
     row.operator(operators.CreateTransformOffset.bl_idname)
-    layout.operator(operators.offsets.CreateRotationOffset.bl_idname)
 
 
 class BindingsMenu(bpy.types.Menu):
@@ -70,7 +69,6 @@ class ConvertMenu(bpy.types.Menu):
 
         row = layout.row()
         row.operator(operators.CreateTransformOffset.bl_idname)
-        layout.operator(operators.offsets.CreateRotationOffset.bl_idname)
 
 
 class AnimMenu(bpy.types.Menu):

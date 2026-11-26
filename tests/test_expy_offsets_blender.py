@@ -52,25 +52,24 @@ class OffsetLayout:
 
 from types import SimpleNamespace
 retargeting = importlib.import_module(MODULE + '.source.retargeting')
-for kind, field in (('SCALE', 'scale'), ('ROTATION', 'rotation')):
-    settings.kind = kind
-    layout = OffsetLayout()
-    retargeting.ULTIMATE_PT_ActionsConversion.draw(SimpleNamespace(layout=layout), bpy.context)
-    assert ('object.expykit_create_rotation_offset', None) in layout.buttons
-    assert ('object.expykit_apply_offset', 'Apply') in layout.buttons
-    assert field in layout.fields
+layout = OffsetLayout()
+retargeting.ULTIMATE_PT_ActionsConversion.draw(SimpleNamespace(layout=layout), bpy.context)
+assert ('object.expykit_create_offset', None) in layout.buttons
+assert not any('rotation_offset' in name for name, _ in layout.buttons)
+assert ('object.expykit_apply_offset', 'Apply') in layout.buttons
+assert {'location', 'rotation', 'scale'} <= set(layout.fields)
 assert not hasattr(bpy.types, 'VIEW3D_PT_expy_offset')
-settings.kind = 'SCALE'
 settings.scale = 5
 assert mesh.parent == source.parent == settings.container
 assert bpy.ops.object.expykit_apply_offset() == {'FINISHED'}
-assert bpy.ops.object.expykit_create_rotation_offset() == {'FINISHED'}
+assert bpy.ops.object.expykit_create_offset() == {'FINISHED'}
 settings.rotation = (pi / 2, 0, 0)
+settings.location = (0, 0, 2)
 assert bpy.ops.object.expykit_apply_offset() == {'FINISHED'}
 bpy.context.scene.frame_set(1)
 bpy.context.view_layer.update()
-assert (source.matrix_world @ Vector((0, 1, 0)) - Vector((0, 0, 5))).length < 1e-5
-assert (mesh.matrix_world @ Vector((0, 1, 0)) - Vector((0, 0, 5))).length < 1e-5
+assert (source.matrix_world @ Vector((0, 1, 0)) - Vector((0, 0, 7))).length < 1e-5
+assert (mesh.matrix_world @ Vector((0, 1, 0)) - Vector((0, 0, 7))).length < 1e-5
 assert source_data.bones['root'].matrix_local == rest
 assert [[tuple(key.co) for key in fc.keyframe_points] for fc in curves(action)] == keys
 # Bind through Expy itself, with the aligned source driving the unchanged target.

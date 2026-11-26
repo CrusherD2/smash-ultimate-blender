@@ -1,5 +1,5 @@
 import bpy
-from bpy.props import EnumProperty, FloatProperty, FloatVectorProperty, PointerProperty
+from bpy.props import FloatProperty, FloatVectorProperty, PointerProperty
 from mathutils import Euler, Matrix
 
 
@@ -9,29 +9,30 @@ def _preview(self, context):
     self.container['expykit_alignment_scale'] = self.scale
     values = self.container['expykit_offset_basis']
     base = Matrix([values[index:index + 4] for index in range(0, 16, 4)])
-    self.container.matrix_basis = base @ Euler(self.rotation).to_matrix().to_4x4() @ Matrix.Scale(self.scale, 4)
+    self.container.matrix_basis = (base @ Matrix.Translation(self.location)
+                                   @ Euler(self.rotation).to_matrix().to_4x4() @ Matrix.Scale(self.scale, 4))
     context.view_layer.update()
 
 
 class OffsetSettings(bpy.types.PropertyGroup):
     source: PointerProperty(type=bpy.types.Object)
     container: PointerProperty(type=bpy.types.Object)
-    kind: EnumProperty(items=[('SCALE', 'Scale', ''), ('ROTATION', 'Rotation', '')])
     scale: FloatProperty(name='Scale', default=1.0, min=1e-6, update=_preview)
     rotation: FloatVectorProperty(name='Rotation', subtype='EULER', update=_preview)
+    location: FloatVectorProperty(name='Location', subtype='TRANSLATION', update=_preview)
 
 
-def _begin(context, kind):
+def _begin(context):
     settings = context.scene.expykit_offset
     context.view_layer.update()
     if settings.container is not None:
         return False
     source = context.object
     settings.source = source
-    settings.kind = kind
     settings.scale = 1.0
     settings.rotation = (0.0, 0.0, 0.0)
-    container = bpy.data.objects.new('EMP-' + kind.title() + '-Offset', None)
+    settings.location = (0.0, 0.0, 0.0)
+    container = bpy.data.objects.new('EMP-Transforms-Offset', None)
     context.collection.objects.link(container)
     container.empty_display_type = 'PLAIN_AXES'
     container.matrix_world = Matrix.Translation(source.matrix_world.translation)
@@ -76,25 +77,6 @@ def alignment_scale(source):
     return scale
 
 
-class CreateRotationOffset(bpy.types.Operator):
-    bl_idname = 'object.expykit_create_rotation_offset'
-    bl_label = 'Create Rotation Offset'
-    bl_description = 'Align the source using a parent offset without rewriting animation'
-    bl_options = {'REGISTER', 'UNDO'}
-
-    @classmethod
-    def poll(cls, context):
-        return (context.object is not None and context.object.type == 'ARMATURE'
-                and context.mode in {'OBJECT', 'POSE'}
-                and context.object.parent_type == 'OBJECT'
-                and context.scene.expykit_offset.container is None)
-
-    def execute(self, context):
-        _begin(context, 'ROTATION')
-        self.report({'INFO'}, 'Adjust Rotation in the Expy sidebar, then Apply')
-        return {'FINISHED'}
-
-
 class ApplyOffset(bpy.types.Operator):
     bl_idname = 'object.expykit_apply_offset'
     bl_label = 'Apply'
@@ -120,14 +102,13 @@ def draw_offset(layout, context):
     box.label(text='Source Alignment Offset')
     box.label(text='Source: ' + settings.source.name)
     box.prop(settings.container, 'name', text='Name')
-    if settings.kind == 'SCALE':
-        box.prop(settings, 'scale')
-    else:
-        box.prop(settings, 'rotation')
+    box.prop(settings, 'location')
+    box.prop(settings, 'rotation')
+    box.prop(settings, 'scale')
     box.operator(ApplyOffset.bl_idname, text='Apply', icon='CHECKMARK')
 
 
-_CLASSES = (OffsetSettings, CreateRotationOffset, ApplyOffset)
+_CLASSES = (OffsetSettings, ApplyOffset)
 
 
 def register():

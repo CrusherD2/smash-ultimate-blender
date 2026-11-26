@@ -1393,7 +1393,6 @@ class ULTIMATE_PT_ActionsConversion(Panel):
         col.operator(operators.ConvertBoneNaming.bl_idname)
         col.operator(operators.ExtractMetarig.bl_idname)
         col.operator(operators.CreateTransformOffset.bl_idname)
-        col.operator(operators.offsets.CreateRotationOffset.bl_idname)
         operators.offsets.draw_offset(col, context)
 
     def draw_header_preset(self, context):

@@ -33,7 +33,7 @@ Once enabled, the script will add the following entries to the pose menu (mouse 
     * Revert dots in Names
     * Convert Bone Names
     * Extract Metarig
-    * Create Scale Offset
+    * Create Transforms Offset
     
 * Animation
     * Action Range to Scene
