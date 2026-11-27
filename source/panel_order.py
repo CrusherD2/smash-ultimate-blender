@@ -32,7 +32,6 @@ PANEL_META = (
     ("SUB_PT_stage_tools", "Stage Tools"),
     ("SUB_PT_reimport_materials", "Material Re-Importer"),
     ("SUB_PT_attribute_renamer", "Attribute Renamer"),
-    ("SUB_PT_swing_io", "Swing"),
     ("SUB_PT_retargeting_main", "Retargeting"),
     ("SUB_PT_update_plugin", "Update Available!"),
 )

@@ -331,6 +331,53 @@ class SUB_PG_swing_connection(PropertyGroup):
     )
 
 # Armature.sub_swing_data
+SHAPE_TYPE_ITEMS = (
+    ('SPHERE', 'Spheres', 'Sphere shapes', 'SPHERE', 1),
+    ('OVAL', 'Ovals', 'Oval shapes', 'MESH_CYLINDER', 2),
+    ('ELLIPSOID', 'Ellipsoids', 'Ellipsoid shapes', 'META_ELLIPSOID', 3),
+    ('CAPSULE', 'Capsules', 'Capsule shapes', 'META_CAPSULE', 4),
+    ('PLANE', 'Planes', 'Plane shapes', 'MESH_PLANE', 5),
+    ('CONNECTION', 'Connections', 'Connections between swing bones', 'MOD_LENGTH', 6),
+)
+
+
+def _shape_filter_update(self, _context):
+    if self.shape_filter != 'ALL':
+        self.active_shape_type = self.shape_filter
+
+
+def _follow_active_bone_update(self, _context):
+    # Forget the last bone seen so the lists jump to the active bone right away.
+    self.followed_bone_name = ''
+
+
+class SUB_PG_swing_shape_draft(PropertyGroup):
+    adding: EnumProperty(
+        name='Adding Shape',
+        items=(('NONE', 'None', 'Not adding a shape', 'NONE', 0),) + SHAPE_TYPE_ITEMS,
+        default='NONE',
+    )
+    name: StringProperty(name='Name')
+    bone_name: StringProperty(name='Bone')
+    start_bone_name: StringProperty(name='Start Bone')
+    end_bone_name: StringProperty(name='End Bone')
+    offset: FloatVectorProperty(name='Offset', size=3, subtype='XYZ_LENGTH')
+    start_offset: FloatVectorProperty(name='Start Offset', size=3, subtype='XYZ')
+    end_offset: FloatVectorProperty(name='End Offset', size=3, subtype='XYZ')
+    rotation: FloatVectorProperty(name='Rotation', size=3, subtype='XYZ')
+    scale: FloatVectorProperty(name='Scale', size=3, subtype='XYZ', default=(1.0, 1.0, 1.0))
+    radius: FloatProperty(name='Radius', subtype='DISTANCE', default=1.0)
+    start_radius: FloatProperty(name='Start Radius', default=1.0)
+    end_radius: FloatProperty(name='End Radius', default=1.0)
+    nx: FloatProperty(name='X', default=1.0)
+    ny: FloatProperty(name='Y', default=1.0)
+    nz: FloatProperty(name='Z', default=1.0)
+    distance: FloatProperty(name='Distance', default=1.0)
+    length: FloatProperty(name='Length', default=1.0)
+    attach_to_bone: BoolProperty(name='Collide With Active Swing Bone', default=True)
+    attach_to_chain: BoolProperty(name='Collide With Whole Chain', default=False)
+
+
 class SUB_PG_sub_swing_data(PropertyGroup):
     swing_bone_chains: CollectionProperty(type=SUB_PG_swing_bone_chain)
     spheres: CollectionProperty(type=SUB_PG_swing_sphere)
@@ -347,6 +394,38 @@ class SUB_PG_sub_swing_data(PropertyGroup):
     active_capsule_index: IntProperty(name='Active Capsule', default=0, options={'HIDDEN'},)
     active_plane_index: IntProperty(name='Active Plane', default=0, options={'HIDDEN'},)
     active_connection_index: IntProperty(name='Active Connection', default=0, options={'HIDDEN'},)
+    shape_filter: EnumProperty(
+        name='Shape Filter',
+        items=(('ALL', 'All', 'Every collision shape', 'NONE', 0),) + SHAPE_TYPE_ITEMS,
+        default='ALL',
+        update=_shape_filter_update,
+        options={'HIDDEN'},
+    )
+    active_shape_type: EnumProperty(
+        name='Selected Shape Type',
+        items=SHAPE_TYPE_ITEMS,
+        default='SPHERE',
+        options={'HIDDEN'},
+    )
+    shape_draft: PointerProperty(type=SUB_PG_swing_shape_draft)
+    follow_active_bone: BoolProperty(
+        name='Follow Viewport Selection',
+        description='Select the swing bone you click in the viewport in these lists',
+        default=False,
+        update=_follow_active_bone_update,
+    )
+    followed_bone_name: StringProperty(options={'HIDDEN'})
+    active_tab: EnumProperty(
+        name='Swing Panel Tab',
+        items=(
+            ('BONE', 'Bone', 'Physics settings of the selected swing bone'),
+            ('CHAIN', 'Chain', 'Settings shared by the whole chain'),
+            ('COLLISIONS', 'Collisions', 'Shapes the selected bone collides with'),
+            ('PRESETS', 'Presets', 'Save and apply bone or chain presets'),
+        ),
+        default='BONE',
+        options={'HIDDEN'},
+    )
     # Hack since prop_search doesn't allow filtering. Still doesn't work for the UI, but for operators it will
     armature_swing_bones: CollectionProperty(type=SUB_PG_armature_swing_bone)
     armature_swing_bone_children: CollectionProperty(type=SUB_PG_armature_swing_bone_children)

@@ -10,6 +10,19 @@ The updater shows every section newer than the user's installed version, and
 the "What's New" popup shows them once after the update installs. Sections
 that aren't headed by a version number (like "Unreleased") are never shown.
 
+## 5.1.3 - 2026-11-27
+
+Swing Data panel redesign and faster swing tools
+- Swing Bone Chains: chains and bones side by side, with Bone / Chain / Collisions / Presets tabs and bone settings in two columns.
+- Chains and bones show icons for the collision shapes they use.
+- The six collision shape panels are one Collision Shapes panel with an All view and per-type filters.
+- Adding a collision shape fills in a form in the panel instead of a popup; it starts on your selected bone and can collide with the selected swing bone or whole chain.
+- New "Collide with" buttons attach the selected shape to the selected swing bone or its whole chain.
+- Select Active Bone picks the viewport's active bone in the swing lists, and a Follow toggle does it automatically.
+- Auto-Detect and swing.prc import are much faster (seconds instead of minutes on big rigs).
+- Import and Export swing.prc moved to the top of the Ultimate Swing Data panel; the sidebar Swing panel is gone.
+- Retargeting no longer errors on constraints without a target when finding the source armature.
+
 ## 5.1.2 - 2026-11-26
 
 Retargeting: one offset tool for location, rotation and scale

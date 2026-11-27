@@ -2159,7 +2159,7 @@ def find_retarget_source_armature(target_ob):
             continue
         for pb in candidate.pose.bones:
             for constr in pb.constraints:
-                if constr.target != target_ob:
+                if getattr(constr, 'target', None) != target_ob:
                     continue
                 subtarget = getattr(constr, 'subtarget', '') or ''
                 if subtarget.endswith('_RET'):

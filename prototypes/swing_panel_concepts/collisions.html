@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Ultimate Swing Data – collision shape concepts</title>
+<style>
+:root{--bg:#1d1d1d;--ed:#2b2b2b;--pn:#303030;--hd:#3d3d3d;--w:#545454;--sel:#4772b3;--tx:#e6e6e6;--dim:#a0a0a0;--box:#282828}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:12px/1.3 "Inter","Segoe UI",sans-serif;padding:24px}
+h1{font-size:18px;font-weight:600;margin:0 0 4px}
+.lede{color:var(--dim);margin:0 0 20px;max-width:70ch}
+.wrap{display:flex;gap:28px;align-items:flex-start}
+.concept{width:380px}
+.concept h2{font-size:14px;margin:0 0 2px}
+.concept p.why{color:var(--dim);margin:0 0 10px;min-height:48px}
+.editor{background:var(--ed);padding:6px;border-radius:4px}
+.panel{background:var(--pn);border-radius:4px;margin-bottom:4px;overflow:hidden}
+.ph{background:var(--hd);padding:5px 8px;font-weight:600;display:flex;gap:6px;align-items:center}
+.ph::before{content:"▾";color:var(--dim)}
+.ph.closed::before{content:"▸"}
+.sub{margin:4px 6px;background:#363636;border-radius:4px}
+.sub .ph{background:#3a3a3a;font-weight:500}
+.pb{padding:6px 8px;display:flex;flex-direction:column;gap:3px}
+.row{display:flex;gap:4px;align-items:center}
+.row.j{gap:1px}
+.row.j>*{border-radius:0}
+.row.j>*:first-child{border-radius:4px 0 0 4px}
+.row.j>*:last-child{border-radius:0 4px 4px 0}
+.btn{flex:1;background:var(--w);border-radius:4px;padding:4px 6px;text-align:center;white-space:nowrap}
+.btn.ic{flex:0 0 26px;padding:4px 0}
+.btn.on{background:var(--sel)}
+.btn.big{padding:7px}
+.btn.fold{background:none;text-align:left;color:var(--dim)}
+.f{display:flex;align-items:center;gap:6px}
+.f .l{flex:0 0 42%;text-align:right;color:var(--dim)}
+.f .v{flex:1;background:var(--w);border-radius:4px;padding:3px 8px}
+.f .v.pair{background:none;padding:0;display:flex;gap:1px}
+.f .v.pair span{flex:1;background:var(--w);padding:3px 8px;text-align:center}
+.f .v.pair span:first-child{border-radius:4px 0 0 4px}
+.f .v.pair span:last-child{border-radius:0 4px 4px 0}
+.chk{display:flex;gap:6px;align-items:center;padding-left:calc(42% + 6px)}
+.chk i{width:13px;height:13px;border-radius:3px;background:var(--sel);display:inline-block}
+.list{flex:1;background:var(--box);border-radius:4px;padding:2px}
+.li{padding:3px 6px;border-radius:3px;display:flex;justify-content:space-between}
+.li.a{background:var(--sel)}
+.li .n{color:var(--dim)}
+.li.a .n{color:#dde6f5}
+.li.ind{padding-left:22px}
+.side{display:flex;flex-direction:column;gap:1px;align-self:flex-start}
+.side .btn{flex:none;width:24px;border-radius:0;padding:3px 0}
+.side .btn:nth-child(1){border-radius:4px 4px 0 0}
+.side .btn:nth-child(2){border-radius:0 0 4px 4px;margin-bottom:5px}
+.side .btn:nth-child(3){border-radius:4px}
+.cap{color:var(--dim);margin:4px 0 1px}
+.hint{color:var(--dim);font-size:11px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:3px 10px}
+.grid2 .f .l{flex-basis:52%}
+.sep{height:6px}
+.cnt{color:var(--dim);font-weight:400;margin-left:auto}
+.btn .c{color:var(--dim);margin-left:4px}
+.btn.on .c{color:#dde6f5}
+.empty{background:var(--box);border-radius:4px;padding:10px;color:var(--dim);text-align:center}
+.dlg{background:#2a2a2a;border:1px solid #444;border-radius:6px;padding:10px;display:flex;flex-direction:column;gap:4px;box-shadow:0 6px 20px rgba(0,0,0,.5)}
+.dlg h3{margin:0 0 6px;font-size:12px;font-weight:600;padding-bottom:6px;border-bottom:1px solid #3a3a3a}
+.ok{background:var(--sel)}
+.chk i.off{background:var(--w)}
+.ghost{background:none;color:var(--dim);text-align:left}
+</style></head><body>
+<h1>Collision shapes: two directions and a new Add dialog</h1>
+<p class="lede">Today there are six sub-panels, and each shows an empty list and an empty dropdown menu even when it has no shapes. The Add dialog asks for a name, a bone and numbers before the shape exists, so you're placing it blind. Sample data: a rig with 7 shapes.</p>
+<div class="wrap">
+
+<section class="concept">
+<h2>A. One "Collision Shapes" panel</h2>
+<p class="why">All six types share one list. Type buttons filter it and show counts. Each row shows the bone the shape is attached to. Add picks a type and creates the shape right away on the selected bone.</p>
+<div class="editor"><div class="panel"><div class="ph">Collision Shapes <span class="cnt">7</span></div><div class="pb">
+<div class="row j"><div class="btn on">All<span class="c">7</span></div><div class="btn">●<span class="c">3</span></div><div class="btn">⬭<span class="c">1</span></div><div class="btn">⬮<span class="c">0</span></div><div class="btn">💊<span class="c">2</span></div><div class="btn">▭<span class="c">1</span></div><div class="btn">⟷<span class="c">0</span></div></div>
+<div class="row"><div class="list">
+<div class="li a"><span>● head</span><span class="n">J_Head</span></div>
+<div class="li"><span>● chest</span><span class="n">J_Bust</span></div>
+<div class="li"><span>● hip</span><span class="n">J_Hip</span></div>
+<div class="li"><span>💊 neck</span><span class="n">J_Neck → J_Head</span></div>
+<div class="li"><span>💊 armL</span><span class="n">J_ArmL → J_HandL</span></div>
+<div class="li"><span>⬭ waist</span><span class="n">J_Waist → J_Hip</span></div>
+<div class="li"><span>▭ ground</span><span class="n">J_Trans</span></div></div>
+<div class="side"><div class="btn">+</div><div class="btn">−</div><div class="btn">▾</div></div></div>
+<span class="hint">+ opens Sphere / Oval / Ellipsoid / Capsule / Plane / Connection. ▾ holds Duplicate, Mirror L/R, Select in viewport.</span>
+<div class="sep"></div>
+<div class="f"><span class="l">Name</span><span class="v">head</span></div>
+<div class="f"><span class="l">Bone</span><span class="v">🦴 J_Head</span></div>
+<div class="f"><span class="l">Offset</span><span class="v pair"><span>X 0</span><span>Y 1.2</span><span>Z 0</span></span></div>
+<div class="f"><span class="l">Radius</span><span class="v">2.40 m</span></div>
+<div class="sep"></div>
+<div class="row j"><div class="btn">Used by 6 swing bones</div><div class="btn ic">⌖</div></div>
+</div></div></div>
+</section>
+
+<section class="concept">
+<h2>B. Keep six panels, quieter</h2>
+<p class="why">Smaller change. Headers show how many shapes each type has. Empty types show one Add button instead of an empty list. The empty ▾ menu is gone, and fields for the selected shape sit in a box under the list.</p>
+<div class="editor"><div class="panel"><div class="ph">Ultimate Swing Data</div>
+<div class="sub"><div class="ph">Spheres <span class="cnt">3</span></div><div class="pb">
+<div class="row"><div class="list">
+<div class="li a"><span>● head</span><span class="n">J_Head</span></div>
+<div class="li"><span>● chest</span><span class="n">J_Bust</span></div>
+<div class="li"><span>● hip</span><span class="n">J_Hip</span></div></div>
+<div class="side"><div class="btn">+</div><div class="btn">−</div></div></div>
+<div class="f"><span class="l">Bone</span><span class="v">🦴 J_Head</span></div>
+<div class="f"><span class="l">Offset</span><span class="v pair"><span>X 0</span><span>Y 1.2</span><span>Z 0</span></span></div>
+<div class="f"><span class="l">Radius</span><span class="v">2.40 m</span></div>
+</div></div>
+<div class="sub"><div class="ph">Ovals <span class="cnt">1</span></div><div class="pb">
+<div class="row"><div class="list"><div class="li a"><span>⬭ waist</span><span class="n">J_Waist → J_Hip</span></div></div>
+<div class="side"><div class="btn">+</div><div class="btn">−</div></div></div>
+</div></div>
+<div class="sub"><div class="ph">Ellipsoids <span class="cnt">0</span></div><div class="pb">
+<div class="row"><div class="btn">+ Add Ellipsoid</div></div>
+</div></div>
+<div class="sub"><div class="ph closed">Capsules <span class="cnt">2</span></div></div>
+<div class="sub"><div class="ph closed">Planes <span class="cnt">1</span></div></div>
+<div class="sub"><div class="ph">Connections <span class="cnt">0</span></div><div class="pb">
+<div class="row"><div class="btn">+ Add Connection</div></div>
+</div></div>
+</div></div>
+</section>
+
+<section class="concept">
+<h2>Add dialog (works with A or B)</h2>
+<p class="why">Bone defaults to the bone you have selected. Name fills in from it. The shape is drawn in the viewport while the dialog is open, and it can be attached to the current swing bone in the same step.</p>
+<div class="dlg">
+<h3>Add Sphere</h3>
+<div class="f"><span class="l">Bone</span><span class="v">🦴 J_Head</span></div>
+<div class="f"><span class="l">Name</span><span class="v">head</span></div>
+<div class="f"><span class="l">Offset</span><span class="v pair"><span>X 0</span><span>Y 0</span><span>Z 0</span></span></div>
+<div class="f"><span class="l">Radius</span><span class="v">1.00 m</span></div>
+<div class="chk"><i></i>Collide with S_HairBaseA1</div>
+<div class="chk"><i class="off"></i>Whole chain hairbasea1</div>
+<div class="sep"></div>
+<div class="row"><div class="btn ok">Add Sphere</div><div class="btn">Cancel</div></div>
+</div>
+<div class="sep"></div>
+<p class="why" style="min-height:0">Compared with today: labels line up, Radius no longer stretches across the whole width, OK becomes "Add Sphere", and the name is no longer the first required field.</p>
+</section>
+</div>
+</body></html>

@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Ultimate Swing Data – panel concepts</title>
+<style>
+:root{--bg:#1d1d1d;--ed:#2b2b2b;--pn:#303030;--hd:#3d3d3d;--w:#545454;--sel:#4772b3;--tx:#e6e6e6;--dim:#a0a0a0;--box:#282828}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:12px/1.3 "Inter","Segoe UI",sans-serif;padding:24px}
+h1{font-size:18px;font-weight:600;margin:0 0 4px}
+.lede{color:var(--dim);margin:0 0 20px;max-width:70ch}
+.wrap{display:flex;gap:28px;align-items:flex-start}
+.concept{width:380px}
+.concept h2{font-size:14px;margin:0 0 2px}
+.concept p.why{color:var(--dim);margin:0 0 10px;min-height:48px}
+.editor{background:var(--ed);padding:6px;border-radius:4px}
+.panel{background:var(--pn);border-radius:4px;margin-bottom:4px;overflow:hidden}
+.ph{background:var(--hd);padding:5px 8px;font-weight:600;display:flex;gap:6px;align-items:center}
+.ph::before{content:"▾";color:var(--dim)}
+.ph.closed::before{content:"▸"}
+.sub{margin:4px 6px;background:#363636;border-radius:4px}
+.sub .ph{background:#3a3a3a;font-weight:500}
+.pb{padding:6px 8px;display:flex;flex-direction:column;gap:3px}
+.row{display:flex;gap:4px;align-items:center}
+.row.j{gap:1px}
+.row.j>*{border-radius:0}
+.row.j>*:first-child{border-radius:4px 0 0 4px}
+.row.j>*:last-child{border-radius:0 4px 4px 0}
+.btn{flex:1;background:var(--w);border-radius:4px;padding:4px 6px;text-align:center;white-space:nowrap}
+.btn.ic{flex:0 0 26px;padding:4px 0}
+.btn.on{background:var(--sel)}
+.btn.big{padding:7px}
+.btn.fold{background:none;text-align:left;color:var(--dim)}
+.f{display:flex;align-items:center;gap:6px}
+.f .l{flex:0 0 42%;text-align:right;color:var(--dim)}
+.f .v{flex:1;background:var(--w);border-radius:4px;padding:3px 8px}
+.f .v.pair{background:none;padding:0;display:flex;gap:1px}
+.f .v.pair span{flex:1;background:var(--w);padding:3px 8px;text-align:center}
+.f .v.pair span:first-child{border-radius:4px 0 0 4px}
+.f .v.pair span:last-child{border-radius:0 4px 4px 0}
+.chk{display:flex;gap:6px;align-items:center;padding-left:calc(42% + 6px)}
+.chk i{width:13px;height:13px;border-radius:3px;background:var(--sel);display:inline-block}
+.list{flex:1;background:var(--box);border-radius:4px;padding:2px}
+.li{padding:3px 6px;border-radius:3px;display:flex;justify-content:space-between}
+.li.a{background:var(--sel)}
+.li .n{color:var(--dim)}
+.li.a .n{color:#dde6f5}
+.li.ind{padding-left:22px}
+.side{display:flex;flex-direction:column;gap:1px;align-self:flex-start}
+.side .btn{flex:none;width:24px;border-radius:0;padding:3px 0}
+.side .btn:nth-child(1){border-radius:4px 4px 0 0}
+.side .btn:nth-child(2){border-radius:0 0 4px 4px;margin-bottom:5px}
+.side .btn:nth-child(3){border-radius:4px}
+.cap{color:var(--dim);margin:4px 0 1px}
+.hint{color:var(--dim);font-size:11px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:3px 10px}
+.grid2 .f .l{flex-basis:52%}
+.sep{height:6px}
+</style></head><body>
+<h1>Ultimate Swing Data: three layout concepts</h1>
+<p class="lede">Every element here exists in Blender's UI toolkit (lists, sub-panels, property split, joined buttons, collapsible sections), so each concept can be built without custom drawing. Sample data: a hair chain with five bones.</p>
+<div class="wrap">
+
+<section class="concept">
+<h2>A. Drill-down</h2>
+<p class="why">Full-width lists stacked top to bottom: chain, then bone, then that bone's settings in labelled groups. Nothing is squeezed into thirds.</p>
+<div class="editor"><div class="panel"><div class="ph">Ultimate Swing Data</div><div class="pb">
+<div class="row"><div class="btn big">⟳ Auto-detect chains</div></div>
+<div class="cap">Chains</div>
+<div class="row"><div class="list">
+<div class="li a"><span>⛓ S_Hair1</span><span class="n">5 bones</span></div>
+<div class="li"><span>⛓ S_Hair2</span><span class="n">4 bones</span></div>
+<div class="li"><span>⛓ S_Skirt_F</span><span class="n">3 bones</span></div></div>
+<div class="side"><div class="btn">+</div><div class="btn">−</div><div class="btn">▾</div></div></div>
+<div class="cap">Bones in S_Hair1</div>
+<div class="row"><div class="list">
+<div class="li"><span>🦴 S_Hair1_1</span></div><div class="li a"><span>🦴 S_Hair1_2</span></div><div class="li"><span>🦴 S_Hair1_3</span></div></div>
+<div class="side"><div class="btn">✎</div><div class="btn">⇄</div><div class="btn">▾</div></div></div>
+<span class="hint">✎ edit chain start/end, ⇄ copy or paste bone values</span>
+</div>
+<div class="sub"><div class="ph">Bone S_Hair1_2</div><div class="pb">
+<div class="cap">Motion</div>
+<div class="f"><span class="l">Mass</span><span class="v">1.000</span></div>
+<div class="f"><span class="l">Goal strength</span><span class="v">0.350</span></div>
+<div class="f"><span class="l">Local gravity</span><span class="v">1.000</span></div>
+<div class="f"><span class="l">Fall speed scale</span><span class="v">1.000</span></div>
+<div class="f"><span class="l">Air resistance</span><span class="v">1.200</span></div>
+<div class="f"><span class="l">Water resistance</span><span class="v">1.000</span></div>
+<div class="f"><span class="l">Wind</span><span class="v">0.800</span></div>
+<div class="cap">Rotation limits</div>
+<div class="f"><span class="l">X min / max</span><span class="v pair"><span>-45°</span><span>45°</span></span></div>
+<div class="f"><span class="l">Z min / max</span><span class="v pair"><span>-30°</span><span>60°</span></span></div>
+<div class="cap">Contact</div>
+<div class="f"><span class="l">Size head / tail</span><span class="v pair"><span>0.8</span><span>0.6</span></span></div>
+<div class="f"><span class="l">Friction</span><span class="v">0.500</span></div>
+<div class="chk"><i></i>Hits ground</div>
+</div></div>
+<div class="sub"><div class="ph closed">Collides with (2)</div></div>
+<div class="sub"><div class="ph closed">Chain settings</div></div>
+<div class="sub"><div class="ph">Apply these values</div><div class="pb">
+<div class="row j"><div class="btn">To whole chain</div><div class="btn">To every chain</div></div>
+<div class="row j"><div class="btn">Bone preset ▾</div><div class="btn ic">+</div><div class="btn ic">−</div></div>
+</div></div>
+</div></div>
+</section>
+
+<section class="concept">
+<h2>B. Side-by-side with tabs</h2>
+<p class="why">Keeps today's "pick chain, pick bone" pairing, but in two columns instead of three, and a tab row decides what shows below so the panel stays short.</p>
+<div class="editor"><div class="panel"><div class="ph">Ultimate Swing Data</div><div class="pb">
+<div class="row" style="align-items:flex-start;gap:8px">
+<div style="flex:1"><div class="cap">Chains</div><div class="list">
+<div class="li a"><span>⛓ S_Hair1</span></div><div class="li"><span>⛓ S_Hair2</span></div><div class="li"><span>⛓ S_Skirt_F</span></div><div class="li"><span>⛓ S_Tail</span></div></div>
+<div class="row j" style="margin-top:3px"><div class="btn">+</div><div class="btn">−</div><div class="btn">⟳</div></div></div>
+<div style="flex:1"><div class="cap">Bones</div><div class="list">
+<div class="li"><span>🦴 S_Hair1_1</span></div><div class="li a"><span>🦴 S_Hair1_2</span></div><div class="li"><span>🦴 S_Hair1_3</span></div><div class="li"><span>🦴 S_Hair1_4</span></div></div>
+<div class="row j" style="margin-top:3px"><div class="btn">Edit start/end</div></div></div>
+</div>
+<div class="sep"></div>
+<div class="row j"><div class="btn on">Bone</div><div class="btn">Chain</div><div class="btn">Collisions</div><div class="btn">Presets</div></div>
+<div class="sep"></div>
+<div class="grid2">
+<div class="f"><span class="l">Mass</span><span class="v">1.00</span></div>
+<div class="f"><span class="l">Goal str.</span><span class="v">0.35</span></div>
+<div class="f"><span class="l">Gravity</span><span class="v">1.00</span></div>
+<div class="f"><span class="l">Fall speed</span><span class="v">1.00</span></div>
+<div class="f"><span class="l">Air res.</span><span class="v">1.20</span></div>
+<div class="f"><span class="l">Water res.</span><span class="v">1.00</span></div>
+<div class="f"><span class="l">Friction</span><span class="v">0.50</span></div>
+<div class="f"><span class="l">Wind</span><span class="v">0.80</span></div>
+</div>
+<div class="f"><span class="l">X limit</span><span class="v pair"><span>-45°</span><span>45°</span></span></div>
+<div class="f"><span class="l">Z limit</span><span class="v pair"><span>-30°</span><span>60°</span></span></div>
+<div class="f"><span class="l">Size head / tail</span><span class="v pair"><span>0.8</span><span>0.6</span></span></div>
+<div class="chk"><i></i>Hits ground</div>
+<div class="sep"></div>
+<div class="row j"><div class="btn">Copy</div><div class="btn">Paste</div><div class="btn">Paste to chain ▾</div></div>
+</div></div>
+<div class="panel"><div class="ph closed">Collision shapes</div></div>
+</div>
+</section>
+
+<section class="concept">
+<h2>C. Outliner tree + one shapes list</h2>
+<p class="why">Chains and their bones live in one tree, like the Outliner. The six separate shape panels become a single list filtered by type.</p>
+<div class="editor"><div class="panel"><div class="ph">Ultimate Swing Data</div><div class="pb">
+<div class="row j"><div class="btn">⟳ Auto-detect</div><div class="btn">Copy</div><div class="btn">Paste</div><div class="btn">Spread ▾</div><div class="btn">Presets ▾</div></div>
+<div class="sep"></div>
+<div class="row"><div class="list">
+<div class="li"><span>▾ ⛓ S_Hair1</span><span class="n">5</span></div>
+<div class="li ind"><span>🦴 S_Hair1_1</span></div>
+<div class="li ind a"><span>🦴 S_Hair1_2</span><span class="n">2 shapes</span></div>
+<div class="li ind"><span>🦴 S_Hair1_3</span></div>
+<div class="li"><span>▸ ⛓ S_Hair2</span><span class="n">4</span></div>
+<div class="li"><span>▸ ⛓ S_Skirt_F</span><span class="n">3</span></div></div>
+<div class="side"><div class="btn">+</div><div class="btn">−</div><div class="btn">▾</div></div></div>
+</div>
+<div class="sub"><div class="ph">S_Hair1_2</div><div class="pb">
+<div class="f"><span class="l">Goal strength</span><span class="v">0.350</span></div>
+<div class="f"><span class="l">Mass</span><span class="v">1.000</span></div>
+<div class="f"><span class="l">X limit</span><span class="v pair"><span>-45°</span><span>45°</span></span></div>
+<div class="f"><span class="l">Z limit</span><span class="v pair"><span>-30°</span><span>60°</span></span></div>
+<div class="row"><div class="btn fold">▸ Resistance, gravity &amp; wind</div></div>
+<div class="row"><div class="btn fold">▸ Contact</div></div>
+</div></div>
+</div>
+<div class="panel"><div class="ph">Collision shapes</div><div class="pb">
+<div class="row j"><div class="btn on">All</div><div class="btn ic">●</div><div class="btn ic">⬭</div><div class="btn ic">⬮</div><div class="btn ic">💊</div><div class="btn ic">▭</div><div class="btn ic">⟷</div></div>
+<div class="row"><div class="list">
+<div class="li a"><span>● head_sphere</span><span class="n">J_Head</span></div>
+<div class="li"><span>💊 neck_capsule</span><span class="n">J_Neck</span></div>
+<div class="li"><span>⬮ shoulderL</span><span class="n">J_ShoulderL</span></div>
+<div class="li"><span>▭ ground</span><span class="n">J_Trans</span></div></div>
+<div class="side"><div class="btn">+</div><div class="btn">−</div><div class="btn">▾</div></div></div>
+<div class="f"><span class="l">Bone</span><span class="v">J_Head</span></div>
+<div class="f"><span class="l">Offset</span><span class="v pair"><span>0</span><span>1.2</span><span>0</span></span></div>
+<div class="f"><span class="l">Radius</span><span class="v">2.400</span></div>
+<div class="row"><div class="btn">Used by 6 bones: select them</div></div>
+</div></div>
+</div>
+</section>
+</div>
+</body></html>

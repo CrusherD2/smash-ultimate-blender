@@ -14,6 +14,8 @@ extra hashes already written there are merged in on first setup.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import csv
 import os
 import shutil
@@ -247,6 +249,32 @@ def load_param_labels() -> Path:
     return path
 
 
+# Labels queued by deferred_hash_labels(); None when writes go straight to the CSV.
+_deferred_labels: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar('_deferred_labels', default=None)
+
+
+@contextlib.contextmanager
+def deferred_hash_labels():
+    """Queue add_hash_label() calls and write them in one batch on exit.
+
+    Every single write re-reads the whole ~90k-row CSV, so bulk operations
+    (swing import) that name hundreds of things wrap themselves in this.
+    """
+    if _deferred_labels.get() is not None:
+        yield
+        return
+    queued: list[str] = []
+    token = _deferred_labels.set(queued)
+    try:
+        yield
+    finally:
+        _deferred_labels.reset(token)
+        if queued:
+            _added, _skipped, _files, error = batch_add_hash_labels(queued)
+            if error:
+                print(f"Error adding hashes to ParamLabels.csv: {error}")
+
+
 def add_hash_label(
     label: str | None,
     *,
@@ -257,6 +285,10 @@ def add_hash_label(
     if not label or not isinstance(label, str):
         return False
     if _looks_like_hash40(label):
+        return True
+    queued = _deferred_labels.get()
+    if queued is not None and not extra_paths and not reload:
+        queued.append(label)
         return True
 
     try:

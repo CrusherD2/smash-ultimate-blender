@@ -1,4 +1,6 @@
 # BPY Imports
+from typing import NamedTuple
+
 import bpy
 from bpy.types import (
     Panel, UIList, Menu, UILayout)
@@ -8,41 +10,6 @@ from bpy.types import (
 from .sub_swing_data import *
 from .operators import *
 from ..blender_property_extensions import SubSceneProperties
-
-class SUB_PT_swing_io(Panel):
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'Ultimate'
-    bl_label = 'Swing'
-    bl_options = {'DEFAULT_CLOSED'}
-
-    @classmethod
-    def poll(cls, context):
-        return True
-
-    def draw(self, context):
-        ssp: SubSceneProperties = context.scene.sub_scene_properties
-        layout = self.layout
-        layout.use_property_split = False
-
-        if not context.object:
-            row = layout.row(align=True)
-            row.label(text='Please select an armature in the 3D viewport')
-            return
-        if context.object.type != 'ARMATURE' or \
-           context.object.name not in context.view_layer.objects.selected:
-            row = layout.row(align=True)
-            row.label(text='Please select an armature in the 3D viewport')
-            return
-
-        row = layout.row(align=True)
-        row.operator('sub.swing_import', icon='IMPORT')  
-        row = layout.row(align=True)
-        row.operator('sub.swing_export', icon='EXPORT')
-
-    def draw_header_preset(self, context):
-        from ..ui_help import draw_panel_help
-        draw_panel_help(self.layout, self)
 
 class SUB_PT_active_bone_swing_info(Panel):
     bl_label = 'Ultimate Swing Data'
@@ -226,181 +193,189 @@ class SUB_PT_swing_data_master(Panel, SwingPropertyPanel):
     bl_label = "Ultimate Swing Data"
 
     def draw(self, context):
-        layout = self.layout
-        arma = context.object
+        row = self.layout.row(align=True)
+        row.operator('sub.swing_import', icon='IMPORT', text='Import swing.prc')
+        row.operator('sub.swing_export', icon='EXPORT', text='Export swing.prc')
+
+
+BONE_SCALAR_PROPS = (
+    ('inertial_mass', 'Mass'), ('goal_strength', 'Goal Str.'),
+    ('local_gravity', 'Gravity'), ('fall_speed_scale', 'Fall Speed'),
+    ('air_resistance', 'Air Res.'), ('water_resistance', 'Water Res.'),
+    ('friction_rate', 'Friction'), ('wind_affect', 'Wind'),
+)
+BONE_RANGE_PROPS = (
+    ('angle_y', 'X Limit'), ('angle_z', 'Z Limit'), ('collision_size', 'Size Head / Tail'),
+)
+CHAIN_PROPS = ('is_skirt', 'rotate_order', 'curve_rotate_x', 'has_unk_8')
 
 
 class SUB_PT_swing_bone_chains(Panel, SwingPropertyPanel):
     bl_label = "Swing Bone Chains"
     bl_parent_id = "SUB_PT_swing_data_master"
-    
+
     def draw(self, context):
         layout = self.layout
         sub_swing_data: SUB_PG_sub_swing_data = context.object.data.sub_swing_data
+        chains = sub_swing_data.swing_bone_chains
+        active_chain = chains[sub_swing_data.active_swing_bone_chain_index] if len(chains) > 0 else None
+        active_bone = None
+        if active_chain is not None and len(active_chain.swing_bones) > 0:
+            active_bone = active_chain.swing_bones[active_chain.active_swing_bone_index]
 
-        col = layout.column()
-        row = col.row()
-        split = row.split(factor=.33)
+        split = layout.split(factor=.5)
         c = split.column()
-        c.label(text='Swing Bone Chains')
+        c.label(text='Chains')
         c.template_list(
-            "SUB_UL_swing_bone_chains",
-            "",
-            sub_swing_data,
-            "swing_bone_chains",
-            sub_swing_data,
-            "active_swing_bone_chain_index",
-            rows=5,
-            maxrows=5,
-            )
-        split = split.split(factor=.5)
+            "SUB_UL_swing_bone_chains", "",
+            sub_swing_data, "swing_bone_chains",
+            sub_swing_data, "active_swing_bone_chain_index",
+            rows=4, maxrows=8,
+        )
+        # Grid cells stretch icon-only buttons to equal widths; a row keeps them icon-sized.
+        r = c.grid_flow(columns=3, even_columns=True, align=True)
+        r.operator(SUB_OP_swing_bone_chain_add.bl_idname, text='', icon='ADD')
+        r.operator(SUB_OP_swing_bone_chain_remove.bl_idname, text='', icon='REMOVE')
+        r.operator('sub.swing_bone_chain_auto_detect', text='', icon='FILE_REFRESH')
+
         c = split.column()
-        c.label(text='Swing Bones')
-        if len(sub_swing_data.swing_bone_chains) > 0:
-            active_swing_bone_chain = sub_swing_data.swing_bone_chains[sub_swing_data.active_swing_bone_chain_index]
-            c.template_list(
-                'SUB_UL_swing_bones',
-                '',
-                active_swing_bone_chain,
-                'swing_bones',
-                active_swing_bone_chain,
-                'active_swing_bone_index',
-                rows=5,
-                maxrows=5,
-            )        
-        else:
+        c.label(text='Bones')
+        if active_chain is None:
             c.enabled = False
-        split = split.split()
-        c = split.column()
-        c.enabled = False
-        c.label(text="Bone's Collisions")
-        if len(sub_swing_data.swing_bone_chains) > 0:
-            active_swing_bone_chain = sub_swing_data.swing_bone_chains[sub_swing_data.active_swing_bone_chain_index]
-            if len(active_swing_bone_chain.swing_bones) > 0:
-                c.enabled = True
-                active_swing_bone = active_swing_bone_chain.swing_bones[active_swing_bone_chain.active_swing_bone_index]
-                c.template_list(
-                    'SUB_UL_swing_bone_collisions',
-                    '',
-                    active_swing_bone,
-                    'collisions',
-                    active_swing_bone,
-                    'active_collision_index',
-                    rows=5,
-                    maxrows=5,
-                )
+            c.box().label(text='No chain selected')
+        else:
+            c.template_list(
+                'SUB_UL_swing_bones', '',
+                active_chain, 'swing_bones',
+                active_chain, 'active_swing_bone_index',
+                rows=4, maxrows=8,
+            )
+            r = c.row(align=True)
+            r.operator(SUB_OP_swing_bone_chain_length_edit.bl_idname, text='Edit Start/End')
+            r.operator('sub.swing_select_active_bone', text='', icon='RESTRICT_SELECT_OFF')
+            r.prop(sub_swing_data, 'follow_active_bone', text='',
+                   icon='LINKED' if sub_swing_data.follow_active_bone else 'UNLINKED')
 
-        # Button Row, composed of 3 Sub Rows aligned with the above columns
-        row = col.row(align=True)
-        # Sub Row 1
-        split = row.split(factor=.33)
-        sr = split.row(align=True)
-        sr.operator(SUB_OP_swing_bone_chain_add.bl_idname, text='+')
-        sr.operator(SUB_OP_swing_bone_chain_remove.bl_idname, text='-')
-        # Add auto-detect button with icon
-        sr.operator('sub.swing_bone_chain_auto_detect', text='', icon='AUTO')
-        # Sub Row 2
-        split = split.split(factor=.5)
-        sr = split.row(align=True)
-        sr.operator(SUB_OP_swing_bone_chain_length_edit.bl_idname, text='Edit Chain Start/End')
-        # Sub Row 3
-        split = split.split()
-        sr = split.row(align=True)
-        sr.menu('SUB_MT_swing_bone_collision_add', text='+')
-        sr.operator(SUB_OP_swing_bone_collision_remove.bl_idname, text='-')
-
-        # Add a more prominent auto-detect button
-        layout.separator(factor=0.5)
-        row = layout.row()
-        row.operator('sub.swing_bone_chain_auto_detect', text='Auto-Detect All Swing Bone Chains', icon='AUTO')
-        row.scale_y = 1.0
-
-        layout.separator(factor=1.2)
- 
-        # Values copy/paste row
-        row = layout.row(align=True)
-        row.operator('sub.swing_bone_copy_values', icon='COPYDOWN', text="Copy Values")
-        row.operator('sub.swing_bone_paste_values', icon='PASTEDOWN', text="Paste Values")
-        
-        # Collisions copy/paste row
-        row = layout.row(align=True)
-        row.operator('sub.swing_bone_copy_collisions', icon='COPYDOWN', text="Copy Collisions")
-        row.operator('sub.swing_bone_paste_collisions', icon='PASTEDOWN', text="Paste Collisions")
-        
-        # Copy values to all bones button
-        row = layout.row(align=True)
-        row.operator('sub.swing_bone_copy_values_to_all', icon='OUTLINER_OB_ARMATURE', text="Copy Values to All Bones")
-        
-        # Copy values to all swing bone chains button
-        row = layout.row(align=True)
-        row.operator('sub.swing_bone_copy_values_to_all_chains', icon='ARMATURE_DATA', text="Copy Values to All Swing Bone Chains")
-        
-        layout.separator(factor=1.2)
-
-
-        # Add Presets dropdown with + and - buttons in similar layout as the Bone Chain Info section
-        row = layout.row()
-        split = row.split(factor=.5)
-        c = split.column()
-        preset_row = c.row(align=True)
-        preset_row.prop(context.scene, "sub_swing_preset", text="")
-        preset_row.operator("sub.swing_preset_add", text="", icon='ADD')
-        preset_row.operator("sub.swing_preset_remove", text="", icon='REMOVE')
-        
-        # Apply button is shown only when a preset is selected
-        if context.scene.sub_swing_preset and context.scene.sub_swing_preset != '--':
-            c.row().operator("sub.swing_preset_apply", text="Apply Selected Preset")
-
-        # Add Chain Presets section in the right column
-        c = split.column()
-        chain_preset_row = c.row(align=True)
-        chain_preset_row.prop(context.scene, "sub_swing_chain_preset", text="")
-        chain_preset_row.operator("sub.swing_chain_preset_add", text="", icon='ADD')
-        chain_preset_row.operator("sub.swing_chain_preset_remove", text="", icon='REMOVE')
-        
-        # Apply button for chain presets
-        if context.scene.sub_swing_chain_preset and context.scene.sub_swing_chain_preset != '--':
-            c.row().operator("sub.swing_chain_preset_apply", text="Apply Selected Chain Preset")
-
-        
-        # Add separators above and below the buttons with bigger spacing
-        layout.separator(factor=1.2)
-        
-        # Swing Bone Chain & Bone Info Area
-        if len(sub_swing_data.swing_bone_chains) == 0:
+        if active_chain is None:
+            box = layout.box()
+            box.label(text='No swing chains yet.', icon='INFO')
+            box.label(text='Auto-Detect builds them from the S_ bones.')
             return
-        active_swing_bone_chain: SUB_PG_swing_bone_chain = sub_swing_data.swing_bone_chains[sub_swing_data.active_swing_bone_chain_index]
-        if len(active_swing_bone_chain.swing_bones) == 0:
-            return
-        active_swing_bone: SUB_PG_swing_bone = active_swing_bone_chain.swing_bones[active_swing_bone_chain.active_swing_bone_index]
 
+        layout.separator()
+        layout.row().prop(sub_swing_data, 'active_tab', expand=True)
+        tab = sub_swing_data.active_tab
+        if tab == 'CHAIN':
+            self.draw_chain_tab(layout, active_chain)
+        elif tab == 'PRESETS':
+            self.draw_presets_tab(layout, context)
+        elif active_bone is None:
+            layout.box().label(text='This chain has no bones. Use Edit Start/End.', icon='INFO')
+        elif tab == 'COLLISIONS':
+            self.draw_collisions_tab(layout, active_bone)
+        else:
+            self.draw_bone_tab(layout, active_bone)
+
+    @staticmethod
+    def draw_bone_tab(layout: UILayout, bone):
+        grid = layout.grid_flow(row_major=True, columns=2, even_columns=True, align=False)
+        for name, text in BONE_SCALAR_PROPS:
+            cell = grid.split(factor=.5)
+            label = cell.row()
+            label.alignment = 'RIGHT'
+            label.label(text=text)
+            cell.prop(bone, name, text='')
+        col = layout.column()
+        for name, text in BONE_RANGE_PROPS:
+            row = col.split(factor=.4)
+            label = row.row()
+            label.alignment = 'RIGHT'
+            label.label(text=text)
+            pair = row.row(align=True)
+            pair.prop(bone, name, index=0, text='')
+            pair.prop(bone, name, index=1, text='')
+        row = col.split(factor=.4)
+        row.label(text='')
+        row.prop(bone, 'ground_hit')
+        layout.separator()
+        r = layout.row(align=True)
+        r.operator('sub.swing_bone_copy_values', text='Copy')
+        r.operator('sub.swing_bone_paste_values', text='Paste')
+        # wm.call_menu draws a regular button, matching Copy/Paste, instead of a dark dropdown.
+        r.operator('wm.call_menu', text='Apply to', icon='DOWNARROW_HLT').name = 'SUB_MT_swing_bone_apply_values'
+
+    @staticmethod
+    def draw_chain_tab(layout: UILayout, chain):
+        col = layout.column()
+        col.use_property_split = True
+        col.use_property_decorate = False
+        for name in CHAIN_PROPS:
+            col.prop(chain, name)
+        if chain.has_unk_8:
+            col.prop(chain, 'unk_8')
+
+    @staticmethod
+    def draw_collisions_tab(layout: UILayout, bone):
         row = layout.row()
-        split = row.split(factor=.5)
-        c = split.column()
-        c.label(text='Bone Chain Info')
-        c.prop(active_swing_bone_chain, 'is_skirt')
-        c.prop(active_swing_bone_chain, 'rotate_order')
-        c.prop(active_swing_bone_chain, 'curve_rotate_x')
-        c.prop(active_swing_bone_chain, 'has_unk_8')
-        if active_swing_bone_chain.has_unk_8:
-            c.prop(active_swing_bone_chain, 'unk_8')
-        split = split.split()
-        c = split.column()
-        c.label(text='Bone Info')
-        c.prop(active_swing_bone, 'air_resistance')
-        c.prop(active_swing_bone, 'water_resistance')
-        c.prop(active_swing_bone, 'angle_z')
-        c.prop(active_swing_bone, 'angle_y')
-        c.prop(active_swing_bone, 'collision_size')
-        c.prop(active_swing_bone, 'friction_rate')
-        c.prop(active_swing_bone, 'goal_strength')
-        c.prop(active_swing_bone, 'inertial_mass')
-        c.prop(active_swing_bone, 'local_gravity')
-        c.prop(active_swing_bone, 'fall_speed_scale')
-        c.prop(active_swing_bone, 'ground_hit')
-        c.prop(active_swing_bone, 'wind_affect')
+        row.template_list(
+            'SUB_UL_swing_bone_collisions', '',
+            bone, 'collisions',
+            bone, 'active_collision_index',
+            rows=4, maxrows=8,
+        )
+        side = row.column(align=True)
+        side.menu('SUB_MT_swing_bone_collision_add', text='', icon='ADD')
+        side.operator(SUB_OP_swing_bone_collision_remove.bl_idname, text='', icon='REMOVE')
+        r = layout.row(align=True)
+        r.operator('sub.swing_bone_copy_collisions', text='Copy Collisions')
+        r.operator('sub.swing_bone_paste_collisions', text='Paste Collisions')
 
+    @staticmethod
+    def draw_presets_tab(layout: UILayout, context):
+        scene = context.scene
+        for label, prop, add, remove, apply in (
+            ('Bone Preset', 'sub_swing_preset', 'sub.swing_preset_add', 'sub.swing_preset_remove', 'sub.swing_preset_apply'),
+            ('Chain Preset', 'sub_swing_chain_preset', 'sub.swing_chain_preset_add', 'sub.swing_chain_preset_remove', 'sub.swing_chain_preset_apply'),
+        ):
+            col = layout.column()
+            col.label(text=label)
+            r = col.row(align=True)
+            r.prop(scene, prop, text='')
+            r.operator(add, text='', icon='ADD')
+            r.operator(remove, text='', icon='REMOVE')
+            selected = getattr(scene, prop)
+            sub = col.row()
+            sub.enabled = bool(selected) and selected != '--'
+            sub.operator(apply, text=f'Apply {label}')
+
+
+class SUB_MT_swing_bone_apply_values(Menu):
+    bl_label = "Apply Bone Values To"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator('sub.swing_bone_copy_values_to_all', icon='OUTLINER_OB_ARMATURE', text='Every Bone in This Chain')
+        layout.operator('sub.swing_bone_copy_values_to_all_chains', icon='ARMATURE_DATA', text='Every Bone in Every Chain')
+
+
+MAX_BONE_COLLISION_ICONS = 4
+
+
+def draw_collision_icons(layout: UILayout, collision_kinds: list[str]):
+    if not collision_kinds:
         return
+    icons = layout.row(align=True)
+    icons.alignment = 'RIGHT'
+    for kind in collision_kinds[:MAX_BONE_COLLISION_ICONS]:
+        icons.label(text='', icon=SHAPE_TYPES[kind].icon)
+    hidden = len(collision_kinds) - MAX_BONE_COLLISION_ICONS
+    if hidden > 0:
+        icons.label(text=f'+{hidden}')
+
+
+def chain_collision_kinds(chain) -> list[str]:
+    used = {c.collision_type for bone in chain.swing_bones for c in bone.collisions}
+    return [kind for kind in SHAPE_TYPES if kind in used]
 
 
 class SUB_UL_swing_bone_chains(UIList):
@@ -410,6 +385,7 @@ class SUB_UL_swing_bone_chains(UIList):
         if self.layout_type in {'DEFAULT', 'COMPACT'}:
             row = layout.row()
             row.prop(entry, "name", text="", emboss=False, icon='GROUP_BONE')
+            draw_collision_icons(row, chain_collision_kinds(entry))
         elif self.layout_type == 'GRID':
             layout.alignment = 'CENTER'
             layout.label(text="", icon_value=icon)
@@ -422,7 +398,7 @@ class SUB_UL_swing_bones(UIList):
             row = layout.row()
             #row.prop(entry, "name", text="", emboss=False)
             row.label(text=f'{entry.name}', icon='BONE_DATA')
-            #row.prop(entry, "bone", icon='BONE_DATA')
+            draw_collision_icons(row, [c.collision_type for c in entry.collisions])
         elif self.layout_type == 'GRID':
             layout.alignment = 'CENTER'
             layout.label(text="", icon_value=icon)
@@ -476,348 +452,256 @@ class SUB_MT_swing_bone_collision_add(Menu):
         row = layout.operator(SUB_OP_swing_bone_collision_add_plane.bl_idname, text='Plane', icon='MESH_PLANE')
 
 
-class SUB_PT_swing_data_spheres(Panel, SwingPropertyPanel):
-    bl_label = "Spheres"
+class ShapeType(NamedTuple):
+    collection: str
+    index_prop: str
+    icon: str
+    label: str
+    add_op: str
+    remove_op: str
+    list_type: str
+
+
+SHAPE_TYPES = {
+    'SPHERE': ShapeType('spheres', 'active_sphere_index', 'SPHERE', 'Sphere',
+                        'sub.swing_data_sphere_add', 'sub.swing_data_sphere_remove', 'SUB_UL_swing_data_spheres'),
+    'OVAL': ShapeType('ovals', 'active_oval_index', 'MESH_CYLINDER', 'Oval',
+                      'sub.swing_data_oval_add', 'sub.swing_data_oval_remove', 'SUB_UL_swing_data_ovals'),
+    'ELLIPSOID': ShapeType('ellipsoids', 'active_ellipsoid_index', 'META_ELLIPSOID', 'Ellipsoid',
+                           'sub.swing_data_ellipsoid_add', 'sub.swing_data_ellipsoid_remove', 'SUB_UL_swing_data_ellipsoids'),
+    'CAPSULE': ShapeType('capsules', 'active_capsule_index', 'META_CAPSULE', 'Capsule',
+                         'sub.swing_data_capsule_add', 'sub.swing_data_capsule_remove', 'SUB_UL_swing_data_capsules'),
+    'PLANE': ShapeType('planes', 'active_plane_index', 'MESH_PLANE', 'Plane',
+                       'sub.swing_data_plane_add', 'sub.swing_data_plane_remove', 'SUB_UL_swing_data_planes'),
+    'CONNECTION': ShapeType('connections', 'active_connection_index', 'MOD_LENGTH', 'Connection',
+                            'sub.swing_data_connection_add', 'sub.swing_data_connection_remove', 'SUB_UL_swing_data_connections'),
+}
+
+# (property, label, is_bone)
+SHAPE_FIELDS = {
+    'SPHERE': (('name', 'Name', False), ('bone', 'Bone', True), ('offset', 'Offset', False), ('radius', 'Radius', False)),
+    'OVAL': (('name', 'Name', False), ('start_bone_name', 'Start Bone', True), ('end_bone_name', 'End Bone', True),
+             ('radius', 'Radius', False), ('start_offset', 'Start Offset', False), ('end_offset', 'End Offset', False)),
+    'ELLIPSOID': (('name', 'Name', False), ('bone_name', 'Bone', True), ('offset', 'Offset', False),
+                  ('rotation', 'Rotation', False), ('scale', 'Scale', False)),
+    'CAPSULE': (('name', 'Name', False), ('start_bone_name', 'Start Bone', True), ('end_bone_name', 'End Bone', True),
+                ('start_offset', 'Start Offset', False), ('end_offset', 'End Offset', False),
+                ('start_radius', 'Start Radius', False), ('end_radius', 'End Radius', False)),
+    'PLANE': (('name', 'Name', False), ('bone_name', 'Bone', True), ('distance', 'Distance', False)),
+    'CONNECTION': (('start_bone_name', 'Start Bone', True), ('end_bone_name', 'End Bone', True),
+                   ('radius', 'Radius', False), ('length', 'Length', False)),
+}
+
+
+def shape_label(kind: str, item) -> tuple[str, str]:
+    if kind == 'CONNECTION':
+        return f'{item.start_bone_name} → {item.end_bone_name}', ''
+    if kind in {'OVAL', 'CAPSULE'}:
+        return item.name, f'{item.start_bone_name} → {item.end_bone_name}'
+    return item.name, item.bone if kind == 'SPHERE' else item.bone_name
+
+
+def shape_users(ssd, kind: str, index: int) -> int:
+    return sum(
+        any(c.collision_type == kind and c.collision_index == index for c in bone.collisions)
+        for chain in ssd.swing_bone_chains for bone in chain.swing_bones)
+
+
+def draw_shape_item(layout: UILayout, kind: str, item):
+    name, bone = shape_label(kind, item)
+    split = layout.split(factor=.5)
+    if kind == 'CONNECTION':
+        split.label(text=name, icon=SHAPE_TYPES[kind].icon)
+    else:
+        split.prop(item, 'name', text='', emboss=False, icon=SHAPE_TYPES[kind].icon)
+    right = split.row()
+    right.alignment = 'RIGHT'
+    right.label(text=bone)
+
+
+class SUB_PT_swing_collision_shapes(Panel, SwingPropertyPanel):
+    bl_label = "Collision Shapes"
     bl_parent_id = "SUB_PT_swing_data_master"
-    
+
     def draw(self, context):
-        ssd: SUB_PG_sub_swing_data = context.object.data.sub_swing_data
         layout = self.layout
-        row = layout.row()
-        row.template_list(
-            "SUB_UL_swing_data_spheres",
-            "",
-            ssd,
-            "spheres",
-            ssd,
-            "active_sphere_index",
-            rows=3,
-            maxrows=10,
-            )
-        col = row.column(align=True)
-        col.operator('sub.swing_data_sphere_add', icon='ADD', text="")
-        col.operator('sub.swing_data_sphere_remove', icon='REMOVE', text="")
-        col.separator()
-        col.menu("SUB_MT_swing_data_spheres_context_menu", icon='DOWNARROW_HLT', text="")
+        ssd: SUB_PG_sub_swing_data = context.object.data.sub_swing_data
+        counts = {kind: len(getattr(ssd, shape.collection)) for kind, shape in SHAPE_TYPES.items()}
 
-        active_index = ssd.active_sphere_index
-        if active_index >= len(ssd.spheres):
+        row = layout.row(align=True)
+        row.prop_enum(ssd, 'shape_filter', 'ALL', text=f'All {sum(counts.values())}')
+        for kind, shape in SHAPE_TYPES.items():
+            row.prop_enum(ssd, 'shape_filter', kind, text=str(counts[kind]), icon=shape.icon)
+
+        showing_all = ssd.shape_filter == 'ALL'
+        kind = ssd.active_shape_type if showing_all else ssd.shape_filter
+        shape = SHAPE_TYPES[kind]
+
+        row = layout.row()
+        if showing_all:
+            self.draw_all_rows(row.column(), ssd)
+        else:
+            row.template_list(shape.list_type, '', ssd, shape.collection, ssd, shape.index_prop, rows=4, maxrows=10)
+        side = row.column(align=True)
+        if showing_all:
+            side.menu('SUB_MT_swing_shape_add', text='', icon='ADD')
+        else:
+            side.operator('sub.swing_shape_add_start', text='', icon='ADD').shape_type = kind
+        side.operator(shape.remove_op, text='', icon='REMOVE')
+
+        if ssd.shape_draft.adding != 'NONE':
+            self.draw_add_form(layout, context, ssd)
             return
-        active_sphere = ssd.spheres[active_index]
-        row = layout.row()
-        row.prop_search(active_sphere, 'bone', context.object.data, 'bones', text='Bone')
-        row = layout.row()
-        row.prop(active_sphere, 'offset')
-        row = layout.row()
-        row.prop(active_sphere, 'radius')
 
+        items = getattr(ssd, shape.collection)
+        index = getattr(ssd, shape.index_prop)
+        if not 0 <= index < len(items):
+            return
+        layout.separator()
+        self.draw_shape_fields(layout, context, kind, items[index])
+        if kind != 'CONNECTION':
+            users = shape_users(ssd, kind, index)
+            layout.label(text=f'Used by {users} swing bone{"" if users == 1 else "s"}', icon='LINKED')
+            self.draw_attach_buttons(layout, ssd, kind, index)
+
+    @staticmethod
+    def draw_add_form(layout: UILayout, context, ssd):
+        draft = ssd.shape_draft
+        kind = draft.adding
+        shape = SHAPE_TYPES[kind]
+        box = layout.box()
+        box.label(text=f'New {shape.label}', icon=shape.icon)
+        col = box.column()
+        col.use_property_split = True
+        col.use_property_decorate = False
+        fields = [draft_field for draft_field, _op_field in DRAFT_OP_FIELDS[kind]]
+        for field in fields:
+            if field in {'ny', 'nz'}:
+                continue
+            if field == 'nx':
+                row = col.row(align=True, heading='Normal')
+                for axis in ('nx', 'ny', 'nz'):
+                    row.prop(draft, axis)
+            elif field.endswith('bone_name'):
+                # Connections only join swing bones, like the old dialog.
+                owner, collection = (ssd, 'armature_swing_bones') if kind == 'CONNECTION' else (context.object.data, 'bones')
+                col.prop_search(draft, field, owner, collection, icon='BONE_DATA')
+            else:
+                col.prop(draft, field)
+
+        if kind != 'CONNECTION' and len(ssd.swing_bone_chains) > 0:
+            chain = ssd.swing_bone_chains[ssd.active_swing_bone_chain_index]
+            if len(chain.swing_bones) > 0:
+                bone = chain.swing_bones[chain.active_swing_bone_index]
+                attach = col.column(heading='Collide With')
+                attach.prop(draft, 'attach_to_bone', text=bone.name)
+                attach.prop(draft, 'attach_to_chain', text=f'Whole Chain {chain.name}')
+
+        row = box.row()
+        add = row.row()
+        add.enabled = all(getattr(draft, field) for field in fields if field.endswith('bone_name'))
+        add.operator('sub.swing_shape_add_confirm', text=f'Add {shape.label}', icon='CHECKMARK')
+        row.operator('sub.swing_shape_add_cancel', text='Cancel', icon='X')
+
+    @staticmethod
+    def draw_attach_buttons(layout: UILayout, ssd, kind: str, index: int):
+        if len(ssd.swing_bone_chains) == 0:
+            return
+        chain = ssd.swing_bone_chains[ssd.active_swing_bone_chain_index]
+        if len(chain.swing_bones) == 0:
+            return
+        bone = chain.swing_bones[chain.active_swing_bone_index]
+
+        def collides(swing_bone) -> bool:
+            return any(c.collision_type == kind and c.collision_index == index for c in swing_bone.collisions)
+
+        buttons = []
+        if not collides(bone):
+            buttons.append((f'Collide with {bone.name}', False))
+        if not all(collides(b) for b in chain.swing_bones):
+            buttons.append((f'Collide with chain {chain.name}', True))
+        if not buttons:
+            return
+        col = layout.column(align=True)
+        for text, whole_chain in buttons:
+            op = col.operator('sub.swing_shape_attach', text=text, icon='ADD')
+            op.shape_type = kind
+            op.index = index
+            op.whole_chain = whole_chain
+
+    @staticmethod
+    def draw_all_rows(layout: UILayout, ssd):
+        col = layout.box().column(align=True)
+        empty = True
+        for kind, shape in SHAPE_TYPES.items():
+            active_index = getattr(ssd, shape.index_prop)
+            for index, item in enumerate(getattr(ssd, shape.collection)):
+                empty = False
+                name, bone = shape_label(kind, item)
+                selected = kind == ssd.active_shape_type and index == active_index
+                split = col.split(factor=.5, align=True)
+                # A LEFT-aligned row is the only way to left-align a button's text.
+                left = split.row()
+                left.alignment = 'LEFT'
+                op = left.operator('sub.swing_shape_select', text=name, icon=shape.icon,
+                                   emboss=selected, depress=selected)
+                op.shape_type = kind
+                op.index = index
+                right = split.row()
+                right.alignment = 'RIGHT'
+                right.label(text=bone)
+        if empty:
+            col.label(text='No collision shapes yet. Add one with +.')
+
+    @staticmethod
+    def draw_shape_fields(layout: UILayout, context, kind: str, item):
+        col = layout.column()
+        col.use_property_split = True
+        col.use_property_decorate = False
+        for prop, text, is_bone in SHAPE_FIELDS[kind]:
+            if is_bone:
+                col.prop_search(item, prop, context.object.data, 'bones', text=text, icon='BONE_DATA')
+            else:
+                col.prop(item, prop, text=text)
+            if kind == 'PLANE' and prop == 'bone_name':
+                row = col.row(align=True, heading='Normal')
+                for axis in ('nx', 'ny', 'nz'):
+                    row.prop(item, axis, text=axis[1].upper())
+
+
+class SUB_MT_swing_shape_add(Menu):
+    bl_label = "Add Collision Shape"
+
+    def draw(self, context):
+        for kind, shape in SHAPE_TYPES.items():
+            self.layout.operator('sub.swing_shape_add_start', text=shape.label, icon=shape.icon).shape_type = kind
 
 
 class SUB_UL_swing_data_spheres(UIList):
     def draw_item(self, _context, layout, _data, item, icon, active_data, _active_propname, index):
-        obj = active_data
-        entry = item
-        if self.layout_type in {'DEFAULT', 'COMPACT'}:
-            row = layout.row()
-            row.prop(entry, "name", text="", emboss=False, icon='SPHERE')
-        elif self.layout_type == 'GRID':
-            layout.alignment = 'CENTER'
-            layout.label(text="", icon_value=icon)
-
-class SUB_MT_swing_data_spheres_context_menu(Menu):
-    bl_label = "Sphere Collisons Menu"
-
-    def draw(self, context):
-        layout = self.layout
-
-class SUB_PT_swing_data_ovals(Panel, SwingPropertyPanel):
-    bl_label = "Ovals"
-    bl_parent_id = "SUB_PT_swing_data_master"
-    
-    def draw(self, context):
-        ssd: SUB_PG_sub_swing_data = context.object.data.sub_swing_data
-        layout = self.layout
-        row = layout.row()
-        row.template_list(
-            "SUB_UL_swing_data_ovals",
-            "",
-            ssd,
-            "ovals",
-            ssd,
-            "active_oval_index",
-            rows=3,
-            maxrows=10,
-            )
-        col = row.column(align=True)
-        col.operator('sub.swing_data_oval_add', icon='ADD', text="")
-        col.operator('sub.swing_data_oval_remove', icon='REMOVE', text="")
-        col.separator()
-        col.menu("SUB_MT_swing_data_ovals_context_menu", icon='DOWNARROW_HLT', text="")
-
-        active_index = ssd.active_oval_index
-        if active_index >= len(ssd.ovals):
-            return
-        active_oval = ssd.ovals[active_index]
-        row = layout.row()
-        row.prop_search(active_oval, 'start_bone_name', context.object.data, 'bones', text='Start Bone')
-        row = layout.row()
-        row.prop_search(active_oval, 'end_bone_name', context.object.data, 'bones', text='End Bone')
-        row = layout.row()
-        row.prop(active_oval, 'radius')
-        row = layout.row()
-        row.prop(active_oval, 'start_offset')
-        row = layout.row()
-        row.prop(active_oval, 'end_offset')
-
+        draw_shape_item(layout, 'SPHERE', item)
 
 
 class SUB_UL_swing_data_ovals(UIList):
     def draw_item(self, _context, layout, _data, item, icon, active_data, _active_propname, index):
-        obj = active_data
-        entry = item
-        if self.layout_type in {'DEFAULT', 'COMPACT'}:
-            row = layout.row()
-            row.prop(entry, "name", text="", emboss=False, icon='MESH_CYLINDER')
-        elif self.layout_type == 'GRID':
-            layout.alignment = 'CENTER'
-            layout.label(text="", icon_value=icon)
-
-class SUB_MT_swing_data_ovals_context_menu(Menu):
-    bl_label = "Oval Collisons Menu"
-
-    def draw(self, context):
-        layout = self.layout
-
-class SUB_PT_swing_data_ellipsoids(Panel, SwingPropertyPanel):
-    bl_label = "Ellipsoids"
-    bl_parent_id = "SUB_PT_swing_data_master"
-    
-    def draw(self, context):
-        ssd: SUB_PG_sub_swing_data = context.object.data.sub_swing_data
-        layout = self.layout
-        row = layout.row()
-        row.template_list(
-            "SUB_UL_swing_data_ellipsoids",
-            "",
-            ssd,
-            "ellipsoids",
-            ssd,
-            "active_ellipsoid_index",
-            rows=3,
-            maxrows=10,
-            )
-        col = row.column(align=True)
-        col.operator('sub.swing_data_ellipsoid_add', icon='ADD', text="")
-        col.operator('sub.swing_data_ellipsoid_remove', icon='REMOVE', text="")
-        col.separator()
-        col.menu("SUB_MT_swing_data_ellipsoids_context_menu", icon='DOWNARROW_HLT', text="")
-
-        active_index = ssd.active_ellipsoid_index
-        if active_index >= len(ssd.ellipsoids):
-            return
-        active_ellipsoid = ssd.ellipsoids[active_index]
-        row = layout.row()
-        row.prop_search(active_ellipsoid, 'bone_name', context.object.data, 'bones', text='Bone')
-        row = layout.row()
-        row.prop(active_ellipsoid, 'offset')
-        row = layout.row()
-        row.prop(active_ellipsoid, 'rotation')
-        row = layout.row()
-        row.prop(active_ellipsoid, 'scale')
-
+        draw_shape_item(layout, 'OVAL', item)
 
 
 class SUB_UL_swing_data_ellipsoids(UIList):
     def draw_item(self, _context, layout, _data, item, icon, active_data, _active_propname, index):
-        obj = active_data
-        entry = item
-        if self.layout_type in {'DEFAULT', 'COMPACT'}:
-            row = layout.row()
-            row.prop(entry, "name", text="", emboss=False, icon='META_ELLIPSOID')
-        elif self.layout_type == 'GRID':
-            layout.alignment = 'CENTER'
-            layout.label(text="", icon_value=icon)
-
-class SUB_MT_swing_data_ellipsoids_context_menu(Menu):
-    bl_label = "Ellipsoids Collisons Menu"
-
-    def draw(self, context):
-        layout = self.layout
-
-
-class SUB_PT_swing_data_capsules(Panel, SwingPropertyPanel):
-    bl_label = "Capsules"
-    bl_parent_id = "SUB_PT_swing_data_master"
-    
-    def draw(self, context):
-        ssd: SUB_PG_sub_swing_data = context.object.data.sub_swing_data
-        layout = self.layout
-        row = layout.row()
-        row.template_list(
-            "SUB_UL_swing_data_capsules",
-            "",
-            ssd,
-            "capsules",
-            ssd,
-            "active_capsule_index",
-            rows=3,
-            maxrows=10,
-            )
-        col = row.column(align=True)
-        col.operator('sub.swing_data_capsule_add', icon='ADD', text="")
-        col.operator('sub.swing_data_capsule_remove', icon='REMOVE', text="")
-        col.separator()
-        col.menu(SUB_MT_swing_data_capsules_context_menu.bl_idname, icon='DOWNARROW_HLT', text="")
-
-        active_index = ssd.active_capsule_index
-        if active_index >= len(ssd.capsules):
-            return
-        active_capsule = ssd.capsules[active_index]
-        row = layout.row()
-        row.prop_search(active_capsule, 'start_bone_name',  context.object.data, 'bones', text='Start Bone')
-        row = layout.row()
-        row.prop_search(active_capsule, 'end_bone_name',  context.object.data, 'bones', text='End Bone')
-        row = layout.row()
-        row.prop(active_capsule, 'start_offset')
-        row = layout.row()
-        row.prop(active_capsule, 'end_offset')
-        row = layout.row()
-        row.prop(active_capsule, 'start_radius')
-        row = layout.row()
-        row.prop(active_capsule, 'end_radius')
-
+        draw_shape_item(layout, 'ELLIPSOID', item)
 
 
 class SUB_UL_swing_data_capsules(UIList):
     def draw_item(self, _context, layout, _data, item, icon, active_data, _active_propname, index):
-        obj = active_data
-        entry = item
-        if self.layout_type in {'DEFAULT', 'COMPACT'}:
-            row = layout.row()
-            row.prop(entry, "name", text="", emboss=False, icon='META_CAPSULE')
-        elif self.layout_type == 'GRID':
-            layout.alignment = 'CENTER'
-            layout.label(text="", icon_value=icon)
-
-class SUB_MT_swing_data_capsules_context_menu(Menu):
-    bl_label = "Capsule Collisons Menu"
-    bl_idname =  "SUB_MT_swing_data_capsules_context_menu"
-
-    def draw(self, context):
-        layout = self.layout
-
-class SUB_PT_swing_data_planes(Panel, SwingPropertyPanel):
-    bl_label = "Planes"
-    bl_parent_id = "SUB_PT_swing_data_master"
-    
-    def draw(self, context):
-        ssd: SUB_PG_sub_swing_data = context.object.data.sub_swing_data
-        layout = self.layout
-        row = layout.row()
-        row.template_list(
-            "SUB_UL_swing_data_planes",
-            "",
-            ssd,
-            "planes",
-            ssd,
-            "active_plane_index",
-            rows=3,
-            maxrows=10,
-            )
-        col = row.column(align=True)
-        col.operator('sub.swing_data_plane_add', icon='ADD', text="")
-        col.operator('sub.swing_data_plane_remove', icon='REMOVE', text="")
-        col.separator()
-        col.menu(SUB_MT_swing_data_planes_context_menu.bl_idname, icon='DOWNARROW_HLT', text="")
-
-        active_index = ssd.active_plane_index
-        if active_index >= len(ssd.planes):
-            return
-        active_plane = ssd.planes[active_index]
-        row = layout.row()
-        row.prop_search(active_plane, 'bone_name', context.object.data, 'bones', text='Bone')
-        row = layout.row()
-        row.prop(active_plane, 'nx')
-        row = layout.row()
-        row.prop(active_plane, 'ny')
-        row = layout.row()
-        row.prop(active_plane, 'nz')
-        row = layout.row()
-        row.prop(active_plane, 'distance')
-
+        draw_shape_item(layout, 'CAPSULE', item)
 
 
 class SUB_UL_swing_data_planes(UIList):
     def draw_item(self, _context, layout, _data, item, icon, active_data, _active_propname, index):
-        obj = active_data
-        entry = item
-        if self.layout_type in {'DEFAULT', 'COMPACT'}:
-            row = layout.row()
-            row.prop(entry, "name", text="", emboss=False, icon='MESH_PLANE')
-        elif self.layout_type == 'GRID':
-            layout.alignment = 'CENTER'
-            layout.label(text="", icon_value=icon)
-
-class SUB_MT_swing_data_planes_context_menu(Menu):
-    bl_label = "Plane Collisons Menu"
-    bl_idname = "SUB_MT_swing_data_planes_context_menu"
-
-    def draw(self, context):
-        layout = self.layout
-
-class SUB_PT_swing_data_connections(Panel, SwingPropertyPanel):
-    bl_label = "Connections"
-    bl_parent_id = "SUB_PT_swing_data_master"
-    
-    def draw(self, context):
-        ssd: SUB_PG_sub_swing_data = context.object.data.sub_swing_data
-        layout = self.layout
-        row = layout.row()
-        row.template_list(
-            "SUB_UL_swing_data_connections",
-            "",
-            ssd,
-            "connections",
-            ssd,
-            "active_connection_index",
-            rows=3,
-            maxrows=10,
-            )
-        col = row.column(align=True)
-        col.operator('sub.swing_data_connection_add', icon='ADD', text="")
-        col.operator('sub.swing_data_connection_remove', icon='REMOVE', text="")
-        col.separator()
-        col.menu("SUB_MT_swing_data_connections_context_menu", icon='DOWNARROW_HLT', text="")
-
-        active_index = ssd.active_connection_index
-        if active_index >= len(ssd.connections):
-            return
-        active_connection = ssd.connections[active_index]
-        row = layout.row()
-        row.prop_search(active_connection, 'start_bone_name', context.object.data, 'bones', text='Start Bone')
-        row = layout.row()
-        row.prop_search(active_connection, 'end_bone_name', context.object.data, 'bones', text='End Bone')
-        row = layout.row()
-        row.prop(active_connection, 'radius')
-        row = layout.row()
-        row.prop(active_connection, 'length')
-
+        draw_shape_item(layout, 'PLANE', item)
 
 
 class SUB_UL_swing_data_connections(UIList):
-    def draw_item(self, _context, layout: bpy.types.UILayout, _data, item, icon, active_data, _active_propname, index):
-        obj = active_data
-        entry = item
-        if self.layout_type in {'DEFAULT', 'COMPACT'}:
-            row = layout.row()
-            row.label(text=f"{item.start_bone_name} -> {item.end_bone_name}", icon='MOD_LENGTH')
-        elif self.layout_type == 'GRID':
-            layout.alignment = 'CENTER'
-            layout.label(text="", icon_value=icon)
-
-class SUB_MT_swing_data_connections_context_menu(Menu):
-    bl_label = "Swing Bone Connections Menu"
-
-    def draw(self, context):
-        layout = self.layout
-
+    def draw_item(self, _context, layout, _data, item, icon, active_data, _active_propname, index):
+        draw_shape_item(layout, 'CONNECTION', item)

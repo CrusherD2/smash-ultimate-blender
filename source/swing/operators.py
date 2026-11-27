@@ -12,7 +12,7 @@ from mathutils import Vector
 from ...dependencies import pyprc
 # Local Project Imports
 from ..extras import create_meshes
-from ..param_labels import add_hash_label, load_param_labels
+from ..param_labels import add_hash_label, batch_add_hash_labels, deferred_hash_labels, load_param_labels
 from .sub_swing_data import *
 import os
 import importlib.util
@@ -24,22 +24,18 @@ def add_hash_to_param_labels(hash_value: str, label: str, labels_paths=None):
     """Add a new hash-label pair to the user ParamLabels.csv if it doesn't already exist."""
     return add_hash_label(label, extra_paths=labels_paths or ())
 
+def swing_bone_chain_hash_labels(chain_name: str, start_bone_name: str, end_bone_name: str, bone_names: list) -> list[str]:
+    """Labels a swing bone chain needs in ParamLabels.csv, in the order they are written."""
+    # Bone names are lowercase as they're used in the PRC; each bone also has a "<bone>col" collision list.
+    labels = [chain_name, start_bone_name.lower(), end_bone_name.lower()]
+    for bone_name in bone_names:
+        labels += [bone_name.lower(), bone_name.lower() + "col"]
+    return labels
+
 def save_swing_bone_chain_hashes(chain_name: str, start_bone_name: str, end_bone_name: str, bone_names: list):
     """Save all relevant hashes for a swing bone chain to ParamLabels.csv"""
-    # Save chain name hash
-    add_hash_to_param_labels(chain_name, chain_name)
-    
-    # Save bone name hashes (lowercase as they're used in the PRC)
-    add_hash_to_param_labels(start_bone_name.lower(), start_bone_name.lower())
-    add_hash_to_param_labels(end_bone_name.lower(), end_bone_name.lower())
-    
-    # Save individual bone name hashes and collision list hashes
-    for bone_name in bone_names:
-        bone_lower = bone_name.lower()
-        add_hash_to_param_labels(bone_lower, bone_lower)
-        # Also save the collision list hash (bone_name + "col")
-        collision_hash = bone_lower + "col"
-        add_hash_to_param_labels(collision_hash, collision_hash)
+    for label in swing_bone_chain_hash_labels(chain_name, start_bone_name, end_bone_name, bone_names):
+        add_hash_to_param_labels(label, label)
 
 def get_preset_bone_enum_items(self, context):
     """Generate enum items for preset bone selection"""
@@ -250,6 +246,8 @@ class SUB_OP_swing_bone_chain_auto_detect(Operator):
         detected_chains = []
         chains_added = 0
         chains_skipped = 0
+        # Written in one batch at the end: each separate write re-reads the whole ~90k-row CSV.
+        hash_labels: list[str] = []
         
         # Find all potential start bones (S_ bones that aren't already in chains and don't have S_ parents)
         potential_start_bones = []
@@ -294,7 +292,10 @@ class SUB_OP_swing_bone_chain_auto_detect(Operator):
             # Create the chain using the same logic as manual creation
             try:
                 new_chain: SUB_PG_swing_bone_chain = sub_swing_data.swing_bone_chains.add()
-                new_chain.name = start_bone.name[2:].lower()  # Remove 'S_' prefix
+                # Same unique name as the rename hook gives, minus its per-chain CSV write; the batch below saves it.
+                new_chain['name'] = start_bone.name[2:].lower()  # Remove 'S_' prefix
+                if not is_entry_name_unique_in_collection_property(new_chain, sub_swing_data.swing_bone_chains):
+                    new_chain['name'] = get_unique_name_for_entry_in_collection_property(new_chain, sub_swing_data.swing_bone_chains)
                 new_chain.start_bone_name = start_bone.name
                 new_chain.end_bone_name = end_bone.name
                 new_chain_index = sub_swing_data.swing_bone_chains.find(new_chain.name)
@@ -333,16 +334,20 @@ class SUB_OP_swing_bone_chain_auto_detect(Operator):
                     swing_bone_collision_collection = new_swing_collection(f'{new_chain.name} {new_swing_bone.name} collisions')
                     chain_collision_collection.children.link(swing_bone_collision_collection)
                 
-                # Save hashes to ParamLabels.csv for this chain
                 bone_names = [bone.name for bone in bones_in_chain]
-                save_swing_bone_chain_hashes(new_chain.name, new_chain.start_bone_name, new_chain.end_bone_name, bone_names)
-                
+                hash_labels += swing_bone_chain_hash_labels(new_chain.name, new_chain.start_bone_name, new_chain.end_bone_name, bone_names)
+
                 chains_added += 1
                 
             except Exception as e:
                 self.report({'WARNING'}, f"Failed to create chain starting from {start_bone.name}: {str(e)}")
                 chains_skipped += 1
         
+        if hash_labels:
+            _added, _skipped, _files, error = batch_add_hash_labels(hash_labels)
+            if error:
+                self.report({'WARNING'}, f"Could not save chain names to ParamLabels.csv: {error}")
+
         # Set active chain to the last added one
         if chains_added > 0:
             sub_swing_data.active_swing_bone_chain_index = len(sub_swing_data.swing_bone_chains) - 1
@@ -665,6 +670,318 @@ class SUB_OP_swing_bone_collision_remove(Operator):
         return {'FINISHED'} 
 
 
+def _default_bone_name(context: Context) -> str:
+    bone = context.active_bone
+    return bone.name if bone is not None else ''
+
+
+def _default_end_bone_name(context: Context) -> str:
+    bone = context.object.data.bones.get(_default_bone_name(context))
+    return bone.children[0].name if bone is not None and bone.children else ''
+
+
+def _unique_shape_name(collection, base: str) -> str:
+    if not base:
+        return ''
+    name, suffix = base, 1
+    while collection.find(name) != -1:
+        name, suffix = f'{base}_{suffix}', suffix + 1
+    return name
+
+
+def _active_swing_target(context: Context):
+    ssd: SUB_PG_sub_swing_data = context.object.data.sub_swing_data
+    if len(ssd.swing_bone_chains) == 0:
+        return None, None
+    chain = ssd.swing_bone_chains[ssd.active_swing_bone_chain_index]
+    if len(chain.swing_bones) == 0:
+        return chain, None
+    return chain, chain.swing_bones[chain.active_swing_bone_index]
+
+
+def _dialog_layout(operator: Operator):
+    layout = operator.layout.column()
+    layout.use_property_split = True
+    layout.use_property_decorate = False
+    return layout
+
+
+def _draw_attach_options(operator: Operator, layout, context: Context):
+    chain, bone = _active_swing_target(context)
+    if bone is None:
+        return
+    layout.separator()
+    col = layout.column(heading='Collide With')
+    col.prop(operator, 'attach_to_bone', text=bone.name)
+    col.prop(operator, 'attach_to_chain', text=f'Whole Chain {chain.name}')
+
+
+def _attach_new_shape(operator: Operator, context: Context, collision_type: str, index: int):
+    chain, bone = _active_swing_target(context)
+    if bone is None:
+        return
+    if operator.attach_to_chain:
+        targets = list(chain.swing_bones)
+    elif operator.attach_to_bone:
+        targets = [bone]
+    else:
+        return
+    add_collision_to_bones(targets, collision_type, index)
+
+
+def add_collision_to_bones(bones, collision_type: str, index: int) -> int:
+    added = 0
+    for target in bones:
+        if any(c.collision_type == collision_type and c.collision_index == index for c in target.collisions):
+            continue
+        entry = target.collisions.add()
+        entry.collision_type = collision_type
+        entry.collision_index = index
+        added += 1
+    return added
+
+
+class SUB_OT_swing_shape_attach(Operator):
+    bl_idname = 'sub.swing_shape_attach'
+    bl_label = 'Collide With Shape'
+    bl_description = 'Make the selected swing bone, or its whole chain, collide with this shape'
+    bl_options = {'REGISTER', 'UNDO', 'INTERNAL'}
+
+    shape_type: EnumProperty(items=collision_types)
+    index: IntProperty(min=0)
+    whole_chain: BoolProperty(name='Whole Chain', default=False)
+
+    @classmethod
+    def poll(cls, context):
+        return context.object is not None and context.object.type == 'ARMATURE'
+
+    def execute(self, context):
+        chain, bone = _active_swing_target(context)
+        if bone is None:
+            self.report({'WARNING'}, 'Select a swing bone first')
+            return {'CANCELLED'}
+        targets = list(chain.swing_bones) if self.whole_chain else [bone]
+        added = add_collision_to_bones(targets, self.shape_type, self.index)
+        self.report({'INFO'}, f'{added} swing bone{"" if added == 1 else "s"} now collide with this shape')
+        return {'FINISHED'}
+
+
+# (draft field, add-operator property) per shape type, in the order the form shows them.
+DRAFT_OP_FIELDS = {
+    'SPHERE': (('bone_name', 'bone_name'), ('name', 'sphere_name'), ('offset', 'offset'), ('radius', 'radius')),
+    'OVAL': (('start_bone_name', 'start_bone_name'), ('end_bone_name', 'end_bone_name'), ('name', 'oval_name'),
+             ('radius', 'radius'), ('start_offset', 'start_offset'), ('end_offset', 'end_offset')),
+    'ELLIPSOID': (('bone_name', 'bone_name'), ('name', 'ellipsoid_name'), ('offset', 'offset'),
+                  ('rotation', 'rotation'), ('scale', 'scale')),
+    'CAPSULE': (('start_bone_name', 'start_bone_name'), ('end_bone_name', 'end_bone_name'), ('name', 'capsule_name'),
+                ('start_offset', 'start_offset'), ('end_offset', 'end_offset'),
+                ('start_radius', 'start_radius'), ('end_radius', 'end_radius')),
+    'PLANE': (('bone_name', 'bone_name'), ('name', 'plane_name'), ('nx', 'nx'), ('ny', 'ny'), ('nz', 'nz'),
+              ('distance', 'distance')),
+    'CONNECTION': (('start_bone_name', 'start_bone_name'), ('end_bone_name', 'end_bone_name'),
+                   ('radius', 'radius'), ('length', 'length')),
+}
+SHAPE_COLLECTIONS = {'SPHERE': 'spheres', 'OVAL': 'ovals', 'ELLIPSOID': 'ellipsoids', 'CAPSULE': 'capsules', 'PLANE': 'planes'}
+
+
+def shape_defaults(context: Context, kind: str) -> dict:
+    """Starting values for a new shape, keyed by draft field."""
+    zero = (0.0, 0.0, 0.0)
+    if kind == 'CONNECTION':
+        fill_armature_swing_bones(context)
+        return {'start_bone_name': '', 'end_bone_name': '', 'radius': 1.0, 'length': 1.0}
+    ssd: SUB_PG_sub_swing_data = context.object.data.sub_swing_data
+    bone = _default_bone_name(context)
+    values = {'name': _unique_shape_name(getattr(ssd, SHAPE_COLLECTIONS[kind]), bone.lower())}
+    if kind in {'OVAL', 'CAPSULE'}:
+        values.update(start_bone_name=bone, end_bone_name=_default_end_bone_name(context), start_offset=zero, end_offset=zero)
+    else:
+        values['bone_name'] = bone
+    values.update({
+        'SPHERE': {'offset': zero, 'radius': 1.0},
+        'OVAL': {'radius': 1.0},
+        'ELLIPSOID': {'offset': zero, 'rotation': zero, 'scale': (1.0, 1.0, 1.0)},
+        'CAPSULE': {'start_radius': 1.0, 'end_radius': 1.0},
+        'PLANE': {'nx': 1.0, 'ny': 1.0, 'nz': 1.0, 'distance': 1.0},
+    }[kind])
+    return values
+
+
+def apply_shape_defaults(target, context: Context, kind: str, use_draft_names: bool = False):
+    defaults = shape_defaults(context, kind)
+    for draft_field, op_field in DRAFT_OP_FIELDS[kind]:
+        setattr(target, draft_field if use_draft_names else op_field, defaults[draft_field])
+    if kind != 'CONNECTION':
+        target.attach_to_bone, target.attach_to_chain = True, False
+
+
+def _plain(value):
+    return value if isinstance(value, (str, int, float, bool)) else tuple(value)
+
+
+class SUB_OT_swing_shape_add_start(Operator):
+    bl_idname = 'sub.swing_shape_add_start'
+    bl_label = 'Add Collision Shape'
+    bl_description = 'Fill in a new collision shape below the list'
+    bl_options = {'INTERNAL'}
+
+    shape_type: EnumProperty(items=SHAPE_TYPE_ITEMS)
+
+    @classmethod
+    def poll(cls, context):
+        return context.object is not None and context.object.type == 'ARMATURE'
+
+    def execute(self, context):
+        draft = context.object.data.sub_swing_data.shape_draft
+        apply_shape_defaults(draft, context, self.shape_type, use_draft_names=True)
+        draft.adding = self.shape_type
+        return {'FINISHED'}
+
+
+class SUB_OT_swing_shape_add_cancel(Operator):
+    bl_idname = 'sub.swing_shape_add_cancel'
+    bl_label = 'Cancel'
+    bl_description = 'Discard this new collision shape'
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.object is not None and context.object.type == 'ARMATURE'
+
+    def execute(self, context):
+        context.object.data.sub_swing_data.shape_draft.adding = 'NONE'
+        return {'FINISHED'}
+
+
+class SUB_OT_swing_shape_add_confirm(Operator):
+    bl_idname = 'sub.swing_shape_add_confirm'
+    bl_label = 'Add Collision Shape'
+    bl_description = 'Create this collision shape'
+    bl_options = {'REGISTER', 'UNDO', 'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        return (context.object is not None and context.object.type == 'ARMATURE'
+                and context.object.data.sub_swing_data.shape_draft.adding != 'NONE')
+
+    def execute(self, context):
+        draft = context.object.data.sub_swing_data.shape_draft
+        kind = draft.adding
+        kwargs = {op_field: _plain(getattr(draft, draft_field)) for draft_field, op_field in DRAFT_OP_FIELDS[kind]}
+        if kind != 'CONNECTION':
+            kwargs.update(attach_to_bone=draft.attach_to_bone, attach_to_chain=draft.attach_to_chain)
+        add = getattr(bpy.ops.sub, f'swing_data_{kind.lower()}_add')
+        try:
+            result = add('EXEC_DEFAULT', **kwargs)
+        except RuntimeError as error:
+            self.report({'ERROR'}, f'Could not add the shape: {error}')
+            return {'CANCELLED'}
+        if result != {'FINISHED'}:
+            self.report({'WARNING'}, 'Choose the bone(s) for this shape first')
+            return {'CANCELLED'}
+        draft.adding = 'NONE'
+        return {'FINISHED'}
+
+
+SHAPE_INDEX_PROPS = {
+    'SPHERE': 'active_sphere_index', 'OVAL': 'active_oval_index',
+    'ELLIPSOID': 'active_ellipsoid_index', 'CAPSULE': 'active_capsule_index',
+    'PLANE': 'active_plane_index', 'CONNECTION': 'active_connection_index',
+}
+
+
+def select_swing_bone_in_lists(ssd, bone) -> str | None:
+    """Select the chain and swing bone matching an armature bone. Returns why it couldn't, or None."""
+    if not bone.name.startswith('S_'):
+        return f'{bone.name} is not a swing bone (swing bone names start with S_)'
+    if bone.name.endswith('_null'):
+        return f'{bone.name} is the null end bone of a chain and has no swing settings'
+    data = bone.sub_swing_blender_bone_data
+    chain_index, bone_index = data.swing_bone_chain_index, data.swing_bone_index
+    chains = ssd.swing_bone_chains
+    stored_ok = (0 <= chain_index < len(chains) and 0 <= bone_index < len(chains[chain_index].swing_bones)
+                 and chains[chain_index].swing_bones[bone_index].name == bone.name)
+    if not stored_ok:
+        # The stored indices go stale when chains are removed or reordered, so fall back to a name search.
+        found = next(((ci, bi) for ci, chain in enumerate(chains)
+                      for bi, swing_bone in enumerate(chain.swing_bones) if swing_bone.name == bone.name), None)
+        if found is None:
+            return f'{bone.name} is not in a swing bone chain yet'
+        chain_index, bone_index = found
+    ssd.active_swing_bone_chain_index = chain_index
+    chains[chain_index].active_swing_bone_index = bone_index
+    return None
+
+
+def follow_active_bone_timer():
+    """Mirror the viewport's active bone in the swing lists for armatures with Follow on."""
+    try:
+        obj = bpy.context.view_layer.objects.active
+    except AttributeError:
+        return 0.25
+    if obj is None or obj.type != 'ARMATURE':
+        return 0.25
+    ssd = obj.data.sub_swing_data
+    if not ssd.follow_active_bone:
+        return 0.25
+    active = obj.data.bones.active
+    name = active.name if active is not None else ''
+    # Only react when the active bone changes, so clicking around the lists isn't undone.
+    if name == ssd.followed_bone_name:
+        return 0.25
+    ssd.followed_bone_name = name
+    if active is not None and select_swing_bone_in_lists(ssd, active) is None:
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type == 'PROPERTIES':
+                    area.tag_redraw()
+    return 0.25
+
+
+class SUB_OT_swing_select_active_bone(Operator):
+    bl_idname = 'sub.swing_select_active_bone'
+    bl_label = 'Select Active Bone'
+    bl_description = 'Select the bone that is active in the viewport in the chain and bone lists'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        if context.object is None or context.object.type != 'ARMATURE':
+            return False
+        if context.active_bone is None:
+            cls.poll_message_set('Click a bone in the viewport first')
+            return False
+        return True
+
+    def execute(self, context):
+        # active_bone is an EditBone in Edit Mode; the swing data lives on the Bone.
+        bone = context.object.data.bones.get(context.active_bone.name)
+        if bone is None:
+            self.report({'WARNING'}, 'Leave Edit Mode to pick up a newly added bone')
+            return {'CANCELLED'}
+        problem = select_swing_bone_in_lists(context.object.data.sub_swing_data, bone)
+        if problem:
+            self.report({'WARNING'}, problem)
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
+class SUB_OT_swing_shape_select(Operator):
+    bl_idname = 'sub.swing_shape_select'
+    bl_label = 'Select Collision Shape'
+    bl_description = "Show this collision shape's settings"
+    bl_options = {'INTERNAL'}
+
+    shape_type: EnumProperty(items=SHAPE_TYPE_ITEMS)
+    index: IntProperty(min=0)
+
+    def execute(self, context):
+        ssd: SUB_PG_sub_swing_data = context.object.data.sub_swing_data
+        ssd.active_shape_type = self.shape_type
+        setattr(ssd, SHAPE_INDEX_PROPS[self.shape_type], self.index)
+        return {'FINISHED'}
+
+
 class SUB_OP_swing_data_sphere_add(Operator):
     bl_description = 'Create a sphere collision shape in the swing data'
     bl_idname = 'sub.swing_data_sphere_add'
@@ -675,6 +992,9 @@ class SUB_OP_swing_data_sphere_add(Operator):
     offset: FloatVectorProperty(name="Offset", size=3, subtype='XYZ_LENGTH')
     radius: FloatProperty(name="Radius", subtype='DISTANCE')
 
+    attach_to_bone: BoolProperty(name='Collide With Active Swing Bone', default=True)
+    attach_to_chain: BoolProperty(name='Collide With Whole Chain', default=False)
+
     @classmethod
     def poll(cls, context):
         if not context.object:
@@ -682,26 +1002,16 @@ class SUB_OP_swing_data_sphere_add(Operator):
         return context.object.type == 'ARMATURE'
 
     def invoke(self, context: Context, event):
-        wm = context.window_manager
-        self.sphere_name = ""
-        self.bone_name = ""
-        self.offset = (0.0, 0.0, 0.0)
-        self.radius = 1.0
-
-        return wm.invoke_props_dialog(self)
+        apply_shape_defaults(self, context, 'SPHERE')
+        return context.window_manager.invoke_props_dialog(self, title='Add Sphere', confirm_text='Add Sphere')
 
     def draw(self, context):
-        ssd: SUB_PG_sub_swing_data = context.object.data.sub_swing_data
-        layout = self.layout
-        
-        layout.row().prop(self, "sphere_name")
-
-        layout.row().prop_search(self, 'bone_name', context.object.data, 'bones', text='Bone', icon='BONE_DATA')
-
-        layout.row().prop(self, "offset")
-        
-        layout.row().prop(self, "radius")
-
+        layout = _dialog_layout(self)
+        layout.prop_search(self, 'bone_name', context.object.data, 'bones', text='Bone', icon='BONE_DATA')
+        layout.prop(self, 'sphere_name', text='Name')
+        layout.prop(self, 'offset')
+        layout.prop(self, 'radius')
+        _draw_attach_options(self, layout, context)
 
     def execute(self, context):
         arma_obj: Object = context.object
@@ -709,11 +1019,11 @@ class SUB_OP_swing_data_sphere_add(Operator):
 
         sub_swing_data: SUB_PG_sub_swing_data = arma_data.sub_swing_data
 
-        if self.sphere_name == "":
-            return {'CANCELLED'}
         if self.bone_name == "":
             return {'CANCELLED'}
         
+        if self.sphere_name == "":
+            self.sphere_name = _unique_shape_name(sub_swing_data.spheres, self.bone_name.lower())
         new_sphere: SUB_PG_swing_sphere = sub_swing_data.spheres.add()
         new_sphere.name = self.sphere_name
         new_sphere.bone = self.bone_name
@@ -739,6 +1049,8 @@ class SUB_OP_swing_data_sphere_add(Operator):
         master_collection_props.spheres_collection.objects.link(new_sphere.blender_object)
 
         sub_swing_data.active_sphere_index = new_sphere_index
+        sub_swing_data.active_shape_type = 'SPHERE'
+        _attach_new_shape(self, context, 'SPHERE', new_sphere_index)
 
         # Save collision name hash to ParamLabels.csv
         add_hash_to_param_labels(new_sphere.name, new_sphere.name)
@@ -832,6 +1144,9 @@ class SUB_OP_swing_data_oval_add(Operator):
     start_offset: FloatVectorProperty(name='Start Offset', subtype='XYZ', size=3)
     end_offset: FloatVectorProperty(name='End Offset', subtype='XYZ', size=3)
 
+    attach_to_bone: BoolProperty(name='Collide With Active Swing Bone', default=True)
+    attach_to_chain: BoolProperty(name='Collide With Whole Chain', default=False)
+
     @classmethod
     def poll(cls, context):
         if not context.object:
@@ -839,43 +1154,31 @@ class SUB_OP_swing_data_oval_add(Operator):
         return context.object.type == 'ARMATURE'
     
     def invoke(self, context: Context, event):
-        wm = context.window_manager
-        self.oval_name = ""
-        self.start_bone_name = ""
-        self.end_bone_name = ""
-        self.radius = 1.0
-        self.start_offset = (0.0, 0.0, 0.0)
-        self.end_offset = (0.0, 0.0, 0.0)
+        apply_shape_defaults(self, context, 'OVAL')
+        return context.window_manager.invoke_props_dialog(self, title='Add Oval', confirm_text='Add Oval')
 
-        return wm.invoke_props_dialog(self)
-    
     def draw(self, context):
-        layout = self.layout
-        
-        layout.row().prop(self, "oval_name")
-
-        layout.row().prop_search(self, 'start_bone_name', context.object.data, 'bones', text='Start Bone', icon='BONE_DATA')
-
-        layout.row().prop_search(self, 'end_bone_name', context.object.data, 'bones', text='End Bone', icon='BONE_DATA')
-
-        layout.row().prop(self, "radius")
-
-        layout.row().prop(self, "start_offset")
-
-        layout.row().prop(self, "end_offset")   
+        layout = _dialog_layout(self)
+        layout.prop_search(self, 'start_bone_name', context.object.data, 'bones', text='Start Bone', icon='BONE_DATA')
+        layout.prop_search(self, 'end_bone_name', context.object.data, 'bones', text='End Bone', icon='BONE_DATA')
+        layout.prop(self, 'oval_name', text='Name')
+        layout.prop(self, 'radius')
+        layout.prop(self, 'start_offset')
+        layout.prop(self, 'end_offset')
+        _draw_attach_options(self, layout, context)
 
     def execute(self, context):
         arma_obj: Object = context.object
         arma_data: Armature = arma_obj.data
 
         sub_swing_data: SUB_PG_sub_swing_data = arma_data.sub_swing_data
-        if self.oval_name == "":
-            return {'CANCELLED'}
         if self.start_bone_name == "":
             return {'CANCELLED'}
         if self.end_bone_name == "":
             return {'CANCELLED'}
         
+        if self.oval_name == "":
+            self.oval_name = _unique_shape_name(sub_swing_data.ovals, self.start_bone_name.lower())
         new_oval: SUB_PG_swing_oval = sub_swing_data.ovals.add()
         new_oval.name = self.oval_name
         new_oval.start_bone_name = self.start_bone_name
@@ -907,6 +1210,8 @@ class SUB_OP_swing_data_oval_add(Operator):
         master_collection_props.ovals_collection.objects.link(new_oval.blender_object)
 
         sub_swing_data.active_oval_index = new_oval_index
+        sub_swing_data.active_shape_type = 'OVAL'
+        _attach_new_shape(self, context, 'OVAL', new_oval_index)
 
         # Save collision name hash to ParamLabels.csv
         add_hash_to_param_labels(new_oval.name, new_oval.name)
@@ -954,6 +1259,9 @@ class SUB_OP_swing_data_ellipsoid_add(Operator):
     rotation: FloatVectorProperty(name='Rotation', subtype='XYZ', size=3)
     scale: FloatVectorProperty(name='Scale', subtype='XYZ', size=3)
 
+    attach_to_bone: BoolProperty(name='Collide With Active Swing Bone', default=True)
+    attach_to_chain: BoolProperty(name='Collide With Whole Chain', default=False)
+
     @classmethod
     def poll(cls, context):
         if not context.object:
@@ -961,38 +1269,28 @@ class SUB_OP_swing_data_ellipsoid_add(Operator):
         return context.object.type == 'ARMATURE'
     
     def invoke(self, context: Context, event):
-        wm = context.window_manager
-        self.ellipsoid_name = ""
-        self.bone_name = ""
-        self.offset = (0.0, 0.0, 0.0)
-        self.rotation = (0.0, 0.0, 0.0)
-        self.scale = (1.0, 1.0, 1.0)
+        apply_shape_defaults(self, context, 'ELLIPSOID')
+        return context.window_manager.invoke_props_dialog(self, title='Add Ellipsoid', confirm_text='Add Ellipsoid')
 
-        return wm.invoke_props_dialog(self)
-    
     def draw(self, context):
-        layout = self.layout
-
-        layout.row().prop(self, "ellipsoid_name")
-
-        layout.row().prop_search(self, 'bone_name', context.object.data, 'bones', text='Bone', icon='BONE_DATA')
-
-        layout.row().prop(self, "offset")
-
-        layout.row().prop(self, "rotation")
-
-        layout.row().prop(self, "scale")   
+        layout = _dialog_layout(self)
+        layout.prop_search(self, 'bone_name', context.object.data, 'bones', text='Bone', icon='BONE_DATA')
+        layout.prop(self, 'ellipsoid_name', text='Name')
+        layout.prop(self, 'offset')
+        layout.prop(self, 'rotation')
+        layout.prop(self, 'scale')
+        _draw_attach_options(self, layout, context)
 
     def execute(self, context):
         arma_obj: Object = context.object
         arma_data: Armature = arma_obj.data
 
         sub_swing_data: SUB_PG_sub_swing_data = arma_data.sub_swing_data
-        if self.ellipsoid_name == "":
-            return {'CANCELLED'}
         if self.bone_name == "":
             return {'CANCELLED'}
         
+        if self.ellipsoid_name == "":
+            self.ellipsoid_name = _unique_shape_name(sub_swing_data.ellipsoids, self.bone_name.lower())
         new_ellipsoid: SUB_PG_swing_ellipsoid = sub_swing_data.ellipsoids.add()
         new_ellipsoid.name = self.ellipsoid_name
         new_ellipsoid.bone_name = self.bone_name
@@ -1021,6 +1319,8 @@ class SUB_OP_swing_data_ellipsoid_add(Operator):
         master_collection_props.ellipsoids_collection.objects.link(new_ellipsoid.blender_object)
 
         sub_swing_data.active_ellipsoid_index = new_ellipsoid_index
+        sub_swing_data.active_shape_type = 'ELLIPSOID'
+        _attach_new_shape(self, context, 'ELLIPSOID', new_ellipsoid_index)
 
         # Save collision name hash to ParamLabels.csv
         add_hash_to_param_labels(new_ellipsoid.name, new_ellipsoid.name)
@@ -1066,6 +1366,9 @@ class SUB_OP_swing_data_capsule_add(Operator):
     start_radius: FloatProperty(name='Start Radius')
     end_radius: FloatProperty(name='End Radius')
 
+    attach_to_bone: BoolProperty(name='Collide With Active Swing Bone', default=True)
+    attach_to_chain: BoolProperty(name='Collide With Whole Chain', default=False)
+
     @classmethod
     def poll(cls, context):
         if not context.object:
@@ -1073,46 +1376,33 @@ class SUB_OP_swing_data_capsule_add(Operator):
         return context.object.type == 'ARMATURE'
     
     def invoke(self, context: Context, event):
-        wm = context.window_manager
-        self.capsule_name = ""
-        self.start_bone_name = ""
-        self.end_bone_name = ""
-        self.start_offset = (0.0, 0.0, 0.0)
-        self.end_offset = (0.0, 0.0, 0.0)
-        self.start_radius = 1.0
-        self.end_radius = 1.0
-
-        return wm.invoke_props_dialog(self)
+        apply_shape_defaults(self, context, 'CAPSULE')
+        return context.window_manager.invoke_props_dialog(self, title='Add Capsule', confirm_text='Add Capsule')
 
     def draw(self, context):
-        layout = self.layout
-        
-        layout.row().prop(self, "capsule_name")
-
-        layout.row().prop_search(self, 'start_bone_name', context.object.data, 'bones', text='Start Bone', icon='BONE_DATA')
-
-        layout.row().prop_search(self, 'end_bone_name', context.object.data, 'bones', text='End Bone', icon='BONE_DATA')
-
-        layout.row().prop(self, "start_offset")
-
-        layout.row().prop(self, "end_offset")
-
-        layout.row().prop(self, "start_radius")
-
-        layout.row().prop(self, "end_radius")      
+        layout = _dialog_layout(self)
+        layout.prop_search(self, 'start_bone_name', context.object.data, 'bones', text='Start Bone', icon='BONE_DATA')
+        layout.prop_search(self, 'end_bone_name', context.object.data, 'bones', text='End Bone', icon='BONE_DATA')
+        layout.prop(self, 'capsule_name', text='Name')
+        layout.prop(self, 'start_offset')
+        layout.prop(self, 'end_offset')
+        row = layout.row(align=True, heading='Radius Start / End')
+        row.prop(self, 'start_radius', text='')
+        row.prop(self, 'end_radius', text='')
+        _draw_attach_options(self, layout, context)
 
     def execute(self, context):
         arma_obj: Object = context.object
         arma_data: Armature = arma_obj.data
 
         sub_swing_data: SUB_PG_sub_swing_data = arma_data.sub_swing_data
-        if self.capsule_name == "":
-            return {'CANCELLED'}
         if self.start_bone_name == "":
             return {'CANCELLED'}
         if self.end_bone_name == "":
             return {'CANCELLED'}
         
+        if self.capsule_name == "":
+            self.capsule_name = _unique_shape_name(sub_swing_data.capsules, self.start_bone_name.lower())
         new_capsule: SUB_PG_swing_capsule = sub_swing_data.capsules.add()
         new_capsule.name            = self.capsule_name
         new_capsule.start_bone_name = self.start_bone_name
@@ -1145,6 +1435,8 @@ class SUB_OP_swing_data_capsule_add(Operator):
         master_collection_props.capsules_collection.objects.link(new_capsule.blender_object)
 
         sub_swing_data.active_capsule_index = new_capsule_index
+        sub_swing_data.active_shape_type = 'CAPSULE'
+        _attach_new_shape(self, context, 'CAPSULE', new_capsule_index)
         
         # Save collision name hash to ParamLabels.csv
         add_hash_to_param_labels(new_capsule.name, new_capsule.name)
@@ -1190,6 +1482,9 @@ class SUB_OP_swing_data_plane_add(Operator):
     nz: FloatProperty(name='nz')
     distance: FloatProperty(name='d')
 
+    attach_to_bone: BoolProperty(name='Collide With Active Swing Bone', default=True)
+    attach_to_chain: BoolProperty(name='Collide With Whole Chain', default=False)
+
     @classmethod
     def poll(cls, context):
         if not context.object:
@@ -1197,41 +1492,30 @@ class SUB_OP_swing_data_plane_add(Operator):
         return context.object.type == 'ARMATURE'
 
     def invoke(self, context: Context, event):
-        wm = context.window_manager
-        self.plane_name = ""
-        self.bone_name = ""
-        self.nx = 1.0
-        self.ny = 1.0
-        self.nz = 1.0
-        self.distance = 1.0
-
-        return wm.invoke_props_dialog(self)
+        apply_shape_defaults(self, context, 'PLANE')
+        return context.window_manager.invoke_props_dialog(self, title='Add Plane', confirm_text='Add Plane')
 
     def draw(self, context):
-        layout = self.layout
-        
-        layout.row().prop(self, "plane_name")
-
-        layout.row().prop_search(self, 'bone_name', context.object.data, 'bones', text='Bone', icon='BONE_DATA')
-
-        layout.row().prop(self, "nx")
-
-        layout.row().prop(self, "ny")
-
-        layout.row().prop(self, "nz")
-
-        layout.row().prop(self, "distance")         
+        layout = _dialog_layout(self)
+        layout.prop_search(self, 'bone_name', context.object.data, 'bones', text='Bone', icon='BONE_DATA')
+        layout.prop(self, 'plane_name', text='Name')
+        row = layout.row(align=True, heading='Normal')
+        row.prop(self, 'nx', text='X')
+        row.prop(self, 'ny', text='Y')
+        row.prop(self, 'nz', text='Z')
+        layout.prop(self, 'distance', text='Distance')
+        _draw_attach_options(self, layout, context)
 
     def execute(self, context):
         arma_obj: Object = context.object
         arma_data: Armature = arma_obj.data
 
         sub_swing_data: SUB_PG_sub_swing_data = context.object.data.sub_swing_data
-        if self.plane_name == "":
-            return {'CANCELLED'}
         if self.bone_name == "":
             return {'CANCELLED'}
         
+        if self.plane_name == "":
+            self.plane_name = _unique_shape_name(sub_swing_data.planes, self.bone_name.lower())
         new_plane: SUB_PG_swing_plane = sub_swing_data.planes.add()
         new_plane.name = self.plane_name
         new_plane.bone_name = self.bone_name
@@ -1262,6 +1546,8 @@ class SUB_OP_swing_data_plane_add(Operator):
         master_collection_props.planes_collection.objects.link(new_plane.blender_object)
 
         sub_swing_data.active_plane_index = new_plane_index
+        sub_swing_data.active_shape_type = 'PLANE'
+        _attach_new_shape(self, context, 'PLANE', new_plane_index)
 
         # Save collision name hash to ParamLabels.csv
         add_hash_to_param_labels(new_plane.name, new_plane.name)
@@ -1311,25 +1597,16 @@ class SUB_OP_swing_data_connection_add(Operator):
         return context.object.type == 'ARMATURE'
 
     def invoke(self, context: Context, event):
-        wm = context.window_manager
-        self.start_bone_name = ""
-        self.end_bone_name = ""
-        self.radius = 1.0
-        self.length = 1.0
-        fill_armature_swing_bones(context)
-        return wm.invoke_props_dialog(self)
+        apply_shape_defaults(self, context, 'CONNECTION')
+        return context.window_manager.invoke_props_dialog(self, title='Add Connection', confirm_text='Add Connection')
 
     def draw(self, context):
         sub_swing_data: SUB_PG_sub_swing_data = context.object.data.sub_swing_data
-        layout = self.layout
-        
-        layout.row().prop_search(self, 'start_bone_name', sub_swing_data, 'armature_swing_bones', text='Start Bone Name', icon='BONE_DATA')
-
-        layout.row().prop_search(self, 'end_bone_name', sub_swing_data, 'armature_swing_bones', text='End Bone Name', icon='BONE_DATA')
-
-        layout.row().prop(self, "radius")
-
-        layout.row().prop(self, "length")       
+        layout = _dialog_layout(self)
+        layout.prop_search(self, 'start_bone_name', sub_swing_data, 'armature_swing_bones', text='Start Bone', icon='BONE_DATA')
+        layout.prop_search(self, 'end_bone_name', sub_swing_data, 'armature_swing_bones', text='End Bone', icon='BONE_DATA')
+        layout.prop(self, 'radius')
+        layout.prop(self, 'length')
 
     def execute(self, context):
         arma_obj: Object = context.object
@@ -1368,6 +1645,7 @@ class SUB_OP_swing_data_connection_add(Operator):
         master_collection_props.connections_collection.objects.link(new_connection.blender_object)
 
         sub_swing_data.active_connection_index = new_connection_index
+        sub_swing_data.active_shape_type = 'CONNECTION'
 
         # Save bone name hashes to ParamLabels.csv (lowercase as used in PRC)
         add_hash_to_param_labels(new_connection.start_bone_name.lower(), new_connection.start_bone_name.lower())
@@ -1466,7 +1744,8 @@ class SUB_OP_swing_import(Operator):
         ssp = context.scene.sub_scene_properties
         ssp.last_swing_directory = os.path.dirname(self.filepath)
         
-        swing_prc_import(self, context, self.filepath)
+        with deferred_hash_labels():
+            swing_prc_import(self, context, self.filepath)
         arma_obj = context.object
         collection = get_swing_mesh_master_collection(context, arma_obj)
         setup_bone_meshes(self, context, collection)
