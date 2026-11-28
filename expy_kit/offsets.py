@@ -89,6 +89,10 @@ class ApplyOffset(bpy.types.Operator):
 
     def execute(self, context):
         settings = context.scene.expykit_offset
+        restore = settings.container.get('sub_restore_pose_position')
+        if restore and settings.source is not None and settings.source.type == 'ARMATURE':
+            settings.source.data.pose_position = restore
+            del settings.container['sub_restore_pose_position']
         settings.container = None
         settings.source = None
         return {'FINISHED'}

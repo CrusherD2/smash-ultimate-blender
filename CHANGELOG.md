@@ -10,6 +10,17 @@ The updater shows every section newer than the user's installed version, and
 the "What's New" popup shows them once after the update installs. Sections
 that aren't headed by a version number (like "Unreleased") are never shown.
 
+## 5.2.0 - 2026-11-27
+
+Retargeting workflow and IK mapping improvements
+- Add a collapsible Guided Mode with motion browsing, focus controls, and adjustment-pose tools.
+- Improve mapping controls, pose matching, foot/toe matching, and mapping confirmation visibility.
+- Frame Line Up Source from the front in orthographic view.
+- Apply the SmashIK preset after creating arm and leg IK controls, leaving shoulders and upper legs unmapped.
+- Bind from edited armature mappings instead of reloading the original preset, with name matching off by default.
+- Keep unmapped IK-driven bones out of name matching and remove their stale retarget constraints on full rebind without removing IK or unrelated user constraints.
+- Preserve customized installed presets when installing bundled presets.
+
 ## 5.1.3 - 2026-11-27
 
 Swing Data panel redesign and faster swing tools

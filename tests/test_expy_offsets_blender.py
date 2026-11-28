@@ -53,7 +53,7 @@ class OffsetLayout:
 from types import SimpleNamespace
 retargeting = importlib.import_module(MODULE + '.source.retargeting')
 layout = OffsetLayout()
-retargeting.ULTIMATE_PT_ActionsConversion.draw(SimpleNamespace(layout=layout), bpy.context)
+retargeting.draw_rig_conversion_tools(layout, bpy.context)
 assert ('object.expykit_create_offset', None) in layout.buttons
 assert not any('rotation_offset' in name for name, _ in layout.buttons)
 assert ('object.expykit_apply_offset', 'Apply') in layout.buttons

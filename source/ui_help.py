@@ -11,6 +11,8 @@ RETIRED_PANEL_IDS = (
     'ULTIMATE_PT_retarget_root', 'ULTIMATE_PT_expy_retarget',
     'ULTIMATE_PT_BindPanel', 'ULTIMATE_PT_BindSettings',
     'SUB_PT_ultimate_exo_skel',
+    'ULTIMATE_PT_ActionsBinding', 'ULTIMATE_PT_ActionsConversion',
+    'ULTIMATE_PT_ActionsAnimation',
 )
 
 

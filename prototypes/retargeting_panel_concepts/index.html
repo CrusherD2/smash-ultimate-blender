@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Retargeting – panel concepts</title>
+<style>
+:root{--bg:#1d1d1d;--ed:#2b2b2b;--pn:#303030;--hd:#3d3d3d;--w:#545454;--sel:#4772b3;--tx:#e6e6e6;--dim:#a0a0a0;--box:#282828;--ok:#5fae6a;--warn:#d0a443;--bad:#c85a54}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:12px/1.3 "Inter","Segoe UI",sans-serif;padding:24px}
+h1{font-size:18px;font-weight:600;margin:0 0 4px}
+.lede{color:var(--dim);margin:0 0 20px;max-width:90ch}
+.wrap{display:flex;gap:28px;align-items:flex-start}
+.concept{width:380px}
+.concept h2{font-size:14px;margin:0 0 2px}
+.concept p.why{color:var(--dim);margin:0 0 10px;min-height:64px}
+.editor{background:var(--ed);padding:6px;border-radius:4px}
+.panel{background:var(--pn);border-radius:4px;margin-bottom:4px;overflow:hidden}
+.ph{background:var(--hd);padding:5px 8px;font-weight:600;display:flex;gap:6px;align-items:center}
+.ph::before{content:"▾";color:var(--dim)}
+.ph.closed::before{content:"▸"}
+.ph .r{margin-left:auto;font-weight:400;color:var(--dim)}
+.sub{margin:4px 6px;background:#363636;border-radius:4px}
+.sub .ph{background:#3a3a3a;font-weight:500}
+.pb{padding:6px 8px;display:flex;flex-direction:column;gap:3px}
+.row{display:flex;gap:4px;align-items:center}
+.row.j{gap:1px}
+.row.j>*{border-radius:0}
+.row.j>*:first-child{border-radius:4px 0 0 4px}
+.row.j>*:last-child{border-radius:0 4px 4px 0}
+.btn{flex:1;background:var(--w);border-radius:4px;padding:4px 6px;text-align:center;white-space:nowrap}
+.btn.ic{flex:0 0 24px;padding:4px 0}
+.btn.on{background:var(--sel)}
+.btn.big{padding:7px;font-weight:500}
+.btn.off{opacity:.45}
+.f{display:flex;align-items:center;gap:6px}
+.f .l{flex:0 0 38%;text-align:right;color:var(--dim)}
+.f .v{flex:1;background:var(--w);border-radius:4px;padding:3px 8px;white-space:nowrap;overflow:hidden}
+.f .v.obj{background:#1f1f1f}
+.cap{color:var(--dim);margin:4px 0 1px}
+.hint{color:var(--dim);font-size:11px}
+.sep{height:6px}
+.chk{display:flex;gap:6px;align-items:center;padding-left:calc(38% + 6px)}
+.chk i{width:13px;height:13px;border-radius:3px;background:var(--sel);display:inline-block}
+.chk i.off{background:var(--w)}
+.step{display:flex;gap:8px;align-items:center;padding:5px 8px;background:#3a3a3a;font-weight:500}
+.num{width:18px;height:18px;border-radius:50%;background:var(--w);display:flex;align-items:center;justify-content:center;font-size:11px;flex:none}
+.num.done{background:var(--ok);color:#10210f}
+.num.cur{background:var(--sel)}
+.step .r{margin-left:auto;font-weight:400;font-size:11px}
+.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;background:var(--ok);flex:none}
+.dot.w{background:var(--warn)}.dot.b{background:var(--bad)}
+.who{display:flex;gap:1px}
+.who .btn{display:flex;flex-direction:column;gap:1px;padding:4px 6px;text-align:left}
+.who .btn small{color:var(--dim);font-size:10px}
+.who .btn.on small{color:#dde6f5}
+.map{display:grid;grid-template-columns:1fr 58px 1fr;gap:2px 4px;align-items:center}
+.map .mid{text-align:center;color:var(--dim);font-size:11px}
+.slot{display:flex;align-items:center;background:var(--w);border-radius:4px;padding:3px 6px;gap:5px;min-width:0}
+.slot span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.slot.empty{background:#3b2b2a;color:#d9a39f}
+.slot .pick{margin-left:auto;color:var(--dim);font-size:11px}
+.sec{display:flex;align-items:center;gap:6px;padding:4px 6px;background:#3a3a3a;border-radius:4px}
+.sec .r{margin-left:auto;color:var(--dim);font-size:11px}
+.sec.closed::before{content:"▸";color:var(--dim)}
+.sec.open::before{content:"▾";color:var(--dim)}
+.box{background:var(--box);border-radius:4px;padding:6px;display:flex;flex-direction:column;gap:3px}
+.note{background:#2f3a4a;border-radius:4px;padding:5px 7px;color:#cfdcef;font-size:11px}
+.flow{display:flex;align-items:center;gap:6px;justify-content:center;padding:4px 0}
+.flow .arm{background:var(--w);border-radius:4px;padding:4px 8px;text-align:center}
+.flow .arm small{display:block;color:var(--dim);font-size:10px}
+.findings{display:grid;grid-template-columns:1fr 1fr;gap:14px 28px;max-width:1200px;margin:0 0 26px}
+.findings div{background:var(--pn);border-radius:6px;padding:10px 12px}
+.findings h3{margin:0 0 6px;font-size:13px}
+.findings ul{margin:0;padding-left:18px;color:#cfcfcf}
+.findings li{margin:2px 0}
+</style></head><body>
+<h1>Retargeting: three concepts</h1>
+<p class="lede">Every control in today's panel is kept: Guided Mode, Bake Actions, Bind To + Bind Armatures, bind settings + Apply Bind Settings, presets (+ / −), Map by Proximity + Match Radius, Custom Bones, Core / Arms / Legs / Fingers / Root slots with eyedroppers and mirroring, twist bones, Throw, Deform Preset, Clear All, and the Actions tools. The concepts change order, labels and density, not what the tools do. Sample: mapping a Mixamo rig onto Mario.</p>
+
+<div class="wrap">
+
+<section class="concept">
+<h2>A. Follow the workflow, top to bottom</h2>
+<p class="why">Today Bind sits above Mapping and Bake sits at the very top, though you map first and bake last. Numbered steps put things in working order and show what's done. Guided Mode becomes "Next step" on the current one.</p>
+<div class="editor"><div class="panel"><div class="ph">Retargeting <span class="r">?</span></div><div class="pb">
+<div class="flow">
+<div class="arm">mixamo_rig<small>animation from</small></div><span class="hint">──▶</span><div class="arm">mario<small>apply to</small></div>
+</div>
+<div class="sep"></div>
+</div>
+<div class="sub"><div class="step"><span class="num done">✓</span>Map bones<span class="r ok">both armatures mapped</span></div></div>
+<div class="sub"><div class="step"><span class="num cur">2</span>Bind<span class="r">not bound yet</span></div><div class="pb">
+<div class="f"><span class="l">Animation from</span><span class="v obj">🦴 mixamo_rig</span></div>
+<div class="f"><span class="l">Apply to</span><span class="v obj">🦴 mario</span></div>
+<span class="hint">Uses the presets from step 1. Fine-tune in "Bind settings" below.</span>
+<div class="row"><div class="btn big on">Bind Armatures</div></div>
+</div></div>
+<div class="sub"><div class="step"><span class="num">3</span>Check the motion<span class="r">scrub the timeline</span></div></div>
+<div class="sub"><div class="step"><span class="num">4</span>Bake<span class="r"></span></div><div class="pb">
+<div class="row"><div class="btn off">Bake Actions</div></div>
+<span class="hint">Available after binding.</span>
+</div></div>
+<div class="pb"><div class="row"><div class="btn">▶ Guided Mode: next step</div></div></div>
+<div class="sub"><div class="ph closed">Bind settings</div></div>
+<div class="sub"><div class="ph closed">Tools (Pose Mode)</div></div>
+</div></div>
+</section>
+
+<section class="concept">
+<h2>B. A mapping editor that shows what's missing</h2>
+<p class="why">You always see which armature you're editing and can switch with one click. Each body part shows a count, empty slots are red, and the eyedropper is part of each field so names stop getting cut off. Mirror becomes clear "Copy R → L" buttons.</p>
+<div class="editor"><div class="panel"><div class="ph">Map bones</div><div class="pb">
+<div class="who row j">
+<div class="btn on">mixamo_rig<small>animation from · 31/34</small></div>
+<div class="btn">mario<small>apply to · 34/34</small></div>
+</div>
+<div class="row j"><div class="btn">Preset: Mixamo</div><div class="btn ic">▾</div><div class="btn ic">+</div><div class="btn ic">−</div></div>
+<div class="box">
+<div class="row"><span class="hint" style="flex:1">Fill from a reference armature</span></div>
+<div class="row j"><div class="btn" style="flex:2;text-align:left;background:#1f1f1f">🦴 mario</div><div class="btn">Match by position</div></div>
+<div class="f"><span class="l">Match radius</span><span class="v">1.00</span></div>
+</div>
+<div class="sep"></div>
+<div class="sec open"><span class="dot"></span>Core<span class="r">5 / 5</span></div>
+<div class="sec open"><span class="dot w"></span>Arms<span class="r">7 / 8 · twist off</span></div>
+<div class="map">
+<span class="hint">Right</span><span class="mid"></span><span class="hint">Left</span>
+<div class="slot"><span>mixamorig:RightShoulder</span><span class="pick">◎</span></div><span class="mid">Clavicle</span><div class="slot"><span>mixamorig:LeftShoulder</span><span class="pick">◎</span></div>
+<div class="slot"><span>mixamorig:RightArm</span><span class="pick">◎</span></div><span class="mid">Shoulder</span><div class="slot"><span>mixamorig:LeftArm</span><span class="pick">◎</span></div>
+<div class="slot"><span>mixamorig:RightForeArm</span><span class="pick">◎</span></div><span class="mid">Arm</span><div class="slot empty"><span>— pick bone</span><span class="pick">◎</span></div>
+<div class="slot"><span>mixamorig:RightHand</span><span class="pick">◎</span></div><span class="mid">Hand</span><div class="slot"><span>mixamorig:LeftHand</span><span class="pick">◎</span></div>
+</div>
+<div class="row j"><div class="btn">Copy R → L</div><div class="btn">Copy L → R</div><div class="btn" style="flex:0 0 auto">Twist</div></div>
+<div class="sec closed"><span class="dot w"></span>Legs<span class="r">7 / 8</span></div>
+<div class="sec closed"><span class="dot b"></span>Fingers<span class="r">0 / 30 · optional</span></div>
+<div class="sec closed"><span class="dot"></span>Root &amp; Throw<span class="r">2 / 2</span></div>
+<div class="sec closed"><span class="dot"></span>Custom bones<span class="r">3</span></div>
+<span class="hint">◎ uses the bone selected in the viewport (Pose Mode).</span>
+</div></div></div>
+</section>
+
+<section class="concept">
+<h2>C. Bind settings and tools, grouped by purpose</h2>
+<p class="why">"To Bind" and "Bind To" are replaced with words that say which armature moves. Bind settings fold into short groups with the common ones first. Actions become one Tools panel with three labelled rows instead of three nested sub-panels.</p>
+<div class="editor"><div class="panel"><div class="ph">Bind settings</div><div class="pb">
+<div class="f"><span class="l">From preset</span><span class="v">Mixamo</span></div>
+<div class="f"><span class="l">To preset</span><span class="v">Smash</span></div>
+<div class="cap">Pose alignment</div>
+<div class="f"><span class="l">Match</span><span class="v">Current pose is target rest ▾</span></div>
+<div class="f"><span class="l">Fit height</span><span class="v">- None - ▾</span></div>
+<div class="chk"><i></i>Match object transform</div>
+<div class="note">⚠ "Fit height" might improve results (shown only when it applies)</div>
+<div class="cap">Copy from the source</div>
+<div class="row j"><div class="btn on">Rotation</div><div class="btn">Location</div><div class="btn">Scale</div></div>
+<div class="chk"><i class="off"></i>Look-at math</div>
+<div class="chk"><i></i>IK roll: hands</div>
+<div class="chk"><i></i>IK roll: feet</div>
+<div class="f"><span class="l">Existing constraints</span><span class="v">Skip ▾</span></div>
+<div class="sub" style="margin:4px 0"><div class="ph closed">Which bones · Root motion</div></div>
+<div class="row"><div class="btn">⟳ Re-apply to bound pair</div></div>
+</div></div>
+<div class="panel"><div class="ph">Tools <span class="r">Pose Mode</span></div><div class="pb">
+<div class="cap">Binding</div>
+<div class="row j"><div class="btn">Constrain</div><div class="btn">Status</div><div class="btn">Select constrained</div></div>
+<div class="cap">Animation</div>
+<div class="row j"><div class="btn">Range to scene</div><div class="btn">Rename from FBX</div></div>
+<div class="row j"><div class="btn">Add root motion</div><div class="btn">Select animated</div></div>
+<div class="cap">Rig conversion</div>
+<div class="row j"><div class="btn">Game friendly</div><div class="btn">Bone naming</div><div class="btn ic">▾</div></div>
+<div class="row"><div class="btn">Create transforms offset</div></div>
+<span class="hint">▾ holds Revert dot names and Extract metarig.</span>
+</div></div>
+</div>
+</section>
+</div>
+</body></html>

@@ -14,6 +14,9 @@ from bpy.app.handlers import persistent
 from ...expy_kit import operators, properties, preferences, ui, preset_handler
 from ..blender_compat import assign_action, set_pose_bone_select
 from . import guided
+from . import mapping_ui
+from . import pose_match
+from . import alignment
 
 
 # Auto-detection for Smash armatures
@@ -35,6 +38,20 @@ def ensure_armature_preset_tracked(armature_obj):
             settings.active_preset = "Smash.py"
         except AttributeError:
             pass
+
+
+def promote_smash_ik_preset(armature_obj):
+    settings = getattr(armature_obj.data, 'expykit_retarget', None)
+    if settings is None or settings.active_preset not in {'Smash.py', 'SmashUltimate.py'}:
+        return False
+    controls = {prefix + side for prefix in ('ArmIK', 'HandIK', 'KneeIK', 'FootIK') for side in 'LR'}
+    if not controls.issubset(armature_obj.data.bones.keys()):
+        return False
+    with bpy.context.temp_override(object=armature_obj, active_object=armature_obj):
+        loaded = load_preset_with_custom_bones('SmashIK.py', armature_obj)
+    if loaded:
+        guided.tag_retargeting_redraw()
+    return loaded
 
 
 def get_preset_display_label(armature_obj):
@@ -120,10 +137,11 @@ def load_preset_with_custom_bones(preset_name, armature_obj=None):
     try:
         # Get the preset path
         import os
-        preset_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'expy_kit', 'rig_mapping', 'presets')
-        preset_path = os.path.join(preset_dir, preset_name)
-        
-        # Parse custom bones from preset
+        preset_path = os.path.join(preset_handler.get_retarget_dir(), preset_name)
+        if not os.path.isfile(preset_path):
+            return False
+
+        # Parse custom bones from the same installed preset that will be executed.
         custom_bones = load_custom_bones_from_preset(preset_path)
         
         # Get skeleton
@@ -520,11 +538,49 @@ class ULTIMATE_OT_map_bones_by_proximity(bpy.types.Operator):
             )
             return {'CANCELLED'}
 
+        # Proximity is a guess; the Map step stays open until the user confirms the matches.
+        target.data.sub_retarget_mapping_unverified = True
         self.report(
             {'INFO'},
-            f"Mapped {mapped_count} preset bones and {custom_count} custom bones from '{reference.name}'",
+            f"Mapped {mapped_count} preset bones and {custom_count} custom bones from '{reference.name}'. "
+            "Check the matches, then click Mapping Looks Right",
         )
         return {'FINISHED'}
+
+
+def unverified(*armatures):
+    return [ob for ob in armatures if ob is not None and ob.data.sub_retarget_mapping_unverified]
+
+
+class SUB_OT_retarget_verify_mapping(bpy.types.Operator):
+    bl_idname = "sub.retarget_verify_mapping"
+    bl_label = "Mapping Looks Right"
+    bl_description = "Confirm the automatic bone matches were checked and are correct"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return bool(unverified(mapping_ui.animation_from(context.scene), mapping_ui.apply_to(context)))
+
+    def execute(self, context):
+        for ob in unverified(mapping_ui.animation_from(context.scene), mapping_ui.apply_to(context)):
+            ob.data.sub_retarget_mapping_unverified = False
+        return {'FINISHED'}
+
+
+def draw_verify_mapping(layout, context):
+    obs = unverified(mapping_ui.animation_from(context.scene), mapping_ui.apply_to(context))
+    if not obs:
+        return
+    box = layout.box()
+    col = box.column(align=True)
+    col.label(text="Mapped by proximity: verify it", icon='ERROR')
+    for line in ("Open each section and check every", "slot has the right bone before", "calling this step complete."):
+        col.label(text=line, icon='BLANK1')
+    col.label(text="Unchecked: " + ", ".join(ob.name for ob in obs), icon='BLANK1')
+    row = box.row()
+    row.scale_y = 1.2
+    row.operator(SUB_OT_retarget_verify_mapping.bl_idname, icon='CHECKMARK')
 
 
 # We'll create a REPLACEMENT operator instead of patching
@@ -714,193 +770,151 @@ def _copy_operator_to_scene(op, scene):
 
 
 def draw_binded_settings_ui(layout, context, show_presets=True, explain=False):
-    """Shared drawing function for BOTH the Binded Settings panel AND the Bind to Active Armature dialog.
-    This ensures they are literally the SAME UI editing the SAME properties."""
+    """Bind settings shown under step 2 once a pair is bound; edits the scene bind properties."""
     scene = context.scene
     column = layout.column()
-    
-    _prop_indent = 0.15
+    column.use_property_split = True
+    column.use_property_decorate = False
 
     if explain:
         box = column.box()
-        box.label(text="Set how the source armature drives the target, then click OK.", icon='HELP')
+        box.label(text="Set how the animation drives the armature, then click Bind Armatures.", icon='HELP')
         column.separator()
-    
-    # Presets section
+
+    # trg_preset belongs to the Bind To (driving) armature, src_preset to the constrained one.
     if show_presets:
-        row = column.row()
-        row.prop(scene, 'expykit_src_preset', text="To Bind")
-        _bind_hint(column, explain, "Preset used by the animated source armature.")
-        
-        row = column.row()
-        row.prop(scene, 'expykit_trg_preset', text="Bind To")
-        _bind_hint(column, explain, "Preset used by the target armature you are retargeting onto.")
-        
+        column.prop(scene, 'expykit_trg_preset', text="From Preset")
+        _bind_hint(column, explain, "Mapping preset of the armature the animation comes from.")
+        column.prop(scene, 'expykit_src_preset', text="To Preset")
+        _bind_hint(column, explain, "Mapping preset of the armature that receives the animation.")
         column.separator()
 
-    # Conversion section
-    row = column.row()
-    row.label(text='Conversion')
+    column.label(text='Pose Alignment')
     _bind_hint(column, explain, "How rest poses are aligned before constraints are added.")
-
-    row = column.split(factor=_prop_indent, align=True)
-    row.separator()
-    col = row.column()
-    col.prop(scene, 'expykit_match_transform', text='')
-    col.prop(scene, 'expykit_match_object_transform')
-    col.prop(scene, 'expykit_fit_target_scale')
+    column.prop(scene, 'expykit_match_transform', text='Match')
+    column.prop(scene, 'expykit_fit_target_scale', text='Fit Height')
     if scene.expykit_fit_target_scale != "--":
-        col.prop(scene, 'expykit_adjust_location')
-
+        column.prop(scene, 'expykit_adjust_location')
+    column.prop(scene, 'expykit_match_object_transform')
     if not scene.expykit_loc_constraints and scene.expykit_match_transform == 'Bone':
-        col.label(text="'Copy Location' might be required", icon='ERROR')
+        column.label(text="'Copy Location' might be required", icon='ERROR')
     elif scene.expykit_fit_target_scale == '--' and scene.expykit_match_transform == 'Pose':
-        col.label(text="'Fit height' might improve results", icon='ERROR')
-    else:
-        col.separator()
+        column.label(text="'Fit height' might improve results", icon='ERROR')
 
-    # Constraints section
     column.separator()
-    row = column.row()
-    row.label(text='Constraints')
+    column.label(text='Constraints')
     _bind_hint(column, explain, "Copy Rotation is the usual Smash setup. Enable Copy Location only if bones should follow position too.")
-
-    row = column.split(factor=_prop_indent, align=True)
-    row.separator()
-
-    constr_col = row.column()
-    
-    copy_loc_row = constr_col.row()
-    copy_loc_row.prop(scene, 'expykit_loc_constraints')
+    toggles = column.row(align=True)
+    toggles.use_property_split = False
+    toggles.prop(scene, 'expykit_rot_constraints', text='Rotation', toggle=True)
+    toggles.prop(scene, 'expykit_loc_constraints', text='Location', toggle=True)
+    toggles.prop(scene, 'expykit_scale_constraints', text='Scale', toggle=True)
     if scene.expykit_loc_constraints:
-        copy_loc_row.prop(scene, 'expykit_no_finger_loc', text="Except Fingers")
+        column.prop(scene, 'expykit_no_finger_loc', text="Except Fingers")
     else:
-        copy_loc_row.prop(scene, 'expykit_bind_floating', text="Only Floating")
-    
-    copy_rot_row = constr_col.row()
-    copy_rot_row.prop(scene, 'expykit_rot_constraints')
-    copy_rot_row.prop(scene, 'expykit_math_look_at')
-    
-    copy_scale_row = constr_col.row()
-    copy_scale_row.prop(scene, 'expykit_scale_constraints')
+        column.prop(scene, 'expykit_bind_floating', text="Only Floating")
+    column.prop(scene, 'expykit_math_look_at')
+    column.prop(scene, 'expykit_copy_IK_roll_hands')
+    column.prop(scene, 'expykit_copy_IK_roll_feet')
+    column.prop(scene, 'expykit_constraint_policy', text='Existing')
+    column.prop(scene, 'expykit_ret_bones_collection', text="Layer")
 
-    ik_aim_row = constr_col.row()
-    ik_aim_row.prop(scene, 'expykit_copy_IK_roll_hands')
-    ik_aim_row.prop(scene, 'expykit_copy_IK_roll_feet')
+    header, body = layout.panel('sub_retarget_bind_bones', default_closed=True)
+    header.label(text="Which Bones")
+    if body is not None:
+        column = body.column()
+        column.use_property_split = True
+        column.use_property_decorate = False
+        _bind_hint(column, explain, "Leave Only Selected off to bind the whole mapped skeleton. Also by Name matches leftover bones with the same name.")
+        column.prop(scene, 'expykit_only_selected')
+        column.prop(scene, 'expykit_bind_by_name', text="Also by Name")
+        if scene.expykit_bind_by_name:
+            column.prop(scene, 'expykit_name_prefix', text="Prefix")
+            column.prop(scene, 'expykit_name_replace', text="Replace")
+            column.prop(scene, 'expykit_name_replace_with', text="With")
+            column.prop(scene, 'expykit_name_suffix', text="Suffix")
 
-    constr_col.prop(scene, 'expykit_constraint_policy', text='')
-    
-    # Affect Bones section
-    column.separator()
-    row = column.row()
-    row.label(text="Affect Bones")
-    _bind_hint(column, explain, "Leave Only Selected off to bind the whole mapped skeleton. Also by Name matches leftover bones with the same name.")
-    
-    row = column.split(factor=_prop_indent, align=True)
-    row.separator()
-    col = row.column()
-    col.prop(scene, 'expykit_only_selected')
-    row.prop(scene, 'expykit_bind_by_name', text="Also by Name")
-    if scene.expykit_bind_by_name:
-        row = column.row()
-        col = row.column()
-        col.label(text="Prefix")
-        col.prop(scene, 'expykit_name_prefix', text="")
-
-        col = row.column()
-        col.label(text="Replace:")
-        col.prop(scene, 'expykit_name_replace', text="")
-
-        col = row.column()
-        col.label(text="With:")
-        col.prop(scene, 'expykit_name_replace_with', text="")
-
-        col = row.column()
-        col.label(text="Suffix:")
-        col.prop(scene, 'expykit_name_suffix', text="")
-
-    # Root Animation section
-    column.separator()
-    row = column.row()
-    row.label(text="Root Animation")
-    _bind_hint(column, explain, "Bone uses the Root slot from the Bind To mapping. Leave empty if Root is unset.")
-    row = column.split(factor=_prop_indent, align=True)
-    row.separator()
-    row.prop(scene, 'expykit_constrain_root', text="")
-
-    if scene.expykit_constrain_root != 'None':
+    header, body = layout.panel('sub_retarget_bind_root', default_closed=True)
+    header.label(text="Root Motion")
+    if body is not None:
+        column = body.column()
+        _prop_indent = 0.15
+        # Root Animation section
+        _bind_hint(column, explain, "Uses the Root slot of the Animation From mapping. Leave empty if Root is unset.")
         row = column.split(factor=_prop_indent, align=True)
-        row.label(text="")
-        if context.active_object and context.active_object.type == 'ARMATURE':
-            row.prop_search(scene, 'expykit_root_motion_bone',
-                            context.active_object.data,
-                            "bones", text="")
+        row.separator()
+        row.prop(scene, 'expykit_constrain_root', text="")
 
-    if scene.expykit_constrain_root != 'None':
-        row = column.row(align=True)
-        row.label(text="Location")
-        row.prop(scene, "expykit_root_cp_loc_x", text="X", toggle=True)
-        row.prop(scene, "expykit_root_cp_loc_y", text="Y", toggle=True)
-        row.prop(scene, "expykit_root_cp_loc_z", text="Z", toggle=True)
+        if scene.expykit_constrain_root != 'None':
+            row = column.split(factor=_prop_indent, align=True)
+            row.label(text="")
+            if context.active_object and context.active_object.type == 'ARMATURE':
+                row.prop_search(scene, 'expykit_root_motion_bone',
+                                context.active_object.data,
+                                "bones", text="")
 
-        if any((scene.expykit_root_cp_loc_x, scene.expykit_root_cp_loc_y, scene.expykit_root_cp_loc_z)):
+        if scene.expykit_constrain_root != 'None':
+            row = column.row(align=True)
+            row.label(text="Location")
+            row.prop(scene, "expykit_root_cp_loc_x", text="X", toggle=True)
+            row.prop(scene, "expykit_root_cp_loc_y", text="Y", toggle=True)
+            row.prop(scene, "expykit_root_cp_loc_z", text="Z", toggle=True)
+
+            if any((scene.expykit_root_cp_loc_x, scene.expykit_root_cp_loc_y, scene.expykit_root_cp_loc_z)):
+                column.separator()
+
+                if scene.expykit_root_cp_loc_x:
+                    row = column.row(align=True)
+                    row.prop(scene, "expykit_root_use_loc_min_x", text="Min X")
+                    subcol = row.column()
+                    subcol.prop(scene, "expykit_root_loc_min_x", text="")
+                    subcol.enabled = scene.expykit_root_use_loc_min_x
+                    row.separator()
+                    row.prop(scene, "expykit_root_use_loc_max_x", text="Max X")
+                    subcol = row.column()
+                    subcol.prop(scene, "expykit_root_loc_max_x", text="")
+                    subcol.enabled = scene.expykit_root_use_loc_max_x
+                    row.enabled = scene.expykit_root_cp_loc_x
+
+                if scene.expykit_root_cp_loc_y:
+                    row = column.row(align=True)
+                    row.prop(scene, "expykit_root_use_loc_min_y", text="Min Y")
+                    subcol = row.column()
+                    subcol.prop(scene, "expykit_root_loc_min_y", text="")
+                    subcol.enabled = scene.expykit_root_use_loc_min_y
+                    row.separator()
+                    row.prop(scene, "expykit_root_use_loc_max_y", text="Max Y")
+                    subcol = row.column()
+                    subcol.prop(scene, "expykit_root_loc_max_y", text="")
+                    subcol.enabled = scene.expykit_root_use_loc_max_y
+                    row.enabled = scene.expykit_root_cp_loc_y
+
+                if scene.expykit_root_cp_loc_z:
+                    row = column.row(align=True)
+                    row.prop(scene, "expykit_root_use_loc_min_z", text="Min Z")
+                    subcol = row.column()
+                    subcol.prop(scene, "expykit_root_loc_min_z", text="")
+                    subcol.enabled = scene.expykit_root_use_loc_min_z
+                    row.separator()
+                    row.prop(scene, "expykit_root_use_loc_max_z", text="Max Z")
+                    subcol = row.column()
+                    subcol.prop(scene, "expykit_root_loc_max_z", text="")
+                    subcol.enabled = scene.expykit_root_use_loc_max_z
+                    row.enabled = scene.expykit_root_cp_loc_z
+
+                column.separator()
+
+            row = column.row(align=True)
+            row.label(text="Rotation")
+            row.prop(scene, "expykit_root_cp_rot_x", text="X", toggle=True)
+            row.prop(scene, "expykit_root_cp_rot_y", text="Y", toggle=True)
+            row.prop(scene, "expykit_root_cp_rot_z", text="Z", toggle=True)
+
+            row = column.row()
+            row.prop(scene, "expykit_root_copy_scale")
+
             column.separator()
 
-            if scene.expykit_root_cp_loc_x:
-                row = column.row(align=True)
-                row.prop(scene, "expykit_root_use_loc_min_x", text="Min X")
-                subcol = row.column()
-                subcol.prop(scene, "expykit_root_loc_min_x", text="")
-                subcol.enabled = scene.expykit_root_use_loc_min_x
-                row.separator()
-                row.prop(scene, "expykit_root_use_loc_max_x", text="Max X")
-                subcol = row.column()
-                subcol.prop(scene, "expykit_root_loc_max_x", text="")
-                subcol.enabled = scene.expykit_root_use_loc_max_x
-                row.enabled = scene.expykit_root_cp_loc_x
-
-            if scene.expykit_root_cp_loc_y:
-                row = column.row(align=True)
-                row.prop(scene, "expykit_root_use_loc_min_y", text="Min Y")
-                subcol = row.column()
-                subcol.prop(scene, "expykit_root_loc_min_y", text="")
-                subcol.enabled = scene.expykit_root_use_loc_min_y
-                row.separator()
-                row.prop(scene, "expykit_root_use_loc_max_y", text="Max Y")
-                subcol = row.column()
-                subcol.prop(scene, "expykit_root_loc_max_y", text="")
-                subcol.enabled = scene.expykit_root_use_loc_max_y
-                row.enabled = scene.expykit_root_cp_loc_y
-
-            if scene.expykit_root_cp_loc_z:
-                row = column.row(align=True)
-                row.prop(scene, "expykit_root_use_loc_min_z", text="Min Z")
-                subcol = row.column()
-                subcol.prop(scene, "expykit_root_loc_min_z", text="")
-                subcol.enabled = scene.expykit_root_use_loc_min_z
-                row.separator()
-                row.prop(scene, "expykit_root_use_loc_max_z", text="Max Z")
-                subcol = row.column()
-                subcol.prop(scene, "expykit_root_loc_max_z", text="")
-                subcol.enabled = scene.expykit_root_use_loc_max_z
-                row.enabled = scene.expykit_root_cp_loc_z
-
-            column.separator()
-
-        row = column.row(align=True)
-        row.label(text="Rotation")
-        row.prop(scene, "expykit_root_cp_rot_x", text="X", toggle=True)
-        row.prop(scene, "expykit_root_cp_rot_y", text="Y", toggle=True)
-        row.prop(scene, "expykit_root_cp_rot_z", text="Z", toggle=True)
-
-        row = column.row()
-        row.prop(scene, "expykit_root_copy_scale")
-
-        column.separator()
-
-    column.separator()
-    row = column.row()
-    row.prop(scene, 'expykit_ret_bones_collection', text="Layer")
 
 
 class ULTIMATE_OT_constrain_to_armature(operators.ConstrainToArmature):
@@ -1009,6 +1023,11 @@ class ULTIMATE_OT_constrain_to_armature(operators.ConstrainToArmature):
                 source, target = bound_source, bound_target
         if rebind:
             _copy_scene_to_operator(self, scene)
+            # The panel's edited mapping is authoritative, not the preset it originally came from.
+            if source and source.data.expykit_retarget.has_settings():
+                self.src_preset = '--Current--'
+            if target and target.data.expykit_retarget.has_settings():
+                self.trg_preset = '--Current--'
         else:
             _apply_smash_root_defaults(self, scene)
             _sync_root_motion_from_reference(self, scene, target)
@@ -1032,10 +1051,9 @@ class ULTIMATE_OT_constrain_to_armature(operators.ConstrainToArmature):
             constrained = source if source != driver else None
             if constrained and driver:
                 guided.remember_bind_pair(scene, constrained, driver)
-            scene.expykit_guided_explain = False
-            if scene.expykit_guided_phase == 'BIND':
-                scene.expykit_guided_phase = 'BAKE'
-                guided._invoke_later(bpy.ops.object.ultimate_guided_mode, step='CHECK')
+            # A new bind starts a new round; the earlier bake is no longer the latest result.
+            if scene.expykit_guided_phase == 'DONE':
+                scene.expykit_guided_phase = 'IDLE'
             if not getattr(guided, '_REBIND_BUSY', False):
                 if constrained:
                     guided.select_only_constrained(context, constrained, driver)
@@ -1043,6 +1061,39 @@ class ULTIMATE_OT_constrain_to_armature(operators.ConstrainToArmature):
                 guided.tag_retargeting_redraw()
 
         return result
+
+
+def pair_key(driver, receiver) -> str:
+    return f"{driver.name}\x1f{receiver.name}"
+
+
+def apply_pair_defaults(scene, receiver, driver):
+    """Bind settings a new Animation From / Apply To pair starts with."""
+    check_and_load_smash_preset(receiver)
+    check_and_load_smash_preset(driver)
+    guided.migrate_throw_from_custom(receiver.data.expykit_retarget)
+    guided.migrate_throw_from_custom(driver.data.expykit_retarget)
+    # src_preset belongs to the constrained (receiving) armature, trg_preset to the driver.
+    if receiver.data.expykit_retarget.has_settings():
+        scene.expykit_src_preset = '--Current--'
+    if driver.data.expykit_retarget.has_settings():
+        scene.expykit_trg_preset = '--Current--'
+    scene.expykit_constrain_root = 'Bone'
+    for axis in 'xyz':
+        setattr(scene, f'expykit_root_cp_loc_{axis}', True)
+        setattr(scene, f'expykit_root_cp_rot_{axis}', True)
+    if hasattr(scene, 'expykit_root_use_loc_min_z'):
+        scene.expykit_root_use_loc_min_z = True
+    guided.apply_root_bind_defaults(scene, receiver, driver, force_root_bone=True)
+    scene.expykit_bind_by_name = False
+    scene.sub_retarget_pair_defaults = pair_key(driver, receiver)
+
+
+def on_pair_update(scene, context):
+    """Fill in bind settings as soon as both armatures are chosen, so the panel shows what Bind uses."""
+    driver, receiver = mapping_ui.animation_from(scene), mapping_ui.apply_to(context)
+    if driver is not None and receiver is not None and scene.sub_retarget_pair_defaults != pair_key(driver, receiver):
+        apply_pair_defaults(scene, receiver, driver)
 
 
 # Custom bind operator with auto-detection and auto pose mode
@@ -1056,31 +1107,29 @@ class ULTIMATE_OT_bind_armatures(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         # Allow binding even if not in pose mode - we'll switch automatically
-        return (context.object and context.object.type == 'ARMATURE' and 
-                context.scene.expykit_bind_to and 
-                context.object != context.scene.expykit_bind_to)
-    
+        return bool(context.scene.expykit_bind_to and mapping_ui.apply_to(context))
+
     def _prepare_bind(self, context):
-        source_armature = context.object
+        source_armature = mapping_ui.apply_to(context)
         target_armature = context.scene.expykit_bind_to
         scene = context.scene
+        # "Apply To" may not be the active object; start from Object Mode so it gets selected.
+        if source_armature != context.object and context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
 
-        check_and_load_smash_preset(source_armature)
-        check_and_load_smash_preset(target_armature)
-        guided.migrate_throw_from_custom(source_armature.data.expykit_retarget)
-        guided.migrate_throw_from_custom(target_armature.data.expykit_retarget)
-        scene.expykit_constrain_root = 'Bone'
-        scene.expykit_root_cp_loc_x = True
-        scene.expykit_root_cp_loc_y = True
-        scene.expykit_root_cp_loc_z = True
-        scene.expykit_root_cp_rot_x = True
-        scene.expykit_root_cp_rot_y = True
-        scene.expykit_root_cp_rot_z = True
-        if hasattr(scene, 'expykit_root_use_loc_min_z'):
-            scene.expykit_root_use_loc_min_z = True
-        guided.apply_root_bind_defaults(
-            scene, source_armature, target_armature, force_root_bone=True
-        )
+        # Settings shown in the panel are what gets bound; only a pair seen for the first time gets defaults.
+        if scene.sub_retarget_pair_defaults != pair_key(target_armature, source_armature):
+            apply_pair_defaults(scene, source_armature, target_armature)
+        else:
+            check_and_load_smash_preset(source_armature)
+            check_and_load_smash_preset(target_armature)
+            guided.migrate_throw_from_custom(source_armature.data.expykit_retarget)
+            guided.migrate_throw_from_custom(target_armature.data.expykit_retarget)
+            guided.apply_root_bind_defaults(scene, source_armature, target_armature, force_root_bone=True)
+        if source_armature.data.expykit_retarget.has_settings():
+            scene.expykit_src_preset = '--Current--'
+        if target_armature.data.expykit_retarget.has_settings():
+            scene.expykit_trg_preset = '--Current--'
 
         if context.mode != 'POSE':
             if context.mode != 'OBJECT':
@@ -1107,13 +1156,46 @@ class ULTIMATE_OT_bind_armatures(bpy.types.Operator):
                 pass
         return {'FINISHED'}
 
-    def invoke(self, context, event):
+    def _bind(self, context):
+        scene = context.scene
         self._prepare_bind(context)
-        return bpy.ops.armature.expykit_constrain_to_armature('INVOKE_DEFAULT', force_dialog=True)
+        if '--' in (scene.expykit_src_preset, scene.expykit_trg_preset):
+            self.report({'ERROR'}, "Choose a From Preset and To Preset in Bind Settings, or map both armatures")
+            return {'CANCELLED'}
+        driver = scene.expykit_bind_to
+        if mapping_ui.ensure_pose_position(driver):
+            self.report({'INFO'}, f"Switched {driver.name} to Pose Position; binding doesn't work in Rest Position")
+        # Bind straight from the panel's settings instead of asking for them in a popup.
+        return bpy.ops.armature.expykit_constrain_to_armature('EXEC_DEFAULT', force_dialog=False, from_scene=True)
+
+    def invoke(self, context, event):
+        return self._bind(context)
 
     def execute(self, context):
-        self._prepare_bind(context)
-        return bpy.ops.armature.expykit_constrain_to_armature('INVOKE_DEFAULT', force_dialog=True)
+        return self._bind(context)
+
+
+class ULTIMATE_OT_unbind_armatures(bpy.types.Operator):
+    """Remove the bind constraints so the armature stops following the animation"""
+    bl_description = 'Remove the bind constraints so the armature stops following the animation'
+    bl_idname = "object.ultimate_unbind_armatures"
+    bl_label = "Unbind Armatures"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        constrained, driver = guided.bound_pair(context.scene)
+        return bool(constrained and driver and context.scene.expykit_bind_is_active)
+
+    def execute(self, context):
+        scene = context.scene
+        constrained, driver = guided.bound_pair(scene)
+        removed = guided.clear_bound_constraints(constrained, driver)
+        scene.expykit_bind_is_active = False
+        guided._invalidate_smash_viewport()
+        guided.tag_retargeting_redraw()
+        self.report({'INFO'}, f"Unbound {constrained.name} from {driver.name} ({removed} constraints removed)")
+        return {'FINISHED'}
 
 
 # Help operator for how to use retargeting
@@ -1167,7 +1249,7 @@ class ULTIMATE_OT_retargeting_help(bpy.types.Operator):
         col.label(text="   • Use it to: adjust time stretching, toggle constraints,")
         col.label(text="     pick the Root Animation bone from the Bind To Root mapping,")
         col.label(text="     set offsets at the top (e.g., 'Bone Offset',")
-        col.label(text="     'Current Pose is Target Pose'), and preview in real-time")
+        col.label(text="     'Current Pose is Source Rest Pose'), and preview in real-time")
         
         # Step 4 - Tweaking
         box = layout.box()
@@ -1199,6 +1281,211 @@ class ULTIMATE_OT_retargeting_help(bpy.types.Operator):
         col.label(text="   • Both armatures must use the same preset structure")
 
 
+_STEP_ICONS = {'done': 'CHECKMARK', 'current': 'RADIOBUT_ON', 'todo': 'RADIOBUT_OFF'}
+
+
+def is_bound(scene, driver, receiver) -> bool:
+    """The armatures picked in the panel are the pair that is currently bound."""
+    constrained, driving = guided.bound_pair(scene)
+    return bool(getattr(scene, 'expykit_bind_is_active', False) and constrained is not None
+                and (constrained, driving) == (receiver, driver))
+
+
+def is_baked(scene, driver, receiver) -> bool:
+    constrained, driving = guided.bound_pair(scene)
+    return (getattr(scene, 'expykit_guided_phase', '') == 'DONE' and constrained is not None
+            and (constrained, driving) == (receiver, driver))
+
+
+def alignment_state(context, driver, receiver):
+    """'open' while an offset is being edited, 'ok' when lined up or kept, 'off' otherwise, '' without a pair."""
+    scene = context.scene
+    if alignment.offset_open(scene):
+        return 'open'
+    if driver is None or receiver is None:
+        return ''
+    if alignment.accepted(scene, driver, receiver) or not alignment.issues(driver, receiver):
+        return 'ok'
+    return 'off'
+
+
+def retarget_step_states(context, driver, receiver, aligned=None):
+    """(state, status text) for each workflow step, read from the scene rather than remembered answers."""
+    scene = context.scene
+    aligned = alignment_state(context, driver, receiver) if aligned is None else aligned
+    picked = driver is not None and receiver is not None
+    roles_assigned = picked and scene.sub_retarget_apply_to == receiver
+    mapped = sum(1 for ob in (driver, receiver) if ob is not None and ob.data.expykit_retarget.has_settings())
+    to_verify = bool(picked and unverified(driver, receiver))
+    map_done = picked and mapped == 2 and not to_verify
+    bound, baked = is_bound(scene, driver, receiver), is_baked(scene, driver, receiver)
+
+    if not picked:
+        map_status = "pick armatures"
+    else:
+        counts = [mapping_ui.mapping_count(ob.data) for ob in (driver, receiver)]
+        map_status = "  \u00b7  ".join(f"{done}/{total}" for done, total in counts)
+    # Line Up only advises: a pair it flags can still be mapped and bound.
+    return {
+        'ground': ('done' if roles_assigned else 'current',
+                   "set" if roles_assigned else "pick armatures"),
+        'align': ('done' if aligned == 'ok' else 'current' if picked else 'todo',
+                  {'ok': "lined up", 'off': "check", 'open': "adjusting"}.get(aligned, "pick armatures")),
+        'map': ('done' if map_done else 'current' if picked else 'todo',
+                "verify" if to_verify else map_status),
+        'bind': ('done' if bound or baked else 'current' if map_done else 'todo',
+                 "bound" if bound else "baked" if baked else "not bound" if map_done else "map first"),
+        'check': ('done' if baked else 'current' if bound else 'todo', "" if bound or baked else "bind first"),
+        'bake': ('done' if baked else 'current' if bound else 'todo',
+                 "baked" if baked else "" if bound else "bind first"),
+    }
+
+
+def next_step(context, driver, receiver, aligned=None):
+    """(title, detail, button) for the one thing to do next; button is (operator, text, icon, props) or None."""
+    scene = context.scene
+    aligned = alignment_state(context, driver, receiver) if aligned is None else aligned
+    if aligned == 'open':
+        return ("Line up the source", "Adjust the offset in step 2.",
+                ("object.expykit_apply_offset", "Apply Offset", 'CHECKMARK', {}))
+    if driver is None:
+        return "Pick the animation", "Set Animation From in step 1.", None
+    if receiver is None:
+        return "Pick the armature to animate", "Set Apply To in step 1.", None
+    if aligned == 'off':
+        return ("Line up the source", "It stands differently; see step 2.",
+                (alignment.SUB_OT_retarget_line_up.bl_idname, "Line Up Source", 'OBJECT_ORIGIN', {}))
+    for role, ob in (('FROM', driver), ('TO', receiver)):
+        if not ob.data.expykit_retarget.has_settings():
+            return ("Map the bones", f"{ob.name}: no bones mapped.",
+                    ('sub.retarget_edit_armature', f"Edit {ob.name}", 'BONE_DATA', {'role': role}))
+    if unverified(driver, receiver):
+        return ("Verify the bone matches", "Check every slot in step 3.",
+                (SUB_OT_retarget_verify_mapping.bl_idname, "Mapping Looks Right", 'CHECKMARK', {}))
+    if is_baked(scene, driver, receiver):
+        return "Done", f"Baked onto {receiver.name}.", None
+    if not is_bound(scene, driver, receiver):
+        animation = driver.animation_data
+        if animation is None or animation.action is None:
+            detail = f"{driver.name} has no action yet."
+        else:
+            detail = f"{receiver.name} follows the motion."
+        return "Bind the armatures", detail, ("object.ultimate_bind_armatures", "Bind Armatures", 'LINKED', {})
+    if guided.bind_preview_off(scene):
+        return ("Showing the original motion", "Turn the bind on to bake.",
+                (guided.SUB_OT_retarget_toggle_bind_preview.bl_idname, "Show Retargeted", 'HIDE_OFF', {}))
+    return ("Check, then bake", "Scrub the timeline first.",
+            ("armature.ultimate_bake_actions", "Bake Actions", 'RENDER_ANIMATION', {}))
+
+
+def draw_next_step(layout, context, driver, receiver, aligned=None):
+    box = layout.box()
+    expanded = context.scene.sub_retarget_guided_open
+    box.prop(context.scene, 'sub_retarget_guided_open', text="Guided Mode",
+             icon='TRIA_DOWN' if expanded else 'TRIA_RIGHT', emboss=False)
+    if not expanded:
+        return
+    title, detail, button = next_step(context, driver, receiver, aligned)
+    col = box.column(align=True)
+    col.label(text=title, icon='CHECKMARK' if title == "Done" else 'FORWARD')
+    hint = col.row()
+    hint.scale_y = 0.8
+    hint.label(text=detail, icon='BLANK1')
+    if button is not None:
+        idname, text, icon, props = button
+        col = box.column()
+        col.scale_y = 1.3
+        if idname == "object.ultimate_bind_armatures":
+            # Lining up the pose is optional, so it is offered with Bind rather than being its own step.
+            pose_match.draw_match_button(col, context)
+        op = col.operator(idname, text=text, icon=icon)
+        for key, value in props.items():
+            setattr(op, key, value)
+
+
+# What each step is for, shown at the top of the step; kept short to fit the sidebar.
+STEP_INFO = {
+    'ground': ("Animation From: rig with motion.",
+               "Apply To: rig that receives it."),
+    'align': ("Both rigs should match in size,",
+              "facing and place. An offset",
+              "fixes it; animation is kept."),
+    'map': ("Say which bone is which body",
+            "part on both rigs. Bones in the",
+            "same slot get bound together."),
+    'bind': ("Optionally match the pose, then",
+             "bind: Apply To follows live.",
+             "Nothing is keyed yet."),
+    'check': ("Play or scrub every action.",
+              "Focus Source hides the target",
+              "to compare."),
+    'bake': ("Keys every action onto the",
+             "Apply To rig, then hides the",
+             "Animation From rig."),
+}
+
+
+def draw_step_info(layout, step):
+    col = layout.column(align=True)
+    col.scale_y = 0.8
+    for i, line in enumerate(STEP_INFO[step]):
+        col.label(text=line, icon='INFO' if i == 0 else 'BLANK1')
+    layout.separator(factor=0.5)
+
+
+def draw_groundwork(layout, context):
+    scene = context.scene
+    mapping_ui.draw_armature_list(layout, context)
+    col = layout.column()
+    col.use_property_split = True
+    col.use_property_decorate = False
+    col.prop(scene, 'expykit_bind_to', text="Animation From")
+    col.prop(scene, 'sub_retarget_apply_to', text="Apply To")
+
+
+def _draw_step(layout, step, title, state, status):
+    # Open state is stored per idname, so each state gets its own and only the current step opens by itself.
+    header, body = layout.panel(f'sub_retarget_step_{step}_{state}', default_closed=state != 'current')
+    header.label(text=title, icon=_STEP_ICONS[state])
+    if status:
+        right = header.row()
+        right.alignment = 'RIGHT'
+        right.label(text=status)
+    if body is not None and state == 'todo':
+        # Later steps stay readable but can't be run yet.
+        body = body.column()
+        body.enabled = False
+    return body
+
+
+def draw_check_controls(layout, context, driver):
+    scene = context.scene
+    screen = context.screen
+    playing = bool(screen and screen.is_animation_playing)
+    row = layout.row(align=True)
+    row.operator("screen.animation_play", text="Pause" if playing else "Play",
+                 icon='PAUSE' if playing else 'PLAY')
+    layout.prop(scene, 'frame_current', text="Frame")
+    if driver is not None:
+        action = driver.animation_data.action if driver.animation_data else None
+        row = layout.row(align=True)
+        row.operator(guided.SUB_OT_retarget_action.bl_idname, text="", icon='TRIA_LEFT').direction = -1
+        row.menu("SUB_MT_retarget_actions", text=action.name if action else "Select Animation")
+        row.operator(guided.SUB_OT_retarget_action.bl_idname, text="", icon='TRIA_RIGHT').direction = 1
+    layout.operator(guided.SUB_OT_retarget_adjustments.bl_idname,
+                    text="Confirm adjustments" if scene.get('sub_retarget_adjustments') else "Make adjustments")
+    row = layout.row(align=True)
+    off = guided.bind_preview_off(scene)
+    row.operator(guided.SUB_OT_retarget_toggle_bind_preview.bl_idname,
+                 text="Show Retargeted" if off else "Focus Source", icon='HIDE_OFF' if off else 'HIDE_ON')
+    if driver is not None:
+        meshes = guided.rig_meshes(context, driver)
+        hidden = bool(meshes) and all(ob.hide_get() for ob in meshes)
+        row.operator(guided.SUB_OT_retarget_source_meshes.bl_idname,
+                        text="Show Source Model" if hidden else "Focus Target",
+                        icon='HIDE_OFF' if hidden else 'HIDE_ON')
+
+
 # Main Retargeting panel in Ultimate tab
 class SUB_PT_retargeting_main(Panel):
     """Main Retargeting panel in Ultimate tab"""
@@ -1219,211 +1506,156 @@ class SUB_PT_retargeting_main(Panel):
         layout = self.layout
         scene = context.scene
 
-        box = layout.box()
-        col = box.column(align=True)
-        col.label(text="Expy Kit Retargeting Tools", icon='ARMATURE_DATA')
-
-        row = col.row()
-        row.scale_y = 1.0
-        row.operator(
-            "object.ultimate_guided_mode",
-            text=guided.guided_button_label(scene),
-            icon='PLAY',
-        )
-
-        bake_row = col.row()
-        bake_row.scale_y = 1.0
-        bake_row.operator("armature.ultimate_bake_actions", text="Bake Actions", icon='RENDER_ANIMATION')
-
-        layout.separator()
-        draw_bind_controls(layout, context)
-        layout.separator()
-        draw_mapping_controls(layout, context)
-        draw_bone_mapping_sections(layout, context)
+        driver, receiver = mapping_ui.animation_from(scene), mapping_ui.apply_to(context)
+        aligned = alignment_state(context, driver, receiver)
+        draw_next_step(layout, context, driver, receiver, aligned)
+        states = retarget_step_states(context, driver, receiver, aligned)
+        steps = (('ground', "1. Groundwork"), ('align', "2. Line Up"), ('map', "3. Map Bones"),
+                 ('bind', "4. Bind"), ('check', "5. Check the Motion"), ('bake', "6. Bake"))
+        for step, title in steps:
+            body = _draw_step(layout, step, title, *states[step])
+            if body is None:
+                continue
+            draw_step_info(body, step)
+            if step == 'ground':
+                draw_groundwork(body, context)
+            elif step == 'align':
+                alignment.draw(body, context, driver, receiver)
+            elif step == 'map':
+                draw_verify_mapping(body, context)
+                draw_mapping_controls(body, context)
+                draw_bone_mapping_sections(body, context)
+            elif step == 'bind':
+                draw_bind_controls(body, context)
+            elif step == 'check':
+                draw_check_controls(body, context, driver)
+            else:
+                row = body.row()
+                row.scale_y = 1.2
+                row.operator("armature.ultimate_bake_actions", text="Bake Actions", icon='RENDER_ANIMATION')
 
     def draw_header_preset(self, context):
         from ..ui_help import draw_panel_help
+        self.layout.prop(context.scene, 'expykit_guided_explain', text="", icon='INFO', emboss=False)
         draw_panel_help(self.layout, self)
 
 
-# The former Bind To and Expy Mapping bodies are drawn by the parent panel.
 def draw_mapping_controls(layout, context):
-    layout.label(text='Expy Mapping', icon='ARMATURE_DATA')
-    # Add help button for active bone functionality
-    row = layout.row()
-    row.operator(ui.SetToActiveBoneHelpText.bl_idname, text="How to Set Active Bone", icon='HELP')
-    layout.separator()
+    mapping_ui.draw_armature_switch(layout, context)
 
     sync_preset_menu_label(context)
-
     preset_label = get_preset_display_label(context.object)
-
-    # Use our custom preset menu that handles custom bones
     split = layout.split(factor=0.75)
     split.menu(ULTIMATE_MT_retarget_presets.__name__, text=preset_label)
     row = split.row(align=True)
     row.operator(ULTIMATE_OT_add_preset_retarget.bl_idname, text="+")
     row.operator(ULTIMATE_OT_add_preset_retarget.bl_idname, text="-").remove_active = True
 
-    layout.separator()
     box = layout.box()
-    box.label(text="Map from Reference Armature", icon='AUTO')
+    box.label(text="Fill From a Reference Armature", icon='AUTO')
     row = box.row(align=True)
-    row.prop(context.scene, 'expykit_nearest_bone_ref', text="Reference")
+    row.prop(context.scene, 'expykit_nearest_bone_ref', text="")
     row.operator(ULTIMATE_OT_map_bones_by_proximity.bl_idname, text="Map by Proximity")
-    box.prop(context.scene, 'expykit_map_radius', text="Match Radius", slider=True)
-    box.label(
-        text="Scales auto match distance. Raise if overlapping bones still miss.",
-        icon='INFO',
-    )
+    if context.scene.expykit_nearest_bone_ref:
+        box.prop(context.scene, 'expykit_map_radius', text="Match Radius", slider=True)
+        box.label(text="Raise if overlapping bones still miss.", icon='INFO')
+
+    row = layout.row()
+    row.label(text="Eyedropper = active bone", icon='EYEDROPPER')
+    row.operator(ui.SetToActiveBoneHelpText.bl_idname, text="", icon='QUESTION')
 
 
 def draw_bind_controls(layout, context):
     scene = context.scene
-    layout.prop(scene, 'expykit_bind_to', text="Bind To")
-    layout.operator("object.ultimate_bind_armatures")
-    source, target = guided.bound_pair(scene)
-    if source and target:
-        layout.separator()
-        draw_binded_settings_ui(layout, context, show_presets=True)
-        row = layout.row()
-        row.scale_y = 1.0
-        row.operator("object.ultimate_apply_bind_settings", icon='FILE_REFRESH')
+    driver, receiver = mapping_ui.animation_from(scene), mapping_ui.apply_to(context)
+    explain = bool(scene.expykit_guided_explain)
+    if driver is not None and receiver is not None and scene.sub_retarget_pair_defaults != pair_key(driver, receiver):
+        layout.label(text="New pair: defaults apply on Bind", icon='INFO')
 
+    pose_match.draw_match_button(layout, context)
+    header, body = layout.panel('sub_retarget_bind_settings', default_closed=False)
+    header.label(text="Bind Settings")
+    if body is not None:
+        draw_binded_settings_ui(body, context, show_presets=True, explain=explain)
 
-class _MappingLayout(ui.RetargetBasePanel):
-    """Reuse Expy's drawing helpers without registering another Blender panel."""
-    def __init__(self, layout):
-        self.layout = layout
+    constrained, bound_driver = guided.bound_pair(scene)
+    bound = bool(constrained and bound_driver and scene.expykit_bind_is_active)
+    if bound:
+        layout.label(text=f"Bound: {bound_driver.name} \u2192 {constrained.name}", icon='CHECKMARK')
+    row = layout.row(align=True)
+    row.scale_y = 1.2
+    # Bind swaps to Unbind only for the pair shown above; another pair can still be bound.
+    if bound and (constrained, bound_driver) == (receiver, driver):
+        row.operator(ULTIMATE_OT_unbind_armatures.bl_idname, text="Unbind", icon='UNLINKED')
+        row.operator("object.ultimate_apply_bind_settings", text="Re-apply Settings", icon='FILE_REFRESH')
+    else:
+        row.operator("object.ultimate_bind_armatures", icon='LINKED')
+        if bound:
+            layout.operator("object.ultimate_apply_bind_settings", text="Re-apply Bind Settings", icon='FILE_REFRESH')
 
 
 def draw_bone_mapping_sections(layout, context):
     obj = context.object
-    if not obj or obj.type != 'ARMATURE' or not hasattr(obj.data, 'expykit_retarget'):
+    if not mapping_ui.is_mappable_armature(obj):
         layout.label(text='Select an armature to edit bone mappings.', icon='INFO')
         return
-    sections = (
-        ('custom', 'Custom Bones', ui.VIEW3D_PT_expy_retarget_custom),
-        ('core', 'Core', ui.VIEW3D_PT_expy_retarget_spine),
-        ('arms', 'Arms', ui.VIEW3D_PT_expy_retarget_arms),
-        ('legs', 'Legs', ui.VIEW3D_PT_expy_retarget_leg),
-        ('fingers', 'Fingers', ui.VIEW3D_PT_expy_retarget_fingers),
-        ('root', 'Root', ui.VIEW3D_PT_expy_retarget_root),
-    )
-    for section_id, label, drawing in sections:
-        header, body = layout.panel('sub_retarget_mapping_' + section_id, default_closed=True)
-        header.label(text=label)
-        if body is not None:
-            drawing.draw(_MappingLayout(body), context)
+    mapping_ui.draw_sections(layout, context, obj)
+
+
+def draw_binding_tools(layout):
+    layout.label(text="Binding")
+    grid = layout.grid_flow(columns=2, even_columns=True, align=True)
+    grid.operator(operators.ConstrainToArmature.bl_idname, text="Bind to Active")
+    grid.operator(operators.ConstraintStatus.bl_idname, text="Constraints On/Off")
+    op = grid.operator(operators.SelectConstrainedControls.bl_idname, text="Select Constrained")
+    op.select_type = 'constr'
+
+
+def draw_animation_tools(layout):
+    layout.label(text="Animation")
+    grid = layout.grid_flow(columns=2, even_columns=True, align=True)
+    grid.operator(operators.ActionRangeToScene.bl_idname, text="Range to Scene")
+    grid.operator_context = 'INVOKE_DEFAULT'
+    grid.operator(operators.RenameActionsFromFbxFiles.bl_idname, text="Rename from FBX...")
+    grid.operator(operators.AddRootMotion.bl_idname, text="Transfer Root Motion")
+    op = grid.operator(operators.SelectConstrainedControls.bl_idname, text="Select Animated")
+    op.select_type = 'anim'
+
+
+def draw_rig_conversion_tools(layout, context):
+    col = layout.column()
+    col.label(text="Rig Conversion")
+    col.operator(operators.ConvertGameFriendly.bl_idname)
+    col.operator(operators.RevertDotBoneNames.bl_idname)
+    col.operator(operators.ConvertBoneNaming.bl_idname)
+    col.operator(operators.ExtractMetarig.bl_idname)
+    col.operator(operators.CreateTransformOffset.bl_idname)
+    operators.offsets.draw_offset(col, context)
 
 
 class ULTIMATE_PT_ActionsPanel(Panel):
-    """Actions panel - contains Binding, Conversion, and Animation operators"""
+    """Retargeting tools: binding, animation and rig conversion"""
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'Ultimate'
-    bl_label = "Actions"
+    bl_label = "Tools"
     bl_parent_id = "SUB_PT_retargeting_main"
     bl_options = {'DEFAULT_CLOSED'}
-    
+
     @classmethod
     def poll(cls, context):
         return True
-    
+
     def draw(self, context):
         self.layout.use_property_decorate = False
         layout = self.layout
-        
         if context.mode != 'POSE':
-            layout.label(text="Enter Pose Mode for actions", icon='INFO')
-
-    def draw_header_preset(self, context):
-        from ..ui_help import draw_panel_help
-        draw_panel_help(self.layout, self)
-
-
-class ULTIMATE_PT_ActionsBinding(Panel):
-    """Binding sub-panel under Actions"""
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'Ultimate'
-    bl_label = "Binding"
-    bl_parent_id = "ULTIMATE_PT_ActionsPanel"
-    bl_options = {'DEFAULT_CLOSED'}
-    
-    @classmethod
-    def poll(cls, context):
-        return context.mode == 'POSE'
-    
-    def draw(self, context):
-        self.layout.use_property_decorate = False
-        layout = self.layout
-        
-        col = layout.column()
-        col.operator(operators.ConstrainToArmature.bl_idname)
-        col.operator(operators.ConstraintStatus.bl_idname)
-        op = col.operator(operators.SelectConstrainedControls.bl_idname)
-        op.select_type = 'constr'
-
-    def draw_header_preset(self, context):
-        from ..ui_help import draw_panel_help
-        draw_panel_help(self.layout, self)
-
-
-class ULTIMATE_PT_ActionsConversion(Panel):
-    """Conversion sub-panel under Actions"""
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'Ultimate'
-    bl_label = "Conversion"
-    bl_parent_id = "ULTIMATE_PT_ActionsPanel"
-    bl_options = {'DEFAULT_CLOSED'}
-    
-    @classmethod
-    def poll(cls, context):
-        return context.mode == 'POSE'
-    
-    def draw(self, context):
-        self.layout.use_property_decorate = False
-        layout = self.layout
-        
-        col = layout.column()
-        col.operator(operators.ConvertGameFriendly.bl_idname)
-        col.operator(operators.RevertDotBoneNames.bl_idname)
-        col.operator(operators.ConvertBoneNaming.bl_idname)
-        col.operator(operators.ExtractMetarig.bl_idname)
-        col.operator(operators.CreateTransformOffset.bl_idname)
-        operators.offsets.draw_offset(col, context)
-
-    def draw_header_preset(self, context):
-        from ..ui_help import draw_panel_help
-        draw_panel_help(self.layout, self)
-
-
-class ULTIMATE_PT_ActionsAnimation(Panel):
-    """Animation sub-panel under Actions"""
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'Ultimate'
-    bl_label = "Animation"
-    bl_parent_id = "ULTIMATE_PT_ActionsPanel"
-    bl_options = {'DEFAULT_CLOSED'}
-    
-    @classmethod
-    def poll(cls, context):
-        return context.mode == 'POSE'
-    
-    def draw(self, context):
-        self.layout.use_property_decorate = False
-        layout = self.layout
-        
-        col = layout.column()
-        col.operator(operators.ActionRangeToScene.bl_idname)
-        col.operator_context = 'INVOKE_DEFAULT'
-        col.operator(operators.RenameActionsFromFbxFiles.bl_idname)
-        col.operator(operators.AddRootMotion.bl_idname)
-        op = col.operator(operators.SelectConstrainedControls.bl_idname, text="Select Animated Controls")
-        op.select_type = 'anim'
+            layout.label(text="Most tools need Pose Mode", icon='INFO')
+        draw_binding_tools(layout)
+        layout.separator()
+        draw_animation_tools(layout)
+        layout.separator()
+        draw_rig_conversion_tools(layout, context)
 
     def draw_header_preset(self, context):
         from ..ui_help import draw_panel_help
@@ -1704,10 +1936,7 @@ class ULTIMATE_OT_bake_actions(bpy.types.Operator):
 # List of custom panels to register (all in Ultimate tab under Retargeting)
 custom_panels = [
     SUB_PT_retargeting_main,
-    ULTIMATE_PT_ActionsPanel,  # Actions panel
-    ULTIMATE_PT_ActionsBinding,  # Binding sub-panel
-    ULTIMATE_PT_ActionsConversion,  # Conversion sub-panel (actions)
-    ULTIMATE_PT_ActionsAnimation,  # Animation sub-panel
+    ULTIMATE_PT_ActionsPanel,  # Tools panel
 ]
 
 
@@ -1752,8 +1981,16 @@ def register():
         bpy.utils.register_class(ULTIMATE_OT_execute_preset_retarget)
         bpy.utils.register_class(ULTIMATE_OT_add_preset_retarget)
         bpy.utils.register_class(ULTIMATE_OT_map_bones_by_proximity)
+        bpy.utils.register_class(mapping_ui.SUB_OT_retarget_edit_armature)
+        bpy.utils.register_class(mapping_ui.SUB_OT_retarget_set_role)
+        bpy.utils.register_class(SUB_OT_retarget_verify_mapping)
+        bpy.utils.register_class(pose_match.SUB_OT_retarget_match_rest_pose)
+        bpy.utils.register_class(pose_match.SUB_OT_retarget_confirm_pose_mapping)
+        for cls in alignment.classes:
+            bpy.utils.register_class(cls)
         bpy.utils.register_class(ULTIMATE_MT_retarget_presets)
         bpy.utils.register_class(ULTIMATE_OT_bind_armatures)
+        bpy.utils.register_class(ULTIMATE_OT_unbind_armatures)
         bpy.utils.register_class(ULTIMATE_OT_retargeting_help)
         bpy.utils.register_class(ULTIMATE_OT_bake_actions)
         for cls in guided.classes:
@@ -1786,7 +2023,8 @@ def register():
         items=[
             ('None', "- None -", "Don't match any transform"),
             ('Bone', "Bones Offset", "Account for difference between control and deform rest pose"),
-            ('Pose', "Current Pose is target Rest Pose", "Armature was posed manually to match rest pose of target"),
+            ('Pose', "Current Pose is Source Rest Pose",
+             "Apply To is posed to match the Animation From armature's rest pose (see Match Source Pose to Target Pose)"),
             ('World', "Follow target Pose in world space", "Just copy target world positions"),
         ],
         name="Match Transform",
@@ -1866,7 +2104,7 @@ def register():
     )
     bpy.types.Scene.expykit_bind_by_name = bpy.props.BoolProperty(
         name="Also by Name",
-        default=True,
+        default=False,
         update=_bind_update,
     )
     bpy.types.Scene.expykit_name_prefix = bpy.props.StringProperty(
@@ -2003,10 +2241,15 @@ def register():
             default='IDLE',
         )
 
-    if not hasattr(bpy.types.Scene, 'expykit_guided_explain'):
-        bpy.types.Scene.expykit_guided_explain = bpy.props.BoolProperty(
-            default=False,
-        )
+    bpy.types.Scene.sub_retarget_guided_open = bpy.props.BoolProperty(
+        name="Guided Mode", default=False,
+    )
+
+    bpy.types.Scene.expykit_guided_explain = bpy.props.BoolProperty(
+        name="Explain Bind Settings",
+        description="Show a short explanation under each bind setting",
+        default=False,
+    )
 
     if not hasattr(bpy.types.Scene, 'expykit_bind_is_active'):
         bpy.types.Scene.expykit_bind_is_active = bpy.props.BoolProperty(
@@ -2070,16 +2313,34 @@ def register():
         """Check if the selected bind_to armature is a smash rig"""
         if self.expykit_bind_to and self.expykit_bind_to.type == 'ARMATURE':
             check_and_load_smash_preset(self.expykit_bind_to)
+            on_pair_update(self, context)
     
     # Register scene properties for binding
-    if not hasattr(bpy.types.Scene, 'expykit_bind_to'):
-        bpy.types.Scene.expykit_bind_to = bpy.props.PointerProperty(
+    # Expy Kit registers this first without an update hook, so always redefine it.
+    bpy.types.Scene.expykit_bind_to = bpy.props.PointerProperty(
+        type=bpy.types.Object,
+        name="Animation From",
+        description="Armature whose animation is copied onto the Apply To armature",
+        poll=mapping_ui.poll_animation_from,
+        update=on_bind_to_update
+    )
+
+    if not hasattr(bpy.types.Scene, 'sub_retarget_apply_to'):
+        bpy.types.Scene.sub_retarget_apply_to = bpy.props.PointerProperty(
             type=bpy.types.Object,
-            name="Bind To",
-            description="Target armature to bind to",
-            poll=ui.poll_armature_bind_to,
-            update=on_bind_to_update
+            name="Apply To",
+            description="Armature that receives the animation. Leave empty to use the selected armature",
+            poll=mapping_ui.poll_apply_to,
+            update=on_pair_update,
         )
+
+    if not hasattr(bpy.types.Scene, 'sub_retarget_pair_defaults'):
+        bpy.types.Scene.sub_retarget_pair_defaults = bpy.props.StringProperty(options={'HIDDEN'})
+    bpy.types.Armature.sub_retarget_mapping_unverified = bpy.props.BoolProperty(
+        name="Mapping Unverified", description="Bones were mapped automatically and not checked yet",
+        default=False, options={'HIDDEN'})
+    if not hasattr(bpy.types.Scene, 'sub_retarget_aligned_pair'):
+        bpy.types.Scene.sub_retarget_aligned_pair = bpy.props.StringProperty(options={'HIDDEN'})
 
     if not hasattr(bpy.types.Scene, 'expykit_nearest_bone_ref'):
         bpy.types.Scene.expykit_nearest_bone_ref = bpy.props.PointerProperty(
@@ -2135,9 +2396,17 @@ def unregister():
             bpy.utils.unregister_class(cls)
         bpy.utils.unregister_class(ULTIMATE_OT_bake_actions)
         bpy.utils.unregister_class(ULTIMATE_OT_retargeting_help)
+        bpy.utils.unregister_class(ULTIMATE_OT_unbind_armatures)
         bpy.utils.unregister_class(ULTIMATE_OT_bind_armatures)
         bpy.utils.unregister_class(ULTIMATE_MT_retarget_presets)
         bpy.utils.unregister_class(ULTIMATE_OT_map_bones_by_proximity)
+        bpy.utils.unregister_class(SUB_OT_retarget_verify_mapping)
+        bpy.utils.unregister_class(mapping_ui.SUB_OT_retarget_set_role)
+        bpy.utils.unregister_class(mapping_ui.SUB_OT_retarget_edit_armature)
+        bpy.utils.unregister_class(pose_match.SUB_OT_retarget_confirm_pose_mapping)
+        bpy.utils.unregister_class(pose_match.SUB_OT_retarget_match_rest_pose)
+        for cls in reversed(alignment.classes):
+            bpy.utils.unregister_class(cls)
         bpy.utils.unregister_class(ULTIMATE_OT_add_preset_retarget)
         bpy.utils.unregister_class(ULTIMATE_OT_execute_preset_retarget)
     except:
@@ -2189,8 +2458,12 @@ def unregister():
         'expykit_root_copy_scale',
         'expykit_ret_bones_collection',
         'expykit_map_radius',
+        'sub_retarget_apply_to',
+        'sub_retarget_pair_defaults',
+        'sub_retarget_aligned_pair',
         'expykit_guided_phase',
         'expykit_guided_explain',
+        'sub_retarget_guided_open',
         'expykit_bind_is_active',
         'expykit_bound_source',
         'expykit_bound_target',
@@ -2199,6 +2472,8 @@ def unregister():
     for prop in scene_props:
         if hasattr(bpy.types.Scene, prop):
             delattr(bpy.types.Scene, prop)
+    if hasattr(bpy.types.Armature, 'sub_retarget_mapping_unverified'):
+        del bpy.types.Armature.sub_retarget_mapping_unverified
     
     # Unregister original expy_kit UI classes
     try:

@@ -349,6 +349,9 @@ def create_controls(context, obj, limbs='BOTH', custom_only=False, custom_target
     if jobs and fresh_controls:
         from .ik_rig_upgrade import REVISION_KEY, CURRENT_REVISION
         obj.data[REVISION_KEY] = CURRENT_REVISION
+    if jobs:
+        from ..retargeting import promote_smash_ik_preset
+        promote_smash_ik_preset(obj)
     return len(jobs)
 
 

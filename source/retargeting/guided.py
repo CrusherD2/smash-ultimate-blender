@@ -1,41 +1,12 @@
 """Guided retargeting wizard and bind/bake helpers."""
 import bpy
+import json
 
 
 _REBIND_BUSY = False
 _REBIND_TOKEN = 0
 _SYNCING_BIND_PROPS = False
 _SELECT_TOKEN = 0
-
-PRESET_NO_MESSAGE = (
-    "Make a preset first in the Expy Mapping section of the Retargeting tab.\n\n"
-    "A preset tells the addon which bone on each armature is which body part. "
-    "If ArmR is the Right Arm on rig A and R_Arm is the Right Arm on rig B, "
-    "mapping both to the same Right Arm slot will bind those bones together."
-)
-
-ANIM_NO_MESSAGE = (
-    "Load every animation you want to retarget onto the source armature first, "
-    "then start Guided Mode again."
-)
-
-CHECK_ANIM_MESSAGE = (
-    "Check if the animations look okay on the target armature, then click "
-    "Continue Guided Mode."
-)
-
-
-def _invoke_later(op_callable, **kwargs):
-    """Invoke another operator after the current dialog closes."""
-    def _do():
-        try:
-            op_callable('INVOKE_DEFAULT', **kwargs)
-        except Exception as exc:
-            print(f"Guided mode: could not open next prompt: {exc}")
-        return None
-
-    bpy.app.timers.register(_do, first_interval=0.05)
-
 
 def expand_last_operator():
     """Bind settings live on the Retargeting tab. Do not force the HUD.
@@ -512,200 +483,203 @@ def migrate_throw_from_custom(settings):
             pass
 
 
-def _guided_yes_no_row(layout, step):
-    row = layout.row(align=True)
-    row.scale_y = 1.4
-    yes = row.operator("object.ultimate_guided_answer", text="Yes")
-    yes.step = step
-    yes.answer = 'YES'
-    no = row.operator("object.ultimate_guided_answer", text="No")
-    no.step = step
-    no.answer = 'NO'
+COPY_TYPES = frozenset({'COPY_LOCATION', 'COPY_ROTATION', 'COPY_SCALE'})
 
 
-def apply_guided_answer(context, step, answer, report=None):
-    """Advance Guided Mode from a Yes/No choice or a confirm dialog."""
-    scene = context.scene
+def bind_constraints(constrained, driver):
+    """Copy constraints a bind put on ``constrained`` that follow ``driver``."""
+    if constrained is None or driver is None or constrained.pose is None:
+        return []
+    return [con for pb in constrained.pose.bones for con in pb.constraints
+            if con.type in COPY_TYPES and getattr(con, 'target', None) == driver]
 
-    if step == 'PRESET':
-        if answer == 'NO':
-            scene.expykit_guided_phase = 'PRESET'
-            _invoke_later(bpy.ops.object.ultimate_guided_info, message=PRESET_NO_MESSAGE)
-            return {'FINISHED'}
-        scene.expykit_guided_phase = 'ANIM'
-        _invoke_later(bpy.ops.object.ultimate_guided_mode, step='ANIM')
-        return {'FINISHED'}
 
-    if step == 'ANIM':
-        if answer == 'NO':
-            scene.expykit_guided_phase = 'PRESET'
-            _invoke_later(bpy.ops.object.ultimate_guided_info, message=ANIM_NO_MESSAGE)
-            return {'FINISHED'}
-        scene.expykit_guided_phase = 'SELECT'
-        _invoke_later(bpy.ops.object.ultimate_guided_mode, step='SELECT')
-        return {'FINISHED'}
+def rig_meshes(context, rig):
+    return [ob for ob in context.scene.objects if ob.type == 'MESH'
+            and (ob in rig.children_recursive or any(
+                mod.type == 'ARMATURE' and mod.object == rig for mod in ob.modifiers))]
 
-    if step == 'SELECT':
-        target = scene.expykit_bind_to
-        source = context.object
-        if (not source or source.type != 'ARMATURE' or source == target) and target:
-            source = next(
-                (ob for ob in context.selected_objects if ob.type == 'ARMATURE' and ob != target),
-                None,
-            )
-        if not source or source.type != 'ARMATURE':
-            if report:
-                report({'ERROR'}, "Select the source armature first")
-            return {'CANCELLED'}
-        if not target or target.type != 'ARMATURE':
-            if report:
-                report({'ERROR'}, "Select an armature to bind to")
-            return {'CANCELLED'}
-        if source == target:
-            if report:
-                report({'ERROR'}, "Source and target armatures must be different")
-            return {'CANCELLED'}
 
-        if context.view_layer.objects.active != source:
-            context.view_layer.objects.active = source
-        source.select_set(True)
+def bind_preview_off(scene) -> bool:
+    constrained, driver = bound_pair(scene)
+    return bool(scene.expykit_bind_is_active and constrained and constrained.hide_get())
 
-        scene.expykit_guided_phase = 'BIND'
-        scene.expykit_guided_explain = True
-        _invoke_later(bpy.ops.object.ultimate_bind_armatures)
-        return {'FINISHED'}
 
-    if step == 'CHECK':
-        scene.expykit_guided_phase = 'BAKE'
+class SUB_OT_retarget_toggle_bind_preview(bpy.types.Operator):
+    bl_idname = "sub.retarget_toggle_bind_preview"
+    bl_label = "Before / After"
+    bl_description = "Hide or show the target without changing its retargeted pose"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        constrained, driver = bound_pair(context.scene)
+        return bool(context.scene.expykit_bind_is_active and constrained and driver)
+
+    def execute(self, context):
+        constrained, driver = bound_pair(context.scene)
+        hidden = not bind_preview_off(context.scene)
+        _select_only_armature(context, driver if hidden else constrained)
+        for ob in [constrained, *rig_meshes(context, constrained)]:
+            if ob.name in context.view_layer.objects:
+                ob.hide_set(hidden)
+        _invalidate_smash_viewport()
         tag_retargeting_redraw()
         return {'FINISHED'}
 
-    if step == 'BAKE':
-        if answer == 'NO':
-            scene.expykit_guided_phase = 'BAKE'
-            return {'FINISHED'}
-        _invoke_later(bpy.ops.armature.ultimate_bake_actions)
-        return {'FINISHED'}
 
-    return {'FINISHED'}
-
-
-class ULTIMATE_OT_guided_info(bpy.types.Operator):
-    """Show a Guided Mode explanation dialog."""
-    bl_description = 'Show a Guided Mode explanation dialog.'
-    bl_idname = "object.ultimate_guided_info"
-    bl_label = "Guided Mode"
-    bl_options = {'INTERNAL'}
-
-    message: bpy.props.StringProperty(default="")
-
-    def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self, width=420)
-
-    def draw(self, context):
-        col = self.layout.column()
-        for line in self.message.split('\n'):
-            col.label(text=line if line else " ")
+class SUB_OT_retarget_source_meshes(bpy.types.Operator):
+    bl_idname = "sub.retarget_source_meshes"
+    bl_label = "Toggle Source Model"
+    bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
+        rig = context.scene.expykit_bind_to
+        meshes = [ob for ob in rig_meshes(context, rig)
+                  if ob.name in context.view_layer.objects] if rig else []
+        hidden = not meshes or not all(ob.hide_get() for ob in meshes)
+        target = mapping_target(context)
+        focus = target if hidden else rig
+        if focus is None or focus.name not in context.view_layer.objects:
+            self.report({'WARNING'}, "Assign both armatures in the current view layer first")
+            return {'CANCELLED'}
+        _select_only_armature(context, focus)
+        if hidden:
+            for ob in rig_meshes(context, target):
+                if ob.name in context.view_layer.objects:
+                    ob.hide_set(False)
+        for ob in meshes:
+            ob.hide_set(hidden)
+        _invalidate_smash_viewport()
+        tag_retargeting_redraw()
         return {'FINISHED'}
 
 
-class ULTIMATE_OT_guided_answer(bpy.types.Operator):
-    """Yes or No answer for a Guided Mode prompt."""
-    bl_description = 'Yes or No answer for a Guided Mode prompt.'
-    bl_idname = "object.ultimate_guided_answer"
-    bl_label = "Guided Mode"
-    bl_options = {'INTERNAL'}
+def adjustment_channels(bone):
+    rotation = ('rotation_quaternion' if bone.rotation_mode == 'QUATERNION' else
+                'rotation_axis_angle' if bone.rotation_mode == 'AXIS_ANGLE' else 'rotation_euler')
+    return {key: list(getattr(bone, key)) for key in ('location', rotation, 'scale')}
 
-    step: bpy.props.StringProperty(options={'SKIP_SAVE', 'HIDDEN'})
-    answer: bpy.props.StringProperty(options={'SKIP_SAVE', 'HIDDEN'})
+
+class SUB_OT_retarget_adjustments(bpy.types.Operator):
+    bl_idname = "sub.retarget_adjustments"
+    bl_label = "Make adjustments"
+    bl_description = "Adjust source retarget bones, then key changed bones at the current frame"
+    bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        return apply_guided_answer(context, self.step, self.answer, report=self.report)
-
-
-class ULTIMATE_OT_guided_mode(bpy.types.Operator):
-    """Walk through retargeting with yes/no prompts."""
-    bl_idname = "object.ultimate_guided_mode"
-    bl_label = "Guided Mode"
-    bl_description = "Step-by-step prompts for presets, animations, binding, and baking"
-    bl_options = {'INTERNAL'}
-
-    step: bpy.props.EnumProperty(
-        items=[
-            ('AUTO', "Auto", ""),
-            ('PRESET', "Preset", ""),
-            ('ANIM', "Animations", ""),
-            ('SELECT', "Select Armature", ""),
-            ('CHECK', "Check Animations", ""),
-            ('BAKE', "Bake", ""),
-        ],
-        default='AUTO',
-        options={'SKIP_SAVE', 'HIDDEN'},
-    )
-
-    def invoke(self, context, event):
         scene = context.scene
-        step = self.step
-        if step == 'AUTO':
-            step = scene.expykit_guided_phase or 'PRESET'
-            if step in {'IDLE', 'DONE', ''}:
-                step = 'PRESET'
-            self.step = step
+        from ..blender_compat import is_pose_bone_hidden, set_pose_bone_hidden, set_pose_bone_select
+        state = json.loads(scene.get('sub_retarget_adjustments', '{}'))
+        source = scene.objects.get(state['source']) if state else scene.expykit_bind_to
+        target = scene.objects.get(state['target']) if state else mapping_target(context)
+        if not source or not target or source.name not in context.view_layer.objects or target.name not in context.view_layer.objects:
+            self.report({'WARNING'}, "Both armatures must be in the current view layer")
+            return {'CANCELLED'}
+        helpers = [b for b in source.data.bones if b.name.endswith('_RET') and b.collections]
+        if not state and not helpers:
+            self.report({'WARNING'}, "The source has no _RET bones in Bone Collections; bind first")
+            return {'CANCELLED'}
+        if state:
+            action = source.animation_data.action if source.animation_data else None
+            if scene.frame_current != state['frame'] or (action.name if action else '') != state['action']:
+                self.report({'WARNING'}, "Return to the animation and frame where adjustments started before confirming")
+                return {'CANCELLED'}
+            for name, before in state['transforms'].items():
+                bone = source.pose.bones.get(name)
+                if bone and adjustment_channels(bone) != before:
+                    for channel in adjustment_channels(bone):
+                        bone.keyframe_insert(channel, frame=scene.frame_current, group=name)
+            for bone in source.pose.bones:
+                hidden = True if bone.name.endswith('_RET') else state['bones'].get(bone.name, is_pose_bone_hidden(bone))
+                set_pose_bone_hidden(bone, hidden)
+            for collection in source.data.collections_all:
+                saved = state['collections'].get(collection.name)
+                if saved is not None:
+                    collection.is_visible, collection.is_solo = saved
+            source.data.pose_position = state['pose_position']
+            del scene['sub_retarget_adjustments']
+            selected = target
+        else:
+            action = source.animation_data.action if source.animation_data else None
+            state = {'source': source.name, 'target': target.name, 'frame': scene.frame_current,
+                     'action': action.name if action else '', 'pose_position': source.data.pose_position,
+                     'bones': {b.name: is_pose_bone_hidden(b) for b in source.pose.bones},
+                     'collections': {c.name: [c.is_visible, c.is_solo] for c in source.data.collections_all},
+                     'transforms': {b.name: adjustment_channels(source.pose.bones[b.name]) for b in helpers}}
+            scene['sub_retarget_adjustments'] = json.dumps(state)
+            source.data.pose_position = 'POSE'
+            for collection in source.data.collections_all:
+                collection.is_solo = False
+                collection.is_visible = True
+            if context.object and context.object.mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode='OBJECT')
+            for ob in context.view_layer.objects:
+                ob.select_set(False)
+            source.hide_set(False)
+            source.select_set(True)
+            context.view_layer.objects.active = source
+            bpy.ops.object.mode_set(mode='POSE')
+            bpy.ops.pose.select_all(action='SELECT')
+            bpy.ops.pose.hide(unselected=False)
+            helper_names = {bone.name for bone in helpers}
+            for bone in source.pose.bones:
+                set_pose_bone_hidden(bone, bone.name not in helper_names)
+                set_pose_bone_select(bone, False)
+            tag_retargeting_redraw()
+            return {'FINISHED'}
+        if context.object and context.object.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        for ob in context.view_layer.objects:
+            ob.select_set(False)
+        selected.hide_set(False)
+        selected.select_set(True)
+        context.view_layer.objects.active = selected
+        if not state or selected == source:
+            bpy.ops.object.mode_set(mode='POSE')
+        tag_retargeting_redraw()
+        return {'FINISHED'}
 
-        if step in {'PRESET', 'ANIM', 'BAKE'}:
-            return context.window_manager.invoke_popup(self, width=380)
 
-        if step == 'CHECK':
-            return context.window_manager.invoke_props_dialog(self, width=420)
+def mapping_target(context):
+    from . import mapping_ui
+    return mapping_ui.apply_to(context)
 
-        if step == 'SELECT':
-            return context.window_manager.invoke_props_dialog(self, width=400)
 
-        return context.window_manager.invoke_popup(self, width=380)
+class SUB_OT_retarget_action(bpy.types.Operator):
+    bl_idname = "sub.retarget_action"
+    bl_label = "Select Source Animation"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    action_name: bpy.props.StringProperty()
+    direction: bpy.props.IntProperty(default=0)
+
+    def execute(self, context):
+        from ..extras.animation_scroll import get_armature_actions, apply_armature_action
+        rig = context.scene.expykit_bind_to
+        actions = get_armature_actions(rig)
+        if not actions:
+            return {'CANCELLED'}
+        if self.direction:
+            current = rig.animation_data.action if rig.animation_data else None
+            index = actions.index(current) if current in actions else (-1 if self.direction > 0 else 0)
+            action = actions[(index + self.direction) % len(actions)]
+        else:
+            action = next((a for a in actions if a.name == self.action_name), None)
+        if action is None:
+            return {'CANCELLED'}
+        apply_armature_action(context, rig, action, autoplay=False)
+        tag_retargeting_redraw()
+        return {'FINISHED'}
+
+
+class SUB_MT_retarget_actions(bpy.types.Menu):
+    bl_label = "Source Animation"
 
     def draw(self, context):
-        layout = self.layout
-        col = layout.column()
-        scene = context.scene
-
-        if self.step == 'PRESET':
-            col.label(text="Have you made a Preset?", icon='QUESTION')
-            col.separator()
-            _guided_yes_no_row(col, 'PRESET')
-        elif self.step == 'ANIM':
-            col.label(text="Have you loaded all your animations on the source armature?", icon='QUESTION')
-            col.separator()
-            _guided_yes_no_row(col, 'ANIM')
-        elif self.step == 'SELECT':
-            col.label(text="Select Armature to bind", icon='ARMATURE_DATA')
-            col.separator()
-            col.label(text="Pick the target armature (the one to retarget onto).")
-            col.prop(scene, 'expykit_bind_to', text="Bind To")
-        elif self.step == 'CHECK':
-            col.label(text="Check the result", icon='INFO')
-            col.separator()
-            for line in CHECK_ANIM_MESSAGE.split('\n'):
-                col.label(text=line)
-            col.separator()
-            col.label(text="Click OK, then use Continue Guided Mode when ready.")
-        elif self.step == 'BAKE':
-            col.label(text="Ready to bake?", icon='QUESTION')
-            col.separator()
-            _guided_yes_no_row(col, 'BAKE')
-
-    def execute(self, context):
-        if self.step in {'PRESET', 'ANIM', 'BAKE'}:
-            return {'FINISHED'}
-        return apply_guided_answer(context, self.step, 'YES', report=self.report)
-
-
-def guided_button_label(scene):
-    phase = getattr(scene, 'expykit_guided_phase', 'IDLE') or 'IDLE'
-    if phase in {'BIND', 'CHECK', 'BAKE'}:
-        return "Continue Guided Mode"
-    return "Guided Mode"
+        from ..extras.animation_scroll import get_armature_actions
+        for action in get_armature_actions(context.scene.expykit_bind_to):
+            self.layout.operator(SUB_OT_retarget_action.bl_idname, text=action.name).action_name = action.name
 
 
 class ULTIMATE_OT_apply_bind_settings(bpy.types.Operator):
@@ -755,9 +729,11 @@ class ULTIMATE_OT_bind_wait_select(bpy.types.Operator):
 
 
 classes = (
-    ULTIMATE_OT_guided_info,
-    ULTIMATE_OT_guided_answer,
-    ULTIMATE_OT_guided_mode,
+    SUB_OT_retarget_adjustments,
+    SUB_OT_retarget_action,
+    SUB_MT_retarget_actions,
+    SUB_OT_retarget_source_meshes,
+    SUB_OT_retarget_toggle_bind_preview,
     ULTIMATE_OT_apply_bind_settings,
     ULTIMATE_OT_bind_wait_select,
 )

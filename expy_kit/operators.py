@@ -1262,7 +1262,7 @@ class ConstrainToArmature(bpy.types.Operator):
     match_transform: EnumProperty(items=[
         ('None', "- None -", "Don't match any transform"),
         ('Bone', "Bones Offset", "Account for difference between control and deform rest pose (Requires similar proportions and Y bone-axis)"),
-        ('Pose', "Current Pose is target Rest Pose", "Armature was posed manually to match rest pose of target"),
+        ('Pose', "Current Pose is Source Rest Pose", "Armature was posed manually to match the rest pose of the armature it binds to"),
         ('World', "Follow target Pose in world space", "Just copy target world positions (Same bone orient, different rest pose)"),
     ],
         name="Match Transform",
@@ -1811,7 +1811,13 @@ class ConstrainToArmature(bpy.types.Operator):
                 for bone in ob.pose.bones:
                     bone_name = bone.name
                     bone_look_up = self.name_prefix + bone_name.replace(self.name_replace, self.name_replace_with) + self.name_suffix
-                    if bone_look_up in bone_names_map:
+                    if bone_name in bone_names_map:
+                        continue
+                    # IK outputs and solver helpers must not get a second driver through name matching.
+                    if bone_name.startswith('BL_SUB_IK_') or any(
+                        con.name in {'SUB IK Blend', 'SUB IK Toe'} and getattr(con, 'target', None) == ob
+                        for con in bone.constraints
+                    ):
                         continue
                     if bone_utils.is_pose_bone_all_locked(bone):
                         continue
@@ -1841,6 +1847,16 @@ class ConstrainToArmature(bpy.types.Operator):
 
                     if not bone.select:
                         del bone_names_map[b_name]
+
+            if not self.only_selected:
+                # A full rebind must drop old pair-owned helpers for bones no longer included.
+                for bone in ob.pose.bones:
+                    if bone.name in bone_names_map:
+                        continue
+                    for con in list(bone.constraints):
+                        if (con.type in {'COPY_LOCATION', 'COPY_ROTATION', 'COPY_SCALE'}
+                                and con.target == trg_ob and con.subtarget == f'{bone.name}_{cp_suffix}'):
+                            bone.constraints.remove(con)
 
             # hacky, but will do it: keep target armature in place during binding
             limit_constraints = self._add_limit_constraintss(trg_ob, scale=self.scale_constraints)
@@ -1906,20 +1922,20 @@ class ConstrainToArmature(bpy.types.Operator):
                     except KeyError:
                         continue
 
-                    new_bone.transform(def_bone.matrix.inverted())
+                    bone_utils.transform_ebone(new_bone, def_bone.matrix.inverted())
 
                     # even transform
                     if self.match_object_transform:
-                        new_bone.transform(ob.matrix_world)
+                        bone_utils.transform_ebone(new_bone, ob.matrix_world)
                     # counter target transform
-                    new_bone.transform(trg_ob.matrix_world.inverted())
+                    bone_utils.transform_ebone(new_bone, trg_ob.matrix_world.inverted())
                     
                     # align target temporarily
                     trg_roll = trg_ed_bone.roll
                     trg_ed_bone.roll = bone_utils.ebone_roll_to_vector(trg_ed_bone, def_bone.z_axis)
 
                     # bring under trg_bone
-                    new_bone.transform(trg_ed_bone.matrix)
+                    bone_utils.transform_ebone(new_bone, trg_ed_bone.matrix)
 
                     # restore target orient
                     trg_ed_bone.roll = trg_roll
@@ -1928,14 +1944,14 @@ class ConstrainToArmature(bpy.types.Operator):
                 elif self.match_transform == 'Pose':
                     new_bone.matrix = ob.pose.bones[src_name].matrix
                     if self.match_object_transform:
-                        new_bone.transform(ob.matrix_world)
-                    new_bone.transform(trg_ob.matrix_world.inverted_safe())
+                        bone_utils.transform_ebone(new_bone, ob.matrix_world)
+                    bone_utils.transform_ebone(new_bone, trg_ob.matrix_world.inverted_safe())
                 elif self.match_transform == 'World':
                     new_bone.head = new_bone.parent.head
                     new_bone.tail = new_bone.parent.tail
                     new_bone.roll = new_bone.parent.roll
                     if self.match_object_transform:
-                        new_bone.transform(ob.matrix_world)
+                        bone_utils.transform_ebone(new_bone, ob.matrix_world)
                 else:
                     src_bone = ob.data.bones[src_name]
                     src_z_axis_neg = Vector((0.0, 0.0, 1.0)) @ src_bone.matrix_local.inverted().to_3x3()
@@ -1944,8 +1960,8 @@ class ConstrainToArmature(bpy.types.Operator):
                     new_bone.roll = bone_utils.ebone_roll_to_vector(new_bone, src_z_axis_neg)
 
                     if self.match_object_transform:
-                        new_bone.transform(ob.matrix_world)
-                        new_bone.transform(trg_ob.matrix_world.inverted())
+                        bone_utils.transform_ebone(new_bone, ob.matrix_world)
+                        bone_utils.transform_ebone(new_bone, trg_ob.matrix_world.inverted())
 
                 if self.copy_IK_roll_hands:
                     if src_name in (src_skeleton.right_arm_ik.hand,

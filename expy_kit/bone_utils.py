@@ -122,6 +122,14 @@ def copy_bone_constraints(bone_a, bone_b):
                 continue
 
 
+def transform_ebone(ebone, matrix):
+    """EditBone.transform without its roll bug: Blender turns the roll axis with the full 4x4 matrix,
+    so any translation in it leaks into the roll."""
+    z_axis = matrix.to_3x3() @ ebone.z_axis
+    ebone.transform(matrix, roll=False)
+    ebone.align_roll(z_axis)
+
+
 def copy_bone_to_arm(src_ob, trg_ob, bone_name, suffix='CP'):
     """Create a new bone in trg_ob with the same head/tail as bone with the given name"""
     try:

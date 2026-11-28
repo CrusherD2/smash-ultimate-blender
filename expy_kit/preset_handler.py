@@ -23,8 +23,14 @@ def install_presets():
     bundled_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "rig_mapping", "presets")
 
     os.makedirs(retarget_dir, exist_ok=True)
-    for f in os.listdir(bundled_dir):
-        shutil.copy2(os.path.join(bundled_dir, f), retarget_dir)
+    for f in sorted(os.listdir(bundled_dir)):
+        source = os.path.join(bundled_dir, f)
+        destination = os.path.join(retarget_dir, f)
+        if not f.endswith('.py') or not os.path.isfile(source):
+            continue
+        # Installed presets may contain user edits; only seed missing files.
+        if not os.path.exists(destination):
+            shutil.copy2(source, destination)
 
 
 def iterate_presets_with_current(scene, context):

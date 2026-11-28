@@ -96,8 +96,8 @@ Path(retarget_presets.get_retarget_dir()).mkdir(parents=True, exist_ok=True)
 bpy.context.object.data.expykit_retarget.deform_preset = '--'
 mapping_layout = Layout()
 retarget.SUB_PT_retargeting_main.draw(SimpleNamespace(layout=mapping_layout), bpy.context)
-assert mapping_layout.sections == ['sub_retarget_mapping_' + name for name in
-    ('custom', 'core', 'arms', 'legs', 'fingers', 'root')]
+assert [s for s in mapping_layout.sections if s.startswith('sub_retarget_mapping_')] == [
+    'sub_retarget_mapping_' + name for name in ('core', 'arms', 'legs', 'fingers', 'root', 'custom')]
 assert {'hips', 'arm', 'leg', 'a', 'root'} <= set(mapping_layout.searches)
 model_layout = Layout()
 model_ui = importlib.import_module(MODULE + '.source.extras.misc_panel')
